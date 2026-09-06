@@ -8,6 +8,7 @@ import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
   CHATGPT_BIGGER_CONTEXT_PARTS,
+  CHATGPT_WEB_MULTIPART_MAX_PARTS,
   compileChatGptWebPrompt,
   type ChatGptWebMultipartPartCount,
 } from "./prompt";
@@ -83,10 +84,17 @@ export function biggerContextPartCount(
   onePartLimit: number,
   compaction: boolean,
 ): ChatGptWebMultipartPartCount | undefined {
-  if (compaction) return CHATGPT_BIGGER_CONTEXT_PARTS;
-  if (inputTokens < onePartLimit) return undefined;
-  if (inputTokens < onePartLimit * 2) return 2;
-  return CHATGPT_BIGGER_CONTEXT_PARTS;
+  const requiredParts = Math.max(
+    compaction ? CHATGPT_BIGGER_CONTEXT_PARTS : 2,
+    Math.floor(inputTokens / onePartLimit) + 1,
+  );
+  if (!compaction && inputTokens < onePartLimit) return undefined;
+  if (requiredParts > CHATGPT_WEB_MULTIPART_MAX_PARTS) {
+    throw new Error(
+      `Bigger Context requires ${requiredParts.toLocaleString("en-US")} multipart parts, above the maximum of ${CHATGPT_WEB_MULTIPART_MAX_PARTS}`,
+    );
+  }
+  return requiredParts;
 }
 
 function roundEvidenceText(evidence: ChatGptWebRoundEvidence): string {

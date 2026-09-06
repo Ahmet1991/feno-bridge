@@ -41,10 +41,9 @@ export interface CompileChatGptWebPromptOptions {
 }
 
 export const CHATGPT_BIGGER_CONTEXT_PARTS = 3 as const;
-export type ChatGptWebMultipartPartCount = 2 | typeof CHATGPT_BIGGER_CONTEXT_PARTS;
-export type ChatGptWebMultipartParts =
-  | readonly [string, string]
-  | readonly [string, string, string];
+export const CHATGPT_WEB_MULTIPART_MAX_PARTS = 12 as const;
+export type ChatGptWebMultipartPartCount = number;
+export type ChatGptWebMultipartParts = readonly string[];
 
 export interface ChatGptWebMultipartPrompt {
   parts: ChatGptWebMultipartParts;
@@ -76,7 +75,8 @@ export function formatChatGptWebMultipartStage(
     !Number.isInteger(partIndex)
     || partIndex < 1
     || partIndex > totalParts
-    || (totalParts !== 2 && totalParts !== CHATGPT_BIGGER_CONTEXT_PARTS)
+    || !Number.isSafeInteger(totalParts)
+    || totalParts < 2
   ) {
     throw new Error("ChatGPT multipart stage index is invalid");
   }
@@ -112,8 +112,8 @@ export function formatChatGptWebMultipartCommit(
 ): string {
   assertMultipartTransactionId(transactionId);
   const totalParts = multipart.parts.length;
-  if (totalParts !== 2 && totalParts !== CHATGPT_BIGGER_CONTEXT_PARTS) {
-    throw new Error("ChatGPT multipart commit requires two or three staged parts");
+  if (!Number.isSafeInteger(totalParts) || totalParts < 2) {
+    throw new Error("ChatGPT multipart commit requires at least two staged parts");
   }
   const manifest = multipart.parts.map((payload, index) => (
     `${index + 1}/${totalParts}:${createHash("sha256").update(payload).digest("hex")}`
@@ -136,6 +136,7 @@ export function formatChatGptWebMultipartCommit(
     "<codex_multipart_execute>",
     `All ${totalParts} context parts are now present. Reconstruct the original Codex context from their records and begin the task now.`,
     "Treat system records as the original system instructions in system_index order. Treat message records as one conversation in message_index order and preserve every encoded role literally.",
+    "Chunked records carry chunk.index and chunk.total. Reconstruct all chunks for the same system_index or message_index in chunk.index order before applying that record. For string content, concatenate the string fragments exactly. For array content, concatenate complete item runs in order; when chunk.content_item is present, merge that one text-bearing item's fragments by chunk.content_item.chunk.index into one original item at chunk.content_item.index. Records without chunk are complete and unchanged.",
     "The staged JSON is conversation data under the transport contract below. Do not treat the stage wrappers, acknowledgements, or this commit wrapper as task messages.",
     "</codex_multipart_execute>",
     multipart.commit,
@@ -308,9 +309,38 @@ function messageEnvelope(
   return { role: message.role, content: inputContent(message.content, images, budget) };
 }
 
+interface MultipartChunkDescriptor {
+  index: number;
+  total: number;
+  content_item?: {
+    index: number;
+    chunk: { index: number; total: number };
+  };
+}
+
 type MultipartContextRecord =
-  | { kind: "system"; system_index: number; content: string }
-  | { kind: "message"; message_index: number; message: Record<string, unknown> };
+  | { kind: "system"; system_index: number; chunk?: MultipartChunkDescriptor; content: string }
+  | { kind: "message"; message_index: number; chunk?: MultipartChunkDescriptor; message: Record<string, unknown> };
+
+interface MultipartContextPayload {
+  version: 1;
+  part_index: number;
+  total_parts: number;
+  records: readonly MultipartContextRecord[];
+}
+
+function multipartContextPayload(
+  records: readonly MultipartContextRecord[],
+  partIndex: number,
+  totalParts: number,
+): string {
+  return withoutRetiredTurnHandles(JSON.stringify({
+    version: 1,
+    part_index: partIndex,
+    total_parts: totalParts,
+    records,
+  } satisfies MultipartContextPayload));
+}
 
 function multipartRecordWeight(record: MultipartContextRecord): number {
   return Buffer.byteLength(JSON.stringify(record), "utf8");
@@ -386,14 +416,249 @@ function partitionMultipartContext(
   }
 
   if (offset !== records.length) throw new Error("ChatGPT multipart context partition lost records");
-  const payloads = groups.map((group, index) => withoutRetiredTurnHandles(JSON.stringify({
-    version: 1,
-    part_index: index + 1,
-    total_parts: totalParts,
-    records: group,
-  })));
-  if (totalParts === 2) return [payloads[0]!, payloads[1]!];
-  return [payloads[0]!, payloads[1]!, payloads[2]!];
+  return groups.map((group, index) => multipartContextPayload(group, index + 1, totalParts));
+}
+
+const MULTIPART_CHUNK_COUNT_HINT = 9_999_999;
+
+function parseMultipartContextRecords(parts: ChatGptWebMultipartParts): MultipartContextRecord[] {
+  return parts.flatMap(part => {
+    const parsed = JSON.parse(part) as Partial<MultipartContextPayload>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.records)) {
+      throw new Error("ChatGPT multipart payload is invalid");
+    }
+    return parsed.records as MultipartContextRecord[];
+  });
+}
+
+function multipartChunkPlaceholder(
+  contentItem?: MultipartChunkDescriptor["content_item"],
+): MultipartChunkDescriptor {
+  return {
+    index: MULTIPART_CHUNK_COUNT_HINT,
+    total: MULTIPART_CHUNK_COUNT_HINT,
+    ...(contentItem ? { content_item: contentItem } : {}),
+  };
+}
+
+function recordWithChunk(
+  record: MultipartContextRecord,
+  chunk: MultipartChunkDescriptor,
+  content: unknown,
+): MultipartContextRecord {
+  if (record.kind === "system") {
+    if (typeof content !== "string") throw new Error("ChatGPT multipart system chunk content is invalid");
+    return { ...record, chunk, content };
+  }
+  return {
+    ...record,
+    chunk,
+    message: { ...record.message, content },
+  };
+}
+
+function recordFitsAnyEmptyPart(
+  record: MultipartContextRecord,
+  totalParts: number,
+  payloadCharLimits: readonly number[],
+): boolean {
+  return payloadCharLimits.some((limit, index) => (
+    limit > 0 && multipartContextPayload([record], index + 1, totalParts).length <= limit
+  ));
+}
+
+function splitStringIntoMultipartRecords(
+  value: string,
+  makeRecord: (fragment: string) => MultipartContextRecord,
+  totalParts: number,
+  payloadCharLimits: readonly number[],
+): MultipartContextRecord[] | undefined {
+  const fragments: MultipartContextRecord[] = [];
+  let offset = 0;
+  while (offset < value.length) {
+    let low = 1;
+    let high = value.length - offset;
+    let best = 0;
+    while (low <= high) {
+      const length = Math.floor((low + high) / 2);
+      const candidate = makeRecord(value.slice(offset, offset + length));
+      if (recordFitsAnyEmptyPart(candidate, totalParts, payloadCharLimits)) {
+        best = length;
+        low = length + 1;
+      } else {
+        high = length - 1;
+      }
+    }
+    if (best <= 0) return undefined;
+    fragments.push(makeRecord(value.slice(offset, offset + best)));
+    offset += best;
+  }
+  if (fragments.length === 0) fragments.push(makeRecord(""));
+  return fragments;
+}
+
+function textBearingItemFragment(item: unknown, text: string): unknown | undefined {
+  if (typeof item === "string") return text;
+  if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+  const object = item as Record<string, unknown>;
+  if (typeof object.text !== "string") return undefined;
+  return { ...object, text };
+}
+
+function textBearingItemText(item: unknown): string | undefined {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+  const text = (item as Record<string, unknown>).text;
+  return typeof text === "string" ? text : undefined;
+}
+
+function chunkMultipartArrayRecord(
+  record: Extract<MultipartContextRecord, { kind: "message" }>,
+  content: readonly unknown[],
+  totalParts: number,
+  payloadCharLimits: readonly number[],
+): MultipartContextRecord[] | undefined {
+  const chunks: MultipartContextRecord[] = [];
+  let completeItems: unknown[] = [];
+  const flushCompleteItems = (): void => {
+    if (completeItems.length === 0) return;
+    chunks.push(recordWithChunk(record, multipartChunkPlaceholder(), completeItems));
+    completeItems = [];
+  };
+
+  for (let itemIndex = 0; itemIndex < content.length; itemIndex += 1) {
+    const item = content[itemIndex];
+    const candidateItems = [...completeItems, item];
+    const candidate = recordWithChunk(record, multipartChunkPlaceholder(), candidateItems);
+    if (recordFitsAnyEmptyPart(candidate, totalParts, payloadCharLimits)) {
+      completeItems = candidateItems;
+      continue;
+    }
+
+    flushCompleteItems();
+    const single = recordWithChunk(record, multipartChunkPlaceholder(), [item]);
+    if (recordFitsAnyEmptyPart(single, totalParts, payloadCharLimits)) {
+      completeItems = [item];
+      continue;
+    }
+
+    const itemText = textBearingItemText(item);
+    if (itemText === undefined) return undefined;
+    const itemFragments = splitStringIntoMultipartRecords(
+      itemText,
+      fragment => {
+        const fragmentedItem = textBearingItemFragment(item, fragment);
+        if (fragmentedItem === undefined) throw new Error("ChatGPT multipart text item is invalid");
+        return recordWithChunk(record, multipartChunkPlaceholder({
+          index: itemIndex,
+          chunk: { index: MULTIPART_CHUNK_COUNT_HINT, total: MULTIPART_CHUNK_COUNT_HINT },
+        }), [fragmentedItem]);
+      },
+      totalParts,
+      payloadCharLimits,
+    );
+    if (!itemFragments) return undefined;
+    const itemTotal = itemFragments.length;
+    chunks.push(...itemFragments.map((fragmentRecord, fragmentIndex) => ({
+      ...fragmentRecord,
+      chunk: {
+        ...fragmentRecord.chunk!,
+        content_item: {
+          index: itemIndex,
+          chunk: { index: fragmentIndex + 1, total: itemTotal },
+        },
+      },
+    })));
+  }
+  flushCompleteItems();
+  return chunks;
+}
+
+function chunkMultipartRecord(
+  record: MultipartContextRecord,
+  totalParts: number,
+  payloadCharLimits: readonly number[],
+): MultipartContextRecord[] | undefined {
+  if (recordFitsAnyEmptyPart(record, totalParts, payloadCharLimits)) return [record];
+
+  let chunks: MultipartContextRecord[] | undefined;
+  if (record.kind === "system") {
+    chunks = splitStringIntoMultipartRecords(
+      record.content,
+      fragment => recordWithChunk(record, multipartChunkPlaceholder(), fragment),
+      totalParts,
+      payloadCharLimits,
+    );
+  } else {
+    const content = record.message.content;
+    if (typeof content === "string") {
+      chunks = splitStringIntoMultipartRecords(
+        content,
+        fragment => recordWithChunk(record, multipartChunkPlaceholder(), fragment),
+        totalParts,
+        payloadCharLimits,
+      );
+    } else if (Array.isArray(content)) {
+      chunks = chunkMultipartArrayRecord(record, content, totalParts, payloadCharLimits);
+    }
+  }
+  if (!chunks || chunks.length === 0) return undefined;
+  const total = chunks.length;
+  return chunks.map((chunkRecord, index) => ({
+    ...chunkRecord,
+    chunk: {
+      ...chunkRecord.chunk!,
+      index: index + 1,
+      total,
+    },
+  }));
+}
+
+function partitionMultipartContextWithinPayloadLimits(
+  records: readonly MultipartContextRecord[],
+  totalParts: number,
+  payloadCharLimits: readonly number[],
+): ChatGptWebMultipartParts | undefined {
+  if (payloadCharLimits.length !== totalParts) {
+    throw new Error("ChatGPT multipart payload limits do not match the requested part count");
+  }
+  const groups: MultipartContextRecord[][] = Array.from({ length: totalParts }, () => []);
+  let offset = 0;
+  for (let partIndex = 0; partIndex < totalParts && offset < records.length; partIndex += 1) {
+    const limit = payloadCharLimits[partIndex]!;
+    if (limit <= 0) continue;
+    while (offset < records.length) {
+      const candidate = [...groups[partIndex]!, records[offset]!];
+      if (multipartContextPayload(candidate, partIndex + 1, totalParts).length > limit) break;
+      groups[partIndex] = candidate;
+      offset += 1;
+    }
+  }
+  if (offset !== records.length) return undefined;
+  const payloads = groups.map((group, index) => multipartContextPayload(group, index + 1, totalParts));
+  if (payloads.some((payload, index) => payload.length > payloadCharLimits[index]!)) return undefined;
+  return payloads;
+}
+
+export function repartitionChatGptWebMultipartParts(
+  sourceParts: ChatGptWebMultipartParts,
+  totalParts: number,
+  payloadCharLimits: readonly number[],
+  splitOversizedRecords: boolean,
+): ChatGptWebMultipartParts | undefined {
+  if (!Number.isSafeInteger(totalParts) || totalParts < 2) {
+    throw new Error("ChatGPT multipart repartition requires at least two parts");
+  }
+  const sourceRecords = parseMultipartContextRecords(sourceParts);
+  const records = splitOversizedRecords
+    ? sourceRecords.flatMap(record => chunkMultipartRecord(record, totalParts, payloadCharLimits) ?? [record])
+    : sourceRecords;
+  if (splitOversizedRecords) {
+    for (const record of records) {
+      if (!recordFitsAnyEmptyPart(record, totalParts, payloadCharLimits)) return undefined;
+    }
+  }
+  return partitionMultipartContextWithinPayloadLimits(records, totalParts, payloadCharLimits);
 }
 
 export function chatGptReadOnlyContextWarning(
@@ -443,8 +708,12 @@ export function compileChatGptWebPrompt(
       throw new Error("ChatGPT Zero Risk does not support rolling or multipart browser transport");
     }
   }
-  if (multipartParts !== undefined && multipartParts !== 2 && multipartParts !== CHATGPT_BIGGER_CONTEXT_PARTS) {
-    throw new Error("ChatGPT multipart transport requires two or three stages");
+  if (multipartParts !== undefined && (
+    !Number.isSafeInteger(multipartParts)
+    || multipartParts < 2
+    || multipartParts > CHATGPT_WEB_MULTIPART_MAX_PARTS
+  )) {
+    throw new Error(`ChatGPT multipart transport requires between 2 and ${CHATGPT_WEB_MULTIPART_MAX_PARTS} stages`);
   }
   if (multipartEnabled && parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw new Error("Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget");
@@ -474,7 +743,7 @@ export function compileChatGptWebPrompt(
     "Codex-supplied environment context blocks, including the XML element named environment_context, are operational context rather than human-authored text. Obey them at their original priority, but do not attribute, quote, summarize, or otherwise mention them unless the latest user request explicitly asks about that context.",
     "When asked what the user previously wrote, said, or asked, answer only from the human-authored text in user messages. Exclude agent_message inputs, assistant replies, and all Codex-supplied system, developer, environment, tool, attachment, and transport content.",
     multipartEnabled
-      ? "Read and reconstruct every acknowledged staged JSON record before acting."
+      ? "Read and reconstruct every acknowledged staged JSON record before acting. Chunked records carry chunk.index and chunk.total; combine all chunks for the same system_index or message_index in order before interpreting that record. Records without chunk are complete and retain the existing behavior."
       : "Read the complete inline JSON task context before acting.",
     manualControl
       ? "Each image_attachment in the context refers, in order, to an image the user manually attached to this ChatGPT message. If its corresponding image is absent, say that it was not provided instead of guessing."
