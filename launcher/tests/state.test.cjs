@@ -35,7 +35,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       sessionRefreshReminderAt: null,
     });
     store.update({
-      language: "zh-CN",
+      language: "tr",
       onboardingComplete: true,
       keepRunningOnClose: false,
       browserSmokePassed: true,
@@ -43,7 +43,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
     });
     assert.deepEqual(createStateStore(file).read(), {
       version: 1,
-      language: "zh-CN",
+      language: "tr",
       onboardingComplete: true,
       githubOpened: false,
       xOpened: false,
@@ -77,12 +77,12 @@ test("sidebar state accepts only bounded native shell dimensions", () => {
   assert.throws(() => validateSidebarState({ open: true, width: 900 }), /between 240 and 420/);
 });
 
-test("Japanese is preserved as a supported persisted launcher language", () => {
+test("Turkish is preserved as a supported persisted launcher language", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-ja-state-"));
   const file = path.join(root, "state.json");
   try {
-    fs.writeFileSync(file, JSON.stringify({ version: 1, language: "ja" }));
-    assert.equal(createStateStore(file).read().language, "ja");
+    fs.writeFileSync(file, JSON.stringify({ version: 1, language: "tr" }));
+    assert.equal(createStateStore(file).read().language, "tr");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -94,7 +94,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
   try {
     fs.writeFileSync(file, JSON.stringify({
       version: 1,
-      language: "zh-CN",
+      language: "tr",
       onboardingComplete: "yes",
       autoStart: "yes",
       bridgeEnabled: false,
@@ -108,7 +108,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
     }));
     assert.deepEqual(createStateStore(file).read(), {
       version: 1,
-      language: "zh-CN",
+      language: "tr",
       onboardingComplete: false,
       githubOpened: false,
       xOpened: false,
