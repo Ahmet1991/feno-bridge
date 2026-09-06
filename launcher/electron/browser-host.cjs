@@ -33,6 +33,10 @@ const MAX_BROWSER_TABS = 5;
 // A steering turn waits for the tab it is taking over. The wait is bounded so a turn that never
 // ends cannot strand its waiters indefinitely, and the timeout says what it was waiting on.
 const TURN_HANDOFF_WAIT_TIMEOUT_MS = 180_000;
+// Concurrent turns each own a ChatGPT document in one Electron renderer pool. Two turns doing
+// heavy DOM work at the same time starve each other until a DOM probe times out, so the heavy
+// phases take a single-owner lock while waiting for a ChatGPT response stays free.
+const HEAVY_PHASE_WAIT_TIMEOUT_MS = 180_000;
 const MAX_CANCELLED_TURN_TRACES = 256;
 const MANUAL_SUBMIT_TIMEOUT_MS = 30_000;
 const MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS = 120_000;
@@ -356,6 +360,7 @@ class BrowserHost {
     this.surfaceActive = true;
     this.turnTabs = new Map();
     this.automaticTurnHandoffs = new Map();
+    this.heavyPhase = { holder: null, queue: [] };
     this.closedTurnOwners = new Map();
     this.userCancelledTurnOwners = new Map();
     this.manualTerminalSignals = new Map();
@@ -1512,6 +1517,7 @@ class BrowserHost {
       if (handoff.timer) clearTimeout(handoff.timer);
       handoff.reject(new Error("The ChatGPT browser conversation closed before the steering turn could take over"));
     }
+    if (tab.traceId) this.releaseHeavyPhase(tab.traceId);
     this.turnTabs.delete(tab.id);
     if (tab.interactionMode === "manual") {
       if (tab.manualDeadlineTimer) clearTimeout(tab.manualDeadlineTimer);
@@ -2338,6 +2344,87 @@ class BrowserHost {
     return { surfaceId: tab.surfaceId, tabId: tab.id, reused: false, connectorBound: false };
   }
 
+  heavyPhaseState() {
+    this.heavyPhase ??= { holder: null, queue: [] };
+    return this.heavyPhase;
+  }
+
+  /** A holder whose helper process is gone can never release; reclaim the lock for the queue. */
+  reclaimAbandonedHeavyPhase() {
+    const state = this.heavyPhaseState();
+    if (!state.holder) return;
+    if (processRunning(state.holder.helperPid)) return;
+    this.logger.info("browser.heavy_phase_reclaimed", {
+      traceId: state.holder.traceId,
+      helperPid: state.holder.helperPid,
+    });
+    state.holder = null;
+  }
+
+  grantNextHeavyPhase() {
+    const state = this.heavyPhaseState();
+    while (!state.holder && state.queue.length > 0) {
+      const next = state.queue.shift();
+      if (next.timer) clearTimeout(next.timer);
+      if (!processRunning(next.helperPid)) {
+        next.reject(new Error("The waiting helper exited before it entered the heavy browser phase"));
+        continue;
+      }
+      state.holder = { traceId: next.traceId, helperPid: next.helperPid, depth: 1 };
+      this.logger.info("browser.heavy_phase_granted", { traceId: next.traceId, waiting: state.queue.length });
+      next.resolve({ acquired: true });
+    }
+  }
+
+  async acquireHeavyPhase(traceId, helperPid) {
+    const state = this.heavyPhaseState();
+    this.reclaimAbandonedHeavyPhase();
+    if (state.holder && state.holder.traceId === traceId) {
+      // Heavy phases nest (a rebind runs inside a stage); the owner must not deadlock on itself.
+      state.holder.depth += 1;
+      return { acquired: true, reentrant: true };
+    }
+    if (!state.holder) {
+      state.holder = { traceId, helperPid, depth: 1 };
+      return { acquired: true };
+    }
+    return new Promise((resolve, reject) => {
+      const entry = { traceId, helperPid, resolve, reject };
+      entry.timer = setTimeout(() => {
+        const index = state.queue.indexOf(entry);
+        if (index >= 0) state.queue.splice(index, 1);
+        this.logger.info("browser.heavy_phase_timeout", {
+          traceId,
+          holderTraceId: state.holder ? state.holder.traceId : null,
+        });
+        reject(new Error(
+          "Waited " + Math.round(HEAVY_PHASE_WAIT_TIMEOUT_MS / 1000) + "s to enter the heavy ChatGPT "
+          + "browser phase while turn " + (state.holder ? state.holder.traceId : "unknown") + " held it",
+        ));
+      }, HEAVY_PHASE_WAIT_TIMEOUT_MS);
+      entry.timer.unref?.();
+      state.queue.push(entry);
+      this.logger.info("browser.heavy_phase_queued", { traceId, waiting: state.queue.length });
+    });
+  }
+
+  releaseHeavyPhase(traceId) {
+    const state = this.heavyPhaseState();
+    if (state.holder && state.holder.traceId === traceId) {
+      state.holder.depth -= 1;
+      if (state.holder.depth > 0) return { released: false, reentrant: true };
+      state.holder = null;
+    }
+    for (let index = state.queue.length - 1; index >= 0; index -= 1) {
+      if (state.queue[index].traceId !== traceId) continue;
+      const [entry] = state.queue.splice(index, 1);
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.reject(new Error("The heavy ChatGPT browser phase was released before it was granted"));
+    }
+    this.grantNextHeavyPhase();
+    return { released: true };
+  }
+
   async endTurn(
     traceId,
     helperPid,
@@ -2371,6 +2458,8 @@ class BrowserHost {
     if (status === "completed") {
       this.logger.info("browser.tab_completed", { tabId: tab.id, traceId });
     }
+    // A turn that ends without releasing would strand every other turn behind its lock.
+    this.releaseHeavyPhase(traceId);
     const handoffQueue = this.automaticTurnHandoffs?.get(tab.id);
     // endTurn only ever receives a terminal status, so every one of them must move the queue on.
     // A turn that ends in "failed" used to drop its waiters; the log showed exactly that happening.
