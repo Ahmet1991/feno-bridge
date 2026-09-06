@@ -8,6 +8,7 @@ import {
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
 } from "../src/adapters/chatgpt-web/prompt";
+import { chatGptPromptContextText } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
 import type { CodexParsedRequest } from "../src/types";
@@ -574,4 +575,33 @@ test("keeps large contexts intact in the inline text envelope", () => {
   expect(compiled.text).not.toContain(`<codex_context_attachment>`);
   expect(compiled.text).not.toContain("sha256");
   expect(compiled.text).not.toContain("SHA-256");
+});
+
+test("the measured prompt text follows the context, not just the message that commits it", () => {
+  // A multipart turn leaves only the commit contract in `text`; the conversation rides in the
+  // staged parts. Measuring `text` reported a few thousand characters for turns transporting a
+  // whole history, which made the repetition figures meaningless for exactly the largest turns.
+  const capabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true };
+  const base = request("high");
+  const parsed = {
+    ...base,
+    context: {
+      systemPrompt: base.context.systemPrompt,
+      messages: Array.from({ length: 60 }, (_value, index) => ({
+        role: "user" as const,
+        content: `kayit ${index}: ` + "saha olcumu tekrarlandi ve sonuc dosyaya islendi. ".repeat(12),
+        timestamp: index + 1,
+      })),
+    },
+  };
+
+  const inline = compileChatGptWebPrompt(parsed, capabilities, "turn-token");
+  expect(chatGptPromptContextText(inline)).toBe(inline.text);
+
+  const staged = compileChatGptWebPrompt(parsed, capabilities, "turn-token", { multipartParts: 3 });
+  expect(staged.multipart).toBeDefined();
+  const measured = chatGptPromptContextText(staged);
+  expect(measured.length).toBeGreaterThan(staged.text.length * 5);
+  expect(measured).toContain("kayit 0:");
+  expect(measured).toContain("kayit 59:");
 });

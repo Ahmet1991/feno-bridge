@@ -1074,6 +1074,16 @@ const PROMPT_PREFIX_LADDER = [1_000, 4_000, 16_000, 32_000, 64_000] as const;
  * rung share at least that many leading characters, so how much of a turn repeats its predecessor
  * can be read from the log without carrying state between helper processes.
  */
+/**
+ * The text a turn actually transports. Multipart keeps the context in its staged parts and
+ * leaves only the commit contract in `text`, so measuring `text` alone reported 3,620
+ * characters for a turn that carried a whole conversation. Ordering follows the staging order,
+ * which is what makes a shared prefix between consecutive turns meaningful.
+ */
+export function chatGptPromptContextText(prompt: CompiledChatGptWebPrompt): string {
+  if (!prompt.multipart) return prompt.text;
+  return JSON.stringify(prompt.multipart.parts) + prompt.text;
+}
 export function chatGptPromptPrefixLadder(text: string): string {
   return PROMPT_PREFIX_LADDER
     .filter(size => size <= text.length)
@@ -4232,10 +4242,12 @@ export class ChatGptBrowserWorker {
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) throw new Error("The retained ChatGPT conversation has no continuation prompt");
     const prepared = await prepare();
+    const promptContext = chatGptPromptContextText(prepared);
     console.info(
-      `[chatgpt-web] browser turn ${turn.traceId} prompt chars=${prepared.text.length}`
+      `[chatgpt-web] browser turn ${turn.traceId} prompt chars=${promptContext.length}`
+      + ` message=${prepared.text.length} parts=${prepared.multipart ? prepared.multipart.parts.length : 1}`
       + ` reused=${reuseConversation} conversation=${turn.conversationKey?.slice(0, 12) ?? "none"}`
-      + ` ladder=${chatGptPromptPrefixLadder(prepared.text)}`,
+      + ` ladder=${chatGptPromptPrefixLadder(promptContext)}`,
     );
     const diagnostics = new ChatGptBrowserDiagnostics(
       turn.traceId,
