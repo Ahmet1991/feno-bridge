@@ -1047,7 +1047,10 @@ async function start() {
     });
   }
   await loadRenderer(mainWindow);
-  if (!launcherSmokeTest) void updateController.checkOnce();
+  // Feno fork: no launcher self-update check. This build is produced from this
+  // repository, so an upstream release must never be offered or installed over it.
+  // The controller stays in its idle state, which keeps the update UI hidden because
+  // App.tsx only renders it for available/downloading/installing.
   if (launcherSmokeTest) {
     const smokeRuntimeRoot = runtimeRootProvider();
     if (app.isPackaged && !smokeRuntimeRoot) {
