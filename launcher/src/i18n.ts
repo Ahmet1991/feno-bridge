@@ -246,7 +246,7 @@ const tr: Record<keyof typeof en, string> = {
   browserReady: "Tarayıcı hazır",
   showBrowser: "ChatGPT'yi göster",
   hideBrowser: "ChatGPT'yi gizle",
-  setupTitle: "Feno’yu kur",
+  setupTitle: "Feno'yu kur",
   setupSubtitle: "Üç kontrol, ChatGPT Web'i yerel Codex model seçicisinde kullanılabilir hale getirir.",
   coreSetup: "Temel kurulum",
   interactionMode: "ChatGPT etkileşimi",
