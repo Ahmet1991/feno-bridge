@@ -6,6 +6,7 @@ import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, CHATGPT_STOPPED_THINKING_GRACE_MS, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptPromptAttachmentIntegrityError, ChatGptStoppedThinkingTracker, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgpt-web/browser-worker";
 import { isHeavyChatGptStage } from "../src/adapters/chatgpt-web/browser-worker";
+import { chatGptPromptPrefixLadder } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
@@ -3705,4 +3706,29 @@ test("heavy stage matching covers the numbered stages and never the response wai
   ]) {
     expect(isHeavyChatGptStage(stage)).toBe(false);
   }
+});
+
+test("the prompt prefix ladder reports how much two turns actually share", () => {
+  // The point of the ladder is to measure repetition between consecutive turns of one conversation
+  // from the log alone, without carrying state across helper processes.
+  const shared = "A".repeat(20_000);
+  const first = shared + "first turn tail".repeat(2_000);
+  const second = shared + "second turn tail".repeat(2_000);
+
+  const rungs = (text: string) => Object.fromEntries(
+    chatGptPromptPrefixLadder(text).split(",").map(entry => entry.split(":") as [string, string]),
+  );
+  const a = rungs(first);
+  const b = rungs(second);
+
+  // Everything inside the shared prefix must match; the first rung beyond it must not.
+  expect(a["1000"]).toBe(b["1000"]!);
+  expect(a["4000"]).toBe(b["4000"]!);
+  expect(a["16000"]).toBe(b["16000"]!);
+  expect(a["32000"]).not.toBe(b["32000"]!);
+
+  // Identical prompts agree on every rung, and a short prompt only reports the rungs it can fill.
+  expect(chatGptPromptPrefixLadder(first)).toBe(chatGptPromptPrefixLadder(first));
+  expect(chatGptPromptPrefixLadder("short")).toBe("");
+  expect(chatGptPromptPrefixLadder("B".repeat(5_000)).split(",").length).toBe(2);
 });

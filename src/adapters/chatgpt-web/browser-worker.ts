@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
@@ -1059,11 +1059,34 @@ export class ChatGptBrowserObservationTimeoutError extends Error {
   }
 }
 
+/**
+ * Fraction of a probe's budget that makes it worth reporting. A probe that nearly ran out is the
+ * interesting case: exceeding the budget triggers a rebind that costs about ten seconds and marks
+ * turns that go on to fail four times as often, yet nothing recorded how close the probes that
+ * did succeed were running to the limit.
+ */
+const OBSERVATION_PROBE_REPORT_FRACTION = 0.4;
+
+const PROMPT_PREFIX_LADDER = [1_000, 4_000, 16_000, 32_000, 64_000] as const;
+
+/**
+ * Prefix-hash ladder for a compiled prompt. Two turns of one conversation that report the same
+ * rung share at least that many leading characters, so how much of a turn repeats its predecessor
+ * can be read from the log without carrying state between helper processes.
+ */
+export function chatGptPromptPrefixLadder(text: string): string {
+  return PROMPT_PREFIX_LADDER
+    .filter(size => size <= text.length)
+    .map(size => `${size}:${createHash("sha256").update(text.slice(0, size)).digest("hex").slice(0, 12)}`)
+    .join(",");
+}
+
 export async function withChatGptBrowserObservationTimeout<T>(
   operation: Promise<T>,
   timeoutMs = CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const startedAt = performance.now();
   try {
     return await Promise.race([
       operation,
@@ -1073,6 +1096,12 @@ export async function withChatGptBrowserObservationTimeout<T>(
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    if (elapsedMs >= timeoutMs * OBSERVATION_PROBE_REPORT_FRACTION) {
+      console.warn(
+        `[chatgpt-web] browser DOM observation took ${elapsedMs}ms of its ${timeoutMs}ms budget`,
+      );
+    }
   }
 }
 
@@ -4203,6 +4232,11 @@ export class ChatGptBrowserWorker {
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) throw new Error("The retained ChatGPT conversation has no continuation prompt");
     const prepared = await prepare();
+    console.info(
+      `[chatgpt-web] browser turn ${turn.traceId} prompt chars=${prepared.text.length}`
+      + ` reused=${reuseConversation} conversation=${turn.conversationKey?.slice(0, 12) ?? "none"}`
+      + ` ladder=${chatGptPromptPrefixLadder(prepared.text)}`,
+    );
     const diagnostics = new ChatGptBrowserDiagnostics(
       turn.traceId,
       this.config.browserDiagnosticsPath ?? join(getConfigDir(), "diagnostics", "browser-turns"),
