@@ -201,25 +201,15 @@ const NATIVE_COPY = Object.freeze({
     removeMessage: "Remove the ChatGPT Web models from Codex and restore the previous model route?",
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
   }),
-  "zh-CN": Object.freeze({
-    openLauncher: "打开 Codex Web GPT",
-    quit: "退出",
-    exportDiagnostics: "导出隐私安全诊断",
-    cancel: "取消",
-    remove: "移除",
-    removeTitle: "移除 Codex Web GPT",
-    removeMessage: "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？",
-    removeDetail: "启动器中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。",
-  }),
-  ja: Object.freeze({
-    openLauncher: "Codex Web GPT を開く",
-    quit: "終了",
-    exportDiagnostics: "プライバシー保護済みの診断情報をエクスポート",
-    cancel: "キャンセル",
-    remove: "削除",
-    removeTitle: "Codex Web GPT を削除",
-    removeMessage: "Codex から ChatGPT Web モデルを削除し、以前のモデルルートを復元しますか？",
-    removeDetail: "ランチャーの ChatGPT ログインプロファイルは保持されます。Codex を一度再起動する必要があります。",
+  tr: Object.freeze({
+    openLauncher: "Codex Web GPT'yi aç",
+    quit: "Çık",
+    exportDiagnostics: "Gizliliğe uygun tanılamayı dışa aktar",
+    cancel: "İptal",
+    remove: "Kaldır",
+    removeTitle: "Codex Web GPT'yi kaldır",
+    removeMessage: "ChatGPT Web modelleri Codex'ten kaldırılsın ve önceki model rotası geri yüklensin mi?",
+    removeDetail: "Uygulamadaki ChatGPT oturum açma profili korunacak. Codex'in bir kez yeniden başlatılması gerekir.",
   }),
 });
 
@@ -395,8 +385,8 @@ async function loadRenderer(window) {
 }
 
 function validateLanguage(value) {
-  if (value !== "en" && value !== "zh-CN" && value !== "ja") {
-    throw new Error("Language must be en, zh-CN, or ja");
+  if (value !== "en" && value !== "tr") {
+    throw new Error("Language must be en or tr");
   }
   return value;
 }
