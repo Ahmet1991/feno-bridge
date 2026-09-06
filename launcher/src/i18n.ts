@@ -1,7 +1,7 @@
 import type { Language } from "./types";
 
 const en = {
-  product: "Codex Web GPT",
+  product: "Feno",
   devBadge: "DEV",
   devSetupTitle: "Set up the isolated DEV profile",
   devSetupSubtitle: "This browser, account, configuration, and runtime data stay separate from the normal launcher and Codex.",
@@ -93,9 +93,9 @@ const en = {
   zeroRiskModelSettings: "Zero Risk model profiles",
   zeroRiskModelSettingsBody: "Choose which model rows are installed into Codex.",
   zeroRiskDefaultProfile: "Default",
-  zeroRiskDefaultProfileBody: "Install only ChatGPT Web — Zero Risk.",
+  zeroRiskDefaultProfileBody: "Install only Feno — Zero Risk.",
   zeroRiskProProfile: "Pro",
-  zeroRiskProProfileBody: "Also install ChatGPT Web — Zero Risk Pro.",
+  zeroRiskProProfileBody: "Also install Feno — Zero Risk Pro.",
   zeroRiskProProfileInfo: "Provides roughly 250,000 usable tokens before compaction. Select ChatGPT Pro manually for every turn. A ChatGPT Pro account is required; without it the turn will likely fail, and the larger limit may not work with every effort. Zero Risk cannot verify your subscription or selection.",
   install: "Install models",
   reinstall: "Reinstall",
@@ -186,7 +186,7 @@ const en = {
 } as const;
 
 const zh: Record<keyof typeof en, string> = {
-  product: "Codex Web GPT",
+  product: "Feno",
   devBadge: "DEV",
   devSetupTitle: "设置隔离的 DEV 配置",
   devSetupSubtitle: "此浏览器、账户、配置和运行数据与普通启动器及 Codex 完全分离。",
@@ -278,9 +278,9 @@ const zh: Record<keyof typeof en, string> = {
   zeroRiskModelSettings: "Zero Risk 模型配置",
   zeroRiskModelSettingsBody: "选择要安装到 Codex 的模型条目。",
   zeroRiskDefaultProfile: "默认",
-  zeroRiskDefaultProfileBody: "仅安装 ChatGPT Web — Zero Risk。",
+  zeroRiskDefaultProfileBody: "仅安装 Feno — Zero Risk。",
   zeroRiskProProfile: "Pro",
-  zeroRiskProProfileBody: "同时安装 ChatGPT Web — Zero Risk Pro。",
+  zeroRiskProProfileBody: "同时安装 Feno — Zero Risk Pro。",
   zeroRiskProProfileInfo: "压缩前可使用约 250,000 个 token。每个回合都必须手动选择 ChatGPT Pro，并且需要 ChatGPT Pro 账户；否则回合很可能失败，较大的限制也可能不适用于所有 effort。Zero Risk 无法验证你的订阅或选择。",
   install: "安装模型",
   reinstall: "重新安装",
@@ -371,7 +371,7 @@ const zh: Record<keyof typeof en, string> = {
 };
 
 const ja: Record<keyof typeof en, string> = {
-  product: "Codex Web GPT",
+  product: "Feno",
   devBadge: "DEV",
   devSetupTitle: "隔離された DEV プロファイルをセットアップ",
   devSetupSubtitle: "このブラウザー、アカウント、設定、ランタイムデータは、通常のランチャーおよび Codex から完全に分離されます。",
@@ -463,9 +463,9 @@ const ja: Record<keyof typeof en, string> = {
   zeroRiskModelSettings: "Zero Risk モデルプロファイル",
   zeroRiskModelSettingsBody: "Codex にインストールするモデル行を選択します。",
   zeroRiskDefaultProfile: "デフォルト",
-  zeroRiskDefaultProfileBody: "ChatGPT Web — Zero Risk のみをインストールします。",
+  zeroRiskDefaultProfileBody: "Feno — Zero Risk のみをインストールします。",
   zeroRiskProProfile: "Pro",
-  zeroRiskProProfileBody: "ChatGPT Web — Zero Risk Pro もインストールします。",
+  zeroRiskProProfileBody: "Feno — Zero Risk Pro もインストールします。",
   zeroRiskProProfileInfo: "コンパクション前に約 250,000 token を使用できます。毎回 ChatGPT Pro を手動で選択してください。ChatGPT Pro アカウントが必要です。アカウントがない場合はターンが失敗する可能性が高く、拡張された上限はすべての effort で動作するとは限りません。Zero Risk は契約状況や選択内容を確認できません。",
   install: "モデルをインストール",
   reinstall: "再インストール",
