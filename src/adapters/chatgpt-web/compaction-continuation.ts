@@ -2,15 +2,18 @@ import { createHash } from "node:crypto";
 import { decodeCompactionSummary, isReadableCompactionSummaryText, SUMMARY_PREFIX } from "../../responses/compaction";
 import type { CodexParsedRequest } from "../../types";
 import type { ChatGptTurnIdentity, ChatGptTurnUserRevision } from "./environment";
+import type { CompactionPendingToolRequest } from "./turn-broker";
 
 interface CompletedCheckpoint {
   summaryHash: string;
   sourceHashes: ReadonlySet<string>;
+  pendingWork: readonly CompactionPendingToolRequest[];
 }
 
 // Evidence of a checkpoint actually returned by this daemon, not authority inferred from text
 // that happens to look like a summary. A new process must not invent a missing handoff.
 const checkpoints = new Map<string, CompletedCheckpoint>();
+const stagedPendingWork = new Map<string, readonly CompactionPendingToolRequest[]>();
 const MAX_CHECKPOINTS = 256;
 
 function scope(parsed: CodexParsedRequest, identity: ChatGptTurnIdentity): string | undefined {
@@ -34,9 +37,36 @@ export function rememberCompactionContinuation(
 ): void {
   const key = scope(parsed, identity);
   if (!key || !parsed._compactionRequest || !summary) return;
+  const pendingWork = stagedPendingWork.get(key) ?? [];
+  stagedPendingWork.delete(key);
   checkpoints.delete(key);
-  checkpoints.set(key, { summaryHash: digest(summary), sourceHashes: new Set(sources.map(sourceDigest)) });
+  checkpoints.set(key, {
+    summaryHash: digest(summary),
+    sourceHashes: new Set(sources.map(sourceDigest)),
+    pendingWork: structuredClone(pendingWork),
+  });
   while (checkpoints.size > MAX_CHECKPOINTS) checkpoints.delete(checkpoints.keys().next().value!);
+}
+
+export function stageCompactionContinuationPendingWork(
+  parsed: CodexParsedRequest,
+  identity: ChatGptTurnIdentity,
+  pendingWork: readonly CompactionPendingToolRequest[],
+): void {
+  const key = scope(parsed, identity);
+  if (!key || !parsed._compactionRequest) return;
+  stagedPendingWork.delete(key);
+  if (pendingWork.length > 0) stagedPendingWork.set(key, structuredClone(pendingWork));
+  while (stagedPendingWork.size > MAX_CHECKPOINTS) stagedPendingWork.delete(stagedPendingWork.keys().next().value!);
+}
+
+export function compactionContinuationPendingWork(
+  parsed: CodexParsedRequest,
+  identity: ChatGptTurnIdentity,
+): readonly CompactionPendingToolRequest[] {
+  const key = scope(parsed, identity);
+  const checkpoint = key ? checkpoints.get(key) : undefined;
+  return checkpoint ? structuredClone(checkpoint.pendingWork) : [];
 }
 
 export function isAcceptedCompactionContinuation(

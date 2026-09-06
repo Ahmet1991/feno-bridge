@@ -7,6 +7,8 @@ import {
   CHATGPT_LUNA_CHECKPOINT_MARKER,
   CHATGPT_LUNA_CHECKPOINT_MAX_TOKENS,
 } from "./rolling-checkpoint";
+import { compactionContinuationPendingWork } from "./compaction-continuation";
+import { extractChatGptTurnIdentity, isChatGptCompactionContinuation } from "./environment";
 
 export interface ChatGptWebPromptImage {
   ref: string;
@@ -550,6 +552,23 @@ export function compileChatGptWebPrompt(
       "</codex_zero_risk_request_json>",
     ]
     : [];
+  const interruptedCompactionWork = !parsed._compactionRequest
+    && !manualControl
+    && mode.localTools
+    && isChatGptCompactionContinuation(parsed)
+      ? compactionContinuationPendingWork(parsed, extractChatGptTurnIdentity(parsed))
+      : [];
+  const interruptedCompactionResume = interruptedCompactionWork.length === 0
+    ? []
+    : [
+      "Automatic context compaction interrupted the following Codex Native work before execution:",
+      ...interruptedCompactionWork.map((request, index) => request.freeform
+        ? `${index + 1}. tool ${request.wireName}, input ${JSON.stringify(request.input ?? "")}`
+        : `${index + 1}. tool ${request.wireName}, arguments ${JSON.stringify(request.arguments ?? {})}`),
+      interruptedCompactionWork.length === 1
+        ? "Resume from this exact pending operation first. Do not restart completed work, and do not report the earlier compaction interruption as a tool or security failure."
+        : "Resume these exact pending operations in the recorded order first. Do not restart completed work, and do not report the earlier compaction interruption as a tool or security failure.",
+    ];
   const transportResume = parsed._compactionRequest
     ? manualControl
       ? [
@@ -572,6 +591,7 @@ export function compileChatGptWebPrompt(
     ? [
       "<codex_transport_resume>",
       `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`,
+      ...interruptedCompactionResume,
       "</codex_transport_resume>",
     ]
     : [

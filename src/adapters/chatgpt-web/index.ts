@@ -31,7 +31,14 @@ import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebC
 import { chatGptReadOnlyContextWarning } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
-import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
+import {
+  TurnBroker,
+  type BrokerToolRequest,
+  type BrokerToolResult,
+  type CompactionPendingToolRequest,
+  type TurnBrokerOwner,
+} from "./turn-broker";
+import { stageCompactionContinuationPendingWork } from "./compaction-continuation";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
@@ -975,6 +982,7 @@ export function createChatGptWebAdapter(
                   };
                   let source: ChatGptTurnSession | undefined;
                   let preserveFinalResponse = false;
+                  let interruptedWork: CompactionPendingToolRequest[] = [];
                   try {
                     // The previous compaction may already have detached the retained head while
                     // its browser/helper is still unwinding. Do not inspect that old epoch or
@@ -1024,6 +1032,7 @@ export function createChatGptWebAdapter(
                         operationSignal,
                       );
                       preserveFinalResponse = !settlement.compactionInstructionDelivered;
+                      interruptedWork = settlement.interruptedWork ?? [];
                       rawSummary = await requestRetainedCompactionHandoff(
                         worker,
                         parsed,
@@ -1063,6 +1072,9 @@ export function createChatGptWebAdapter(
                         : chatGptTurnSessions.retireConversationAndWait(retainedKey),
                       operationSignal,
                     );
+                    if (!manualRequest) {
+                      stageCompactionContinuationPendingWork(parsed, compactionNativeIdentity, interruptedWork);
+                    }
                     return summary;
                   } catch (error) {
                     const retainedKey = source?.conversationKey();

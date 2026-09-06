@@ -21,6 +21,8 @@ export interface BrokerToolRequest {
   input?: string;
 }
 
+export type CompactionPendingToolRequest = Omit<BrokerToolRequest, "callId">;
+
 export interface BrokerToolResult {
   content: unknown[];
   structuredContent?: unknown;
@@ -73,6 +75,7 @@ interface TurnChannel {
   compactionRequested: boolean;
   compactionResult?: BrokerToolResult;
   compactionDeliveryCount: number;
+  compactionInterruptedRequests: CompactionPendingToolRequest[];
   safe?: SafeTurnControl;
   /** Every MCP request owns a lease from token claim until its handler has settled. */
   activities: Set<string>;
@@ -302,6 +305,7 @@ export class TurnBroker implements TurnBrokerOwner {
       waiters: new Set(),
       compactionRequested: false,
       compactionDeliveryCount: 0,
+      compactionInterruptedRequests: [],
       activities: new Set(),
       completedActivities: new Set(),
       activityRevision: 0,
@@ -486,6 +490,8 @@ export class TurnBroker implements TurnBrokerOwner {
     for (const callId of queued) {
       const invocation = channel.invocations.get(callId);
       if (!invocation) continue;
+      const { callId: _callId, ...pendingRequest } = invocation.request;
+      channel.compactionInterruptedRequests.push(structuredClone(pendingRequest));
       channel.invocations.delete(callId);
       channel.compactionDeliveryCount += 1;
       invocation.resolve(structuredClone(queuedResult));
@@ -502,6 +508,12 @@ export class TurnBroker implements TurnBrokerOwner {
     const channel = this.channels.get(token);
     if (!channel) throw new Error("Cannot read compaction delivery after the turn capability retired");
     return channel.compactionDeliveryCount;
+  }
+
+  interruptedCompactionRequests(token: string): CompactionPendingToolRequest[] {
+    const channel = this.channels.get(token);
+    if (!channel) throw new Error("Cannot read interrupted compaction work after the turn capability retired");
+    return structuredClone(channel.compactionInterruptedRequests);
   }
 
   startSafeTurn(requestId: string): { started: true; duplicate: boolean } {
@@ -1105,6 +1117,16 @@ export class TurnBroker implements TurnBrokerOwner {
     if (binding.channel.compactionRequested) {
       const result = binding.channel.compactionResult;
       if (!result) throw new Error("Codex context compaction control result is unavailable");
+      if (binding.channel.compactionInterruptedRequests.length === 0) {
+        const wireName = request.wireName?.trim();
+        if (wireName) {
+          binding.channel.compactionInterruptedRequests.push({
+            wireName,
+            freeform: request.freeform === true,
+            ...(request.freeform === true ? { input: request.input ?? "" } : { arguments: request.arguments ?? {} }),
+          });
+        }
+      }
       binding.channel.compactionDeliveryCount += 1;
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} intercepted a post-compaction MCP call`,

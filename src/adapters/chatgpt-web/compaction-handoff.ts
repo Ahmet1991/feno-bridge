@@ -13,7 +13,12 @@ import {
   structuredCompactionHandoffInstruction,
   zeroRiskActiveCompactionToolResultInstruction,
 } from "./native-compaction-control";
-import type { BrokerToolResult, TurnBroker, TurnBrokerOwner } from "./turn-broker";
+import type {
+  BrokerToolResult,
+  CompactionPendingToolRequest,
+  TurnBroker,
+  TurnBrokerOwner,
+} from "./turn-broker";
 import type { ChatGptTurnSession } from "./turn-execution";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
@@ -163,7 +168,11 @@ export async function settleActiveCompactionSource(
   source: ChatGptTurnSession,
   broker: TurnBroker,
   signal?: AbortSignal,
-): Promise<{ answer: string; compactionInstructionDelivered: boolean }> {
+): Promise<{
+  answer: string;
+  compactionInstructionDelivered: boolean;
+  interruptedWork?: CompactionPendingToolRequest[];
+}> {
   return source.runExclusive(async () => {
     if (signal?.aborted) {
       source.cancel(abortReason(signal));
@@ -196,6 +205,7 @@ export async function settleActiveCompactionSource(
       const browserOutcome = await withCompactionAbort(source.browserOutcome, signal);
       if (browserOutcome.type === "error") throw browserOutcome.error;
       const compactionInstructionDelivered = broker.compactionDeliveryCount(token) > 0;
+      const interruptedWork = broker.interruptedCompactionRequests?.(token) ?? [];
       // The one structured checkpoint message reuses this exact retained tab. It must not race the
       // helper's /turn/end handshake for the response that consumed the canonical tool results.
       // `requestCompaction` leaves those results untouched and only intercepts a later tool call, so
@@ -204,6 +214,7 @@ export async function settleActiveCompactionSource(
       return {
         answer: browserOutcome.answer,
         compactionInstructionDelivered,
+        ...(interruptedWork.length > 0 ? { interruptedWork } : {}),
       };
     } catch (error) {
       if (signal?.aborted) source.cancel(abortReason(signal));

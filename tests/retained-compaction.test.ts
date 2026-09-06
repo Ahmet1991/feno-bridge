@@ -262,6 +262,11 @@ test("active compaction delivers the current result and converts every later MCP
       content: [{ type: "text", text: "compact now" }],
       isError: true,
     });
+    expect(broker.interruptedCompactionRequests(token)).toEqual([{
+      wireName: "exec_command",
+      freeform: false,
+      arguments: { cmd: "git status --short" },
+    }]);
   } finally {
     await broker.close();
     rmSync(root, { recursive: true, force: true });
@@ -841,6 +846,9 @@ test("active compaction interrupts a queued MCP call that Codex never started wa
       expect(result.isError).toBeTrue();
       expect(JSON.stringify(result.content)).toContain(CODEX_ACTIVE_COMPACTION_REQUEST_MARKER);
       expect(JSON.stringify(result.content)).toContain("The tool was not executed");
+      expect(JSON.stringify(result.content)).toContain("not a security, safety, permission, or tool failure");
+      expect(JSON.stringify(result.content)).toContain("Do not report it as a failed tool call");
+      expect(JSON.stringify(result.content)).toContain("recorded the pending tool request");
       expect(JSON.stringify(result.content)).not.toContain("codex.control.compaction_handoff");
       return "Stopped for the retained compaction handoff";
     });
@@ -861,6 +869,11 @@ test("active compaction interrupts a queued MCP call that Codex never started wa
     await expect(settleActiveCompactionSource(request(true), source, broker)).resolves.toEqual({
       answer: "Stopped for the retained compaction handoff",
       compactionInstructionDelivered: true,
+      interruptedWork: [{
+        wireName: "exec_command",
+        freeform: false,
+        arguments: { cmd: "must-not-run" },
+      }],
     });
   } finally {
     await broker.close();

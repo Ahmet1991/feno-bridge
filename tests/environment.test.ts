@@ -4,7 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
-import { rememberCompactionContinuation } from "../src/adapters/chatgpt-web/compaction-continuation";
+import {
+  rememberCompactionContinuation,
+  stageCompactionContinuationPendingWork,
+} from "../src/adapters/chatgpt-web/compaction-continuation";
+import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { encodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
 import type { CodexParsedRequest, CodexTool } from "../src/types";
@@ -817,6 +821,58 @@ describe("trusted Codex task environment continuity", () => {
     ].join("\n") + "\n");
     // A valid cached environment and matching wire claim cannot overrule a different native turn.
     expect(() => store.resolve(request)).toThrow("current turn");
+  });
+
+  test("accepted post-compaction prompt resumes exact pending native work and omits the instruction when none was interrupted", () => {
+    const { request } = resumedRootFixture();
+    const body = request._rawBody as { input: Array<Record<string, any>> };
+    const oldTurnId = "01a06c66-0000-75c6-a0df-318f890ef6de";
+    body.input[0]!.internal_chat_message_metadata_passthrough = { turn_id: oldTurnId };
+    const source = { turnId: oldTurnId, content: body.input[0]!.content };
+    const compactionRequest = { ...request, _compactionRequest: true };
+    const identity = extractChatGptTurnIdentity(request);
+    const summary = "Checkpoint with one interrupted native call";
+    stageCompactionContinuationPendingWork(compactionRequest, identity, [{
+      wireName: "exec_command",
+      freeform: false,
+      arguments: { cmd: "git status --short" },
+    }]);
+    rememberCompactionContinuation(compactionRequest, identity, [source], summary);
+    body.input.push(
+      {
+        type: "message",
+        role: "user",
+        id: "msg_current_environment",
+        content: [{ type: "input_text", text: environmentXml }],
+        internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+      },
+      { type: "compaction", encrypted_content: encodeCompactionSummary(summary) },
+    );
+
+    const token = "turn_12345678901234567890123456789012";
+    const resumed = compileChatGptWebPrompt(
+      request,
+      { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+      token,
+    );
+    expect(resumed.text).toContain("Automatic context compaction interrupted the following Codex Native work before execution");
+    expect(resumed.text).toContain('tool exec_command, arguments {"cmd":"git status --short"}');
+    expect(resumed.text).toContain("Resume from this exact pending operation first");
+    expect(resumed.text).toContain("do not report the earlier compaction interruption as a tool or security failure");
+
+    const noPendingSummary = "Checkpoint with no interrupted native call";
+    rememberCompactionContinuation(compactionRequest, identity, [source], noPendingSummary);
+    body.input[body.input.length - 1] = {
+      type: "compaction",
+      encrypted_content: encodeCompactionSummary(noPendingSummary),
+    };
+    const noPending = compileChatGptWebPrompt(
+      request,
+      { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+      token,
+    );
+    expect(noPending.text).not.toContain("Automatic context compaction interrupted the following Codex Native work before execution");
+    expect(noPending.text).not.toContain("Resume from this exact pending operation first");
   });
 
   test("old untagged transcript context cannot block or replace current rollout authority after restart", () => {

@@ -35,6 +35,8 @@ export function activeCompactionToolResultInstruction(): string {
   return [
     `<${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
     "Codex reached its context limit before this newly requested tool could be sent for execution. The tool was not executed.",
+    "This interruption is automatic context compaction, not a security, safety, permission, or tool failure. Do not report it as a failed tool call.",
+    "The bridge recorded the pending tool request and will instruct the post-compaction continuation to resume from that exact pending work.",
     "Stop ordinary task work now, call no more tools, and end this Web response normally.",
     "Do not create or submit a checkpoint in this response. After it settles, the retained conversation will receive exactly one separate structured compaction handoff request.",
     `</${CODEX_ACTIVE_COMPACTION_REQUEST_MARKER}>`,
