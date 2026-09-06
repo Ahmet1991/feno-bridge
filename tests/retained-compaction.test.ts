@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptRetainedConversationUnavailableError } from "../src/adapters/chatgpt-web/adapter-error";
+import { compileChatGptWebPromptWithinPageCapacity } from "../src/adapters/chatgpt-web/capacity";
 import {
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
   cancelAllStructuredCompactions,
@@ -145,6 +146,27 @@ test("one browser conversation spans native turns and rotates only at compaction
     content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\ncheckpoint` }],
   });
   expect(chatGptConversationKey(v1Compact, "provider")).not.toBe(chatGptConversationKey(before, "provider"));
+});
+
+test("compaction uses the browser page capacity guard without trimming canonical history", () => {
+  const compact = request(true);
+  compact.context.messages = Array.from({ length: 12 }, (_, index) => ({
+    role: "user" as const,
+    content: `compaction-history-${index}-${"h".repeat(850)}`,
+    timestamp: index + 1,
+  }));
+  const compiled = compileChatGptWebPromptWithinPageCapacity(
+    compact,
+    { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    undefined,
+    { maxMessageChars: 9_000 },
+  );
+
+  expect(compiled.multipart).toBeDefined();
+  expect(compiled.trimmedCompactionMessages).toBeUndefined();
+  const staged = compiled.multipart!.parts.join("\n");
+  expect(staged).toContain("compaction-history-0-");
+  expect(staged).toContain("compaction-history-11-");
 });
 
 test("compaction capability is one-shot and structurally bound to its handoff id", async () => {
@@ -1276,12 +1298,16 @@ test("fresh multipart compaction gives each acknowledged phase its own handoff b
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     expect(turn.onMultipartStageAcknowledged).toBeDefined();
     expect(turn.onSubmitted).toBeDefined();
+    expect(turn.onHeartbeat).toBeDefined();
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     await turn.onMultipartStageAcknowledged!(1);
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     turn.onSubmitted!();
+    mock.timers.tick(25);
+    expect(turn.abortSignal?.aborted).toBeFalse();
+    turn.onHeartbeat!();
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     return "Fallback checkpoint after separately bounded phases";
@@ -1296,6 +1322,9 @@ test("fresh multipart compaction gives each acknowledged phase its own handoff b
     );
     expect(events.some(event => event.type === "text_delta"
       && event.text.includes("Fallback checkpoint after separately bounded phases"))).toBeTrue();
+    expect(events.some(event => event.type === "text_delta"
+      && event.phase === "commentary"
+      && event.text.includes("Context compaction is still running"))).toBeTrue();
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
   } finally {
     mock.timers.reset();

@@ -400,7 +400,9 @@ export function createChatGptWebAdapter(
     environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined,
     traceId: string,
     turnCapabilities: ChatGptWebCapabilities,
-    hooks: { onCompactionProgress?: () => void } = {},
+    hooks: {
+      onCompactionProgress?: (kind: "submitted" | "multipart" | "heartbeat") => void;
+    } = {},
   ): ChatGptTurnRuntime => {
     const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
     if (manualRequest !== manualInteraction) {
@@ -439,16 +441,23 @@ export function createChatGptWebAdapter(
       input: CodexParsedRequest,
       turnToken?: string,
       manualControl = false,
-    ) => compileChatGptWebPromptWithinPageCapacity(
-      input,
-      turnCapabilities,
-      turnToken,
-      {
-        captureLunaCheckpoint,
-        maxMessageChars,
-        ...(manualControl ? { manualControl: true as const } : {}),
-      },
-    );
+    ) => {
+      if (experimentalBiggerContext && input.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
+        throw new Error(
+          "Bigger Context is unavailable for Luna because its accumulated browser transcript still shares one 28,000-token transport budget",
+        );
+      }
+      return compileChatGptWebPromptWithinPageCapacity(
+        input,
+        turnCapabilities,
+        turnToken,
+        {
+          captureLunaCheckpoint,
+          maxMessageChars,
+          ...(manualControl ? { manualControl: true as const } : {}),
+        },
+      );
+    };
     if (captureLunaCheckpoint) {
       console.info(
         `[chatgpt-web] Luna rolling checkpoint applied=${checkpointInput.applied}${checkpointInput.reason ? ` reason=${checkpointInput.reason}` : ""}`,
@@ -507,11 +516,22 @@ export function createChatGptWebAdapter(
       } : {}),
       onSubmitted: () => {
         if (!parsed._compactionRequest) submission.phase = "accepted";
-        hooks.onCompactionProgress?.();
+        hooks.onCompactionProgress?.("submitted");
       },
     };
     const multipartProgressLifecycle = hooks.onCompactionProgress
-      ? { onMultipartStageAcknowledged: hooks.onCompactionProgress }
+      ? { onMultipartStageAcknowledged: () => hooks.onCompactionProgress!("multipart") }
+      : {};
+    const compactionHeartbeatLifecycle = parsed._compactionRequest
+      ? {
+        onHeartbeat: () => {
+          if (hooks.onCompactionProgress) hooks.onCompactionProgress("heartbeat");
+          else trace.push({
+              kind: "commentary",
+              text: "Context compaction is still running in ChatGPT…",
+            });
+        },
+      }
       : {};
     if (manualRequest) {
       if (!environment) throw new Error("ChatGPT Zero Risk requires a trusted Codex environment");
@@ -682,6 +702,7 @@ export function createChatGptWebAdapter(
         ...(parsed._compactionRequest ? { compaction: true } : {}),
         ...submissionLifecycle,
         ...multipartProgressLifecycle,
+        ...compactionHeartbeatLifecycle,
         onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
         onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
         onTextDelta: delta => text.push(delta),
@@ -741,6 +762,7 @@ export function createChatGptWebAdapter(
       ...(parsed._compactionRequest ? { compaction: true } : {}),
       ...submissionLifecycle,
       ...multipartProgressLifecycle,
+      ...compactionHeartbeatLifecycle,
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
@@ -920,12 +942,24 @@ export function createChatGptWebAdapter(
                     // and the final accepted compact prompt re-arms the five-minute liveness budget;
                     // transport time cannot consume the model-generation window.
                     armHandoffDeadline();
+                    const reportCompactionProgress = (
+                      kind: "submitted" | "multipart" | "heartbeat",
+                    ): void => {
+                      armHandoffDeadline();
+                      if (kind !== "heartbeat") return;
+                      emit({ type: "heartbeat" });
+                      emit({
+                        type: "text_delta",
+                        text: "Context compaction is still running in ChatGPT…",
+                        phase: "commentary",
+                      });
+                    };
                     const fallbackRuntime = startRuntime(
                       parsed,
                       manualRequest ? environment : undefined,
                       `${handoffTraceId}_fallback`,
                       turnCapabilities,
-                      { onCompactionProgress: armHandoffDeadline },
+                      { onCompactionProgress: reportCompactionProgress },
                     );
                     retainOwnershipUntil(fallbackRuntime.physicalSettlement);
                     try {
