@@ -303,6 +303,8 @@ export interface CodexProviderConfig {
     autoApproveToolCalls?: boolean;
     /** Empirical per-message ChatGPT page capacity, independent of the model context window. */
     maxMessageChars?: number;
+    /** Above this many characters, carry the task context as an attached file. Unset disables it. */
+    contextAttachmentChars?: number;
     /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
     experimentalBiggerContext?: boolean;
   };

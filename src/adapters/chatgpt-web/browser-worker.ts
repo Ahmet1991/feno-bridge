@@ -1975,7 +1975,14 @@ export function chatGptImageFilePayloads(images: ChatGptWebPromptImage[]): Array
 export function chatGptPromptFilePayloads(
   prompt: CompiledChatGptWebPrompt,
 ): Array<{ name: string; mimeType: string; buffer: Buffer }> {
-  return chatGptImageFilePayloads(prompt.images);
+  const images = chatGptImageFilePayloads(prompt.images);
+  if (!prompt.contextFile) return images;
+  // Last, so the image ordering the prompt contract describes is untouched by this addition.
+  return [...images, {
+    name: prompt.contextFile.name,
+    mimeType: "application/json",
+    buffer: Buffer.from(prompt.contextFile.json, "utf8"),
+  }];
 }
 
 /**

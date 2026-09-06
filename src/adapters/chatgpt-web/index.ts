@@ -367,6 +367,11 @@ export function createChatGptWebAdapter(
   if (!Number.isSafeInteger(maxMessageChars) || maxMessageChars <= 0) {
     throw new Error("ChatGPT browser maxMessageChars must be a positive safe integer");
   }
+  const contextAttachmentChars = provider.chatgptWeb?.contextAttachmentChars;
+  if (contextAttachmentChars !== undefined
+    && (!Number.isSafeInteger(contextAttachmentChars) || contextAttachmentChars <= 0)) {
+    throw new Error("ChatGPT browser contextAttachmentChars must be a positive safe integer");
+  }
   const configuredCapabilities: ChatGptWebCapabilities = {
     localToolsEnabled: provider.chatgptWeb?.localToolsEnabled === true,
     solAvailable: provider.chatgptWeb?.solAvailable !== false,
@@ -461,6 +466,7 @@ export function createChatGptWebAdapter(
         {
           captureLunaCheckpoint,
           maxMessageChars,
+          ...(contextAttachmentChars === undefined ? {} : { contextAttachmentChars }),
           ...(manualControl ? { manualControl: true as const } : {}),
         },
       );

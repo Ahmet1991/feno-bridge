@@ -17,6 +17,11 @@ export { DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS } from "./input-tokens";
 export interface ChatGptWebCapacityCompileOptions
   extends Omit<CompileChatGptWebPromptOptions, "multipartParts" | "experimentalMultipartParts" | "preserveCompactionHistory"> {
   maxMessageChars?: number;
+  /**
+   * Above this many characters, move the task context into an attached file rather than
+   * staging it across several ChatGPT messages. Undefined leaves the transport unchanged.
+   */
+  contextAttachmentChars?: number;
 }
 
 function capacityError(
@@ -53,7 +58,7 @@ export function compileChatGptWebPromptWithinPageCapacity(
   if (!Number.isSafeInteger(maxMessageChars) || maxMessageChars <= 0) {
     throw new Error("ChatGPT browser maxMessageChars must be a positive safe integer");
   }
-  const { maxMessageChars: _ignored, ...compileOptions } = options;
+  const { maxMessageChars: _ignored, contextAttachmentChars, ...compileOptions } = options;
   const baseOptions = {
     ...compileOptions,
     preserveCompactionHistory: true,
@@ -67,6 +72,16 @@ export function compileChatGptWebPromptWithinPageCapacity(
   }
   if (parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw capacityError(inlineChars, maxMessageChars, "luna");
+  }
+
+  // Attachment is tried before staging: it removes the composer work entirely rather than
+  // splitting it, and it leaves the multipart path in place as the fallback.
+  if (contextAttachmentChars !== undefined && inlineChars > contextAttachmentChars) {
+    const attached = compileChatGptWebPrompt(parsed, capabilities, turnToken, {
+      ...baseOptions,
+      contextAttachment: true,
+    });
+    if (compiledChatGptWebMaxMessageChars(attached) <= maxMessageChars) return attached;
   }
 
   let lastChars = inlineChars;
