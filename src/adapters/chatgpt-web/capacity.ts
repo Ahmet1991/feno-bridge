@@ -121,6 +121,83 @@ function repartitionForPageCapacity(
   return compiledChatGptWebMaxMessageChars(candidate) <= maxMessageChars ? candidate : undefined;
 }
 
+function multipartDiagnosticCanFit(
+  source: CompiledChatGptWebPrompt,
+  totalParts: number,
+  maxMessageChars: number,
+): boolean {
+  if (repartitionForPageCapacity(source, totalParts, maxMessageChars, false)) return true;
+  return repartitionForPageCapacity(source, totalParts, maxMessageChars, true) !== undefined;
+}
+
+function multipartEmptyTemplateCanFit(
+  source: CompiledChatGptWebPrompt,
+  totalParts: number,
+  maxMessageChars: number,
+): boolean {
+  return compiledChatGptWebMaxMessageChars(multipartTemplate(source, totalParts)) <= maxMessageChars;
+}
+
+function multipartDiagnosticUpperBound(
+  source: CompiledChatGptWebPrompt,
+  sourceChars: number,
+  maxMessageChars: number,
+): number {
+  // For every diagnostic candidate (13+ parts), each SHA-256 manifest entry needs at least
+  // 69 characters ("1/13:" + 64 hex chars) plus its separating space. Once 70*N - 1 alone
+  // exceeds the browser-message limit, even an empty final payload cannot fit.
+  const manifestBound = Math.floor((maxMessageChars + 1) / 70);
+  if (manifestBound < CHATGPT_WEB_MULTIPART_MAX_PARTS + 1) return manifestBound;
+  const candidateBound = Math.min(
+    Math.max(CHATGPT_WEB_MULTIPART_MAX_PARTS + 1, sourceChars + 2),
+    manifestBound,
+  );
+  let low = CHATGPT_WEB_MULTIPART_MAX_PARTS + 1;
+  let high = candidateBound;
+  let found: number = CHATGPT_WEB_MULTIPART_MAX_PARTS;
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    if (multipartEmptyTemplateCanFit(source, candidate, maxMessageChars)) {
+      found = candidate;
+      low = candidate + 1;
+    } else {
+      high = candidate - 1;
+    }
+  }
+  return found;
+}
+
+function findRequiredMultipartParts(
+  source: CompiledChatGptWebPrompt,
+  maxMessageChars: number,
+  upperBound: number,
+): number | undefined {
+  let bandStart = CHATGPT_WEB_MULTIPART_MAX_PARTS + 1;
+  while (bandStart <= upperBound) {
+    // Sufficiency is monotone while total_parts keeps the same decimal width: existing stage
+    // envelopes keep the same size, the old final part becomes a roomier normal stage, and the new
+    // final part may remain empty. Decimal-width boundaries are searched separately because 99 ->
+    // 100 grows both the payload JSON and transport wrappers and can reduce per-part capacity.
+    const nextDecimalWidth = 10 ** String(bandStart).length;
+    const bandEnd = Math.min(upperBound, nextDecimalWidth - 1);
+    let low = bandStart;
+    let high = bandEnd;
+    let found: number | undefined;
+    while (low <= high) {
+      const candidate = Math.floor((low + high) / 2);
+      if (multipartDiagnosticCanFit(source, candidate, maxMessageChars)) {
+        found = candidate;
+        high = candidate - 1;
+      } else {
+        low = candidate + 1;
+      }
+    }
+    if (found !== undefined) return found;
+    bandStart = bandEnd + 1;
+  }
+  return undefined;
+}
+
 export function compileChatGptWebPromptWithinPageCapacity(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
@@ -175,17 +252,9 @@ export function compileChatGptWebPromptWithinPageCapacity(
   }
 
   const sourceChars = sourceMultipart.multipart.parts.reduce((total, part) => total + part.length, 0);
-  const diagnosticUpperBound = Math.min(Math.max(CHATGPT_WEB_MULTIPART_MAX_PARTS + 1, sourceChars + 2), 4_096);
-  for (
-    let requiredParts = CHATGPT_WEB_MULTIPART_MAX_PARTS + 1;
-    requiredParts <= diagnosticUpperBound;
-    requiredParts += 1
-  ) {
-    const wholeRecords = repartitionForPageCapacity(sourceMultipart, requiredParts, maxMessageChars, false);
-    if (wholeRecords) throw multipartPartLimitError(requiredParts, maxMessageChars);
-    const chunked = repartitionForPageCapacity(sourceMultipart, requiredParts, maxMessageChars, true);
-    if (chunked) throw multipartPartLimitError(requiredParts, maxMessageChars);
-  }
+  const diagnosticUpperBound = multipartDiagnosticUpperBound(sourceMultipart, sourceChars, maxMessageChars);
+  const requiredParts = findRequiredMultipartParts(sourceMultipart, maxMessageChars, diagnosticUpperBound);
+  if (requiredParts !== undefined) throw multipartPartLimitError(requiredParts, maxMessageChars);
 
   throw capacityError(lastChars, maxMessageChars, "automatic");
 }

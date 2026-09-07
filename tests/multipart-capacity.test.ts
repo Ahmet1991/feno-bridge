@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { compileChatGptWebPromptWithinPageCapacity } from "../src/adapters/chatgpt-web/capacity";
 import {
   compiledChatGptWebMaxMessageChars,
@@ -10,6 +10,7 @@ import {
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
 } from "../src/adapters/chatgpt-web/prompt";
+import * as promptModule from "../src/adapters/chatgpt-web/prompt";
 import type { CodexMessage, CodexParsedRequest } from "../src/types";
 
 const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
@@ -231,4 +232,25 @@ test("multipart transport reports the exact required part count when the twelve-
 
   expect(() => compileChatGptWebPromptWithinPageCapacity(parsed, capabilities, undefined, { maxMessageChars }))
     .toThrow(/requires 13 multipart parts.*maximum is 12|maximum is 12.*requires 13 multipart parts/i);
+});
+
+test("multipart capacity diagnostics bound repartition attempts above the twelve-part ceiling", () => {
+  const parsed = request(Array.from({ length: 60 }, (_unused, index) => ({
+    role: "user" as const,
+    content: `diagnostic-record-${index}-${"z".repeat(5_000)}`,
+    timestamp: index + 1,
+  })));
+  parsed.context.systemPrompt = [];
+  const repartition = spyOn(promptModule, "repartitionChatGptWebMultipartParts");
+
+  try {
+    expect(() => compileChatGptWebPromptWithinPageCapacity(parsed, capabilities, undefined, {
+      maxMessageChars: 10_000,
+    })).toThrow(/requires 61 multipart parts.*maximum is 12|maximum is 12.*requires 61 multipart parts/i);
+    expect(repartition).toHaveBeenCalled();
+    // The legacy linear diagnostic made 119 repartition calls for this same fixture.
+    expect(repartition.mock.calls.length).toBeLessThanOrEqual(40);
+  } finally {
+    repartition.mockRestore();
+  }
 });
