@@ -209,6 +209,20 @@ const CHATGPT_PERSONALIZATION_CONTROL_SELECTOR = [
   '[data-content-sheet-root] > button[aria-expanded][aria-controls]',
 ].join(", ");
 const CHATGPT_PERSONALIZATION_CHOICE_SELECTOR = '[role="menuitemradio"], [role="radio"]';
+/**
+ * ChatGPT renders the Temporary Chat personalization control in the account's display language,
+ * so an exact English accessible name matches nothing on a localized UI. On a Turkish account
+ * both role lookups returned zero, the preflight fell through to the connector probe, and once
+ * that probe also failed the bridge could neither read nor repair the personalization state:
+ * every turn burned the full readiness deadline and surfaced as a stream disconnect. Both
+ * patterns are anchored at each end because "Personalized" is a substring of
+ * "Unpersonalized"; an unanchored match would select the wrong control.
+ */
+export const CHATGPT_PERSONALIZED_NAME_PATTERN = /^(?:Personalized|Kişiselleştirilmiş)$/;
+export const CHATGPT_UNPERSONALIZED_NAME_PATTERN = /^(?:Unpersonalized|Kişiselleştirilmemiş)$/;
+/** Anchored at the start only: the choice row may append its own description after the label. */
+const CHATGPT_PERSONALIZED_CHOICE_PATTERN = /^(?:Personalized|Kişiselleştirilmiş)/;
+
 const CHATGPT_PERSONALIZATION_PREFLIGHT_TIMEOUT_MS = 30_000;
 const CHATGPT_PERSONALIZATION_CLEANUP_TIMEOUT_MS = 5_000;
 
@@ -518,10 +532,10 @@ async function ensureChatGptPersonalizedConnectorAccessWithinDeadline(
   // The visible sheet can be aria-hidden during hydration. Include those controls in the role
   // query but still require visibility; never select a hidden duplicate or switch locator rules.
   const personalized = page
-    .getByRole("button", { name: "Personalized", exact: true, includeHidden: true })
+    .getByRole("button", { name: CHATGPT_PERSONALIZED_NAME_PATTERN, includeHidden: true })
     .filter({ visible: true });
   const unpersonalized = page
-    .getByRole("button", { name: "Unpersonalized", exact: true, includeHidden: true })
+    .getByRole("button", { name: CHATGPT_UNPERSONALIZED_NAME_PATTERN, includeHidden: true })
     .filter({ visible: true });
   let personalizedCount = await runChatGptPersonalizationStep(() => personalized.count(), deadline, abortSignal);
   let unpersonalizedCount = await runChatGptPersonalizationStep(() => unpersonalized.count(), deadline, abortSignal);
@@ -596,7 +610,7 @@ async function ensureChatGptPersonalizedConnectorAccessWithinDeadline(
     );
     const choice = menu
       .locator(CHATGPT_PERSONALIZATION_CHOICE_SELECTOR)
-      .filter({ hasText: /^Personalized/ });
+      .filter({ hasText: CHATGPT_PERSONALIZED_CHOICE_PATTERN });
     if (await runChatGptPersonalizationStep(() => choice.count(), deadline, abortSignal) !== 1) {
       throw chatGptConnectorUnavailableError(
         "ChatGPT personalization menu did not expose one exact Personalized choice",
@@ -3684,18 +3698,35 @@ export class ChatGptBrowserWorker {
     return { effort: mode.displayLabel, response: CHATGPT_SMOKE_EXPECTED };
   }
 
-  private async attachFiles(page: Page, prompt: CompiledChatGptWebPrompt): Promise<void> {
+  private async attachFiles(
+    page: Page,
+    prompt: CompiledChatGptWebPrompt,
+    budgetMs: number = browserStageTimeouts.fileAttachment,
+  ): Promise<void> {
     const files = chatGptPromptFilePayloads(prompt);
     if (files.length === 0) return;
+    // Playwright's default action timeout is 30s, so an unqualified setInputFiles silently
+    // capped this 120s stage at 30s: ten-image turns failed with a 30000ms timeout whose call
+    // log already showed the input resolved, while the stage still held 90s of unused budget.
+    // Every wait below spends the stage's own remaining time, and the upload keeps a reserve so
+    // a slow transfer cannot starve the acceptance evidence that proves the files landed.
+    const stageDeadline = Date.now() + budgetMs;
+    const remainingMs = (reserveMs: number): number => (
+      Math.max(1, stageDeadline - Date.now() - reserveMs)
+    );
+    const acceptanceReserveMs = Math.min(60_000, Math.floor(budgetMs / 2));
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
     const input = page.locator('input[data-testid="upload-photos-input"]');
-    await input.waitFor({ state: "attached", timeout: 20_000 });
-    await input.setInputFiles(files);
+    await input.waitFor({
+      state: "attached",
+      timeout: Math.min(20_000, remainingMs(acceptanceReserveMs)),
+    });
+    await input.setInputFiles(files, { timeout: remainingMs(acceptanceReserveMs) });
     try {
       await Promise.all(files.map(file => (
         composerForm.getByRole("group", { name: file.name, exact: true })
-          .waitFor({ state: "visible", timeout: 60_000 })
+          .waitFor({ state: "visible", timeout: Math.min(60_000, remainingMs(0)) })
       )));
     } catch {
       const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
@@ -3707,7 +3738,7 @@ export class ChatGptBrowserWorker {
       );
     }
     const send = composerForm.getByTestId("send-button");
-    const deadline = Date.now() + 60_000;
+    const deadline = Math.min(Date.now() + 60_000, stageDeadline);
     while (Date.now() < deadline) {
       if (await send.isEnabled().catch(() => false)) return;
       await new Promise(resolveSleep => setTimeout(resolveSleep, 100));

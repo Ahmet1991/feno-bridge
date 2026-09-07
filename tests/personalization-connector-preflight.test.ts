@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { ensureChatGptPersonalizedConnectorAccess } from "../src/adapters/chatgpt-web/browser-worker";
 
+/**
+ * The preflight asks by anchored pattern so a localized control still resolves. A fake page
+ * therefore cannot compare the requested name for equality; it answers for the label it carries.
+ */
+function asksFor(name: string | RegExp, label: string): boolean {
+  return typeof name === "string" ? name === label : name.test(label);
+}
 function visibleLocator(count: () => number, overrides: Record<string, unknown> = {}) {
   const locator = {
     filter: () => locator,
@@ -16,7 +23,7 @@ for (const ariaHidden of [false, true]) test(`a visible Personalized control is 
   const unpersonalized = visibleLocator(() => 0);
   const page = {
     getByRole: (_role: string, options: { name: string; includeHidden?: boolean }) => (
-      options.name === "Personalized" && (!ariaHidden || options.includeHidden) ? personalized : unpersonalized
+      asksFor(options.name, "Personalized") && (!ariaHidden || options.includeHidden) ? personalized : unpersonalized
     ),
   } as any;
 
@@ -93,7 +100,7 @@ test("an Unpersonalized Temporary Chat is switched through its owned radio menu 
   };
   const page = {
     getByRole: (_role: string, options: { name: string }) => (
-      options.name === "Personalized" ? personalized : unpersonalized
+      asksFor(options.name, "Personalized") ? personalized : unpersonalized
     ),
     locator: (selector: string) => {
       expect(selector).toBe('[id="personalization-menu"]');
@@ -545,7 +552,7 @@ test("the labeled Unpersonalized path never hides an unclosed menu", async () =>
   });
   const page = {
     getByRole: (_role: string, options: { name: string }) => (
-      options.name === "Personalized" ? personalized : unpersonalized
+      asksFor(options.name, "Personalized") ? personalized : unpersonalized
     ),
     locator: (selector: string) => {
       if (selector === "body") return {
@@ -671,4 +678,55 @@ test("ambiguous personalization controls fail before connector selection", async
     code: "connector_not_found",
     retryable: false,
   });
+});
+
+/**
+ * Regression: a Turkish account labels the control "Kişiselleştirilmemiş", so the old exact
+ * English lookups both returned zero. The preflight then fell through to the connector probe,
+ * and when that probe also failed the bridge could neither read nor repair the state - every
+ * turn burned the 30s readiness deadline and died as a stream disconnect. The labeled path must
+ * resolve a localized control and switch it back on without help.
+ */
+test("a Turkish-labeled Unpersonalized Temporary Chat is resolved and switched by the labeled path", async () => {
+  let enabled = false;
+  let menuOpen = false;
+  const diagnostics: string[] = [];
+  const personalized = visibleLocator(() => enabled ? 1 : 0, {
+    waitFor: async ({ state }: { state: string }) => { expect(state).toBe("visible"); },
+  });
+  const unpersonalized = visibleLocator(() => enabled ? 0 : 1, {
+    click: async () => { menuOpen = true; },
+    getAttribute: async () => "personalization-menu",
+    waitFor: async ({ state }: { state: string }) => { expect(state).toBe("hidden"); },
+  });
+  const absent = visibleLocator(() => 0);
+  const choice = { count: async () => 1, click: async () => { enabled = true; } };
+  const menu = {
+    waitFor: async () => { expect(menuOpen).toBeTrue(); },
+    locator: () => ({
+      filter: ({ hasText }: { hasText: RegExp }) => {
+        expect(hasText.test("Kişiselleştirilmiş — bu sohbet eklentilere başvurabilir")).toBeTrue();
+        expect(hasText.test("Kişiselleştirilmemiş")).toBeFalse();
+        return choice;
+      },
+    }),
+  };
+  const page = {
+    getByRole: (_role: string, options: { name: string | RegExp }) => {
+      if (asksFor(options.name, "Kişiselleştirilmiş")) return personalized;
+      if (asksFor(options.name, "Kişiselleştirilmemiş")) return unpersonalized;
+      return absent;
+    },
+    locator: (selector: string) => {
+      expect(selector).toBe('[id="personalization-menu"]');
+      return menu;
+    },
+  } as any;
+
+  expect(await ensureChatGptPersonalizedConnectorAccess(
+    page,
+    async checkpoint => { diagnostics.push(checkpoint); },
+  )).toBe("enabled");
+  expect(diagnostics).toEqual(["personalization-unpersonalized", "personalization-enabled"]);
+  expect(enabled).toBeTrue();
 });
