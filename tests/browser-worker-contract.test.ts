@@ -20,15 +20,20 @@ import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-w
 import { estimateTokens } from "../src/lib/token-estimate";
 import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
 
+/**
+ * The preflight asks by anchored pattern so a localized control still resolves. A fake page
+ * therefore cannot compare the requested name for equality; it answers for the label it carries.
+ */
+function asksFor(name: string | RegExp, label: string): boolean {
+  return typeof name === "string" ? name === label : name.test(label);
+}
 function personalizedTemporaryChatRole(
   _role: string,
   options: { name: string | RegExp },
 ) {
-  const locator = {
-    filter: (_filter: { visible: boolean }) => ({
-      count: async () => (typeof options.name === "string"
-        ? options.name === "Personalized"
-        : options.name.test("Personalized")) ? 1 : 0,
+    const locator = {
+      filter: (_filter: { visible: boolean }) => ({
+      count: async () => asksFor(options.name, "Personalized") ? 1 : 0,
     }),
   };
   return locator;
@@ -490,9 +495,7 @@ test("a mutating stage timeout preserves a failed cleanup integrity error", asyn
   };
   const page = {
     getByRole: (_role: string, options: { name: string | RegExp }) => (
-      (typeof options.name === "string"
-        ? options.name === "Personalized"
-        : options.name.test("Personalized")) ? personalized : unpersonalized
+      asksFor(options.name, "Personalized") ? personalized : unpersonalized
     ),
     locator: (selector: string) => selector === "body"
       ? { press: async () => { throw new Error("menu cleanup failed"); } }
