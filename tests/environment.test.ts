@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, toNamespacedPath } from "node:path";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import {
   rememberCompactionContinuation,
@@ -800,6 +800,42 @@ describe("trusted Codex task environment continuity", () => {
     // The archived record is never read, and the turn keeps the environment this thread proved.
     expect(store.resolve(request)).toEqual(trusted);
     expect(rolloutPath.includes("sessions")).toBeTrue();
+  });
+
+  test.skipIf(process.platform !== "win32")("a Windows namespaced index resolves cwd from the exact active rollout", () => {
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    const databasePath = join(codexHome, "state_5.sqlite");
+    createRolloutState(databasePath, toNamespacedPath(rolloutPath));
+    const database = new Database(databasePath);
+    database.exec("DELETE FROM thread_spawn_edges");
+    database.query("UPDATE threads SET agent_path = NULL WHERE id = ?").run(rolloutThreadId);
+    database.close();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input.unshift(
+      { type: "message", role: "user", id: "old_environment", content: [{ type: "input_text", text:
+        `<environment_context><cwd>${resolve(root, "old-workspace")}</cwd><sandbox_mode>danger-full-access</sandbox_mode></environment_context>` }] },
+      { type: "message", role: "assistant", id: "old_answer", content: [{ type: "output_text", text: "Done" }] },
+    );
+    // Recover from exact native evidence even with no cached authority; never trust old XML.
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
+
+    // Finding a same-thread file is insufficient if its latest turn no longer matches.
+    writeFileSync(rolloutPath, [
+      JSON.stringify({ type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } }),
+      JSON.stringify(childTurnContext("01a06c66-ffff-75c6-a0df-318f890ef6de")),
+    ].join("\n") + "\n");
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
+      .toThrow("does not belong to the requested turn");
+
+    // Normalizing spelling must not make an actual outside file authoritative.
+    const outside = join(codexHome, "archived_sessions", "rollout-archived.jsonl");
+    mkdirSync(dirname(outside), { recursive: true });
+    writeFileSync(outside, readFileSync(rolloutPath));
+    const updated = new Database(databasePath);
+    updated.query("UPDATE threads SET rollout_path = ? WHERE id = ?").run(toNamespacedPath(outside), rolloutThreadId);
+    updated.close();
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
+      .toThrow("missing cwd");
   });
 
   test("recovers an ordinary resumed task from its exact current rollout with an empty bridge cache", () => {
