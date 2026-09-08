@@ -5,6 +5,12 @@ import {
   compiledChatGptWebMessages,
 } from "../src/adapters/chatgpt-web/input-tokens";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { estimateTokens } from "../src/lib/token-estimate";
+import {
+  chatGptWebImageTokenReserve,
+  resolveChatGptWebMessageTokenBudget,
+  resolveChatGptWebTransportLimits,
+} from "../src/chatgpt-web-models";
 import {
   compileChatGptWebPrompt,
   formatChatGptWebMultipartCommit,
@@ -123,6 +129,81 @@ test("page capacity chooses the smallest dynamic whole-record multipart transpor
   const commit = formatChatGptWebMultipartCommit(compiled.multipart!, transactionId);
   expect(commit).toContain("acknowledged_parts: 3/4");
   expect(commit).toMatch(/manifest: .*1\/4:[a-f0-9]{64} .*4\/4:[a-f0-9]{64}/);
+});
+
+test("multipart compiler balances whole records against token and composer budgets", () => {
+  const plusCapabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: false };
+  const dense = "a!b@c#d$e%f^g&h*".repeat(3_750);
+  const sparse = "x".repeat(dense.length);
+  // Four records still exceed the 1,048,572-char composer cap, so token-only balancing would be unsafe.
+  const whitespace = " ".repeat(300_000);
+
+  for (const contents of [
+    [dense, dense, sparse, sparse, dense, sparse],
+    [dense, dense, whitespace, whitespace, whitespace, whitespace],
+  ]) {
+    const compiled = compileChatGptWebPrompt(request(contents.map((content, index) => ({
+      role: "user" as const,
+      content,
+      timestamp: index + 1,
+    }))), plusCapabilities, undefined, { multipartParts: 3 });
+    const records = multipartRecords(compiled.multipart!.parts);
+    expect(records).toEqual([
+      { kind: "system", system_index: 0, content: "preserve-system" },
+      ...contents.map((content, message_index) => ({
+        kind: "message" as const,
+        message_index,
+        message: { role: "user", content },
+      })),
+    ]);
+
+    const transactionId = `ctx_${"5".repeat(32)}`;
+    const messages = [
+      ...compiled.multipart!.parts.slice(0, -1).map((payload, index) => (
+        formatChatGptWebMultipartStage(payload, transactionId, index + 1, 3).text
+      )),
+      formatChatGptWebMultipartCommit(compiled.multipart!, transactionId),
+    ];
+    const tokenBudget = resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_MODEL_ID, "high", plusCapabilities);
+    const charBudget = resolveChatGptWebTransportLimits(CHATGPT_WEB_MODEL_ID, "high", plusCapabilities)
+      .browserComposerCharLimit!;
+    expect(Math.max(...messages.map(message => estimateTokens(message)))).toBeLessThanOrEqual(tokenBudget);
+    expect(Math.max(...messages.map(message => message.length))).toBeLessThanOrEqual(charBudget);
+  }
+}, 20_000);
+
+test("multipart compiler reserves image tokens from the final part budget", () => {
+  const plusCapabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: false };
+  const baseBudget = resolveChatGptWebMessageTokenBudget(CHATGPT_WEB_MODEL_ID, "high", plusCapabilities);
+  const ordinaryImageReserve = chatGptWebImageTokenReserve();
+  expect(baseBudget - resolveChatGptWebMessageTokenBudget(
+    CHATGPT_WEB_MODEL_ID,
+    "high",
+    plusCapabilities,
+    ordinaryImageReserve,
+  )).toBe(ordinaryImageReserve);
+
+  const dense = "a!b@c#d$e%f^g&h*".repeat(90);
+  const compileWithDetail = (detail: string) => compileChatGptWebPrompt(request(
+    Array.from({ length: 80 }, (_unused, index) => ({
+      role: "user" as const,
+      content: index === 0
+        ? [
+          { type: "text" as const, text: dense },
+          { type: "image" as const, imageUrl: "data:image/png;base64,AA==", detail },
+        ]
+        : dense,
+      timestamp: index + 1,
+    })),
+  ), plusCapabilities, undefined, { multipartParts: 2 });
+
+  const ordinary = compileWithDetail("low");
+  const original = compileWithDetail("original");
+  expect(ordinary.images).toHaveLength(1);
+  expect(original.images).toHaveLength(1);
+  const ordinaryFinalRecords = (JSON.parse(ordinary.multipart!.parts[1]!) as { records: unknown[] }).records.length;
+  const originalFinalRecords = (JSON.parse(original.multipart!.parts[1]!) as { records: unknown[] }).records.length;
+  expect(originalFinalRecords).toBeLessThan(ordinaryFinalRecords);
 });
 
 test("an oversized single tool result is chunked and reconstructs byte-for-byte", () => {
