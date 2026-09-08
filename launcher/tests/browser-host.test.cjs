@@ -115,7 +115,6 @@ test("mode transitions publish targets before setup inspection and restore them 
     assert.equal(fixture.currentOperation(), null);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
-
 test("primary browser bootstrap accepts only the exact committed idle document", async () => {
   const calls = [];
   const contents = new EventEmitter();
@@ -2368,6 +2367,7 @@ test("a running automatic conversation is not handed to a different conversation
       assert.deepEqual(args, ["trace_next", 222, "y".repeat(64), "Codex Native2"]);
       return { id: "fresh", surfaceId: "surface-fresh" };
     },
+    writeDescriptor() {},
     syncViewVisibility() {},
     publishState() {},
     snapshot: () => ({ tabs: [] }),
