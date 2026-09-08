@@ -88,3 +88,50 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
     rmSync(diagnostics, { recursive: true, force: true });
   }
 });
+
+test("effort selection retries one transient model-controls miss after reloading the same Temporary Chat", async () => {
+  const diagnostics = mkdtempSync(join(tmpdir(), "model-controls-retry-"));
+  const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
+  const reachedPrompt = new Error("fixture reached prompt attachment");
+  let preparationCalls = 0;
+  let reloads = 0;
+  let effortAttempts = 0;
+  let released = false;
+  const page = {
+    evaluate: async () => ({}),
+    isClosed: () => false,
+    reload: async () => { reloads += 1; },
+  };
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { appName: "Codex Native2", browserDiagnosticsPath: diagnostics },
+    runStage: async (_trace: string, _name: string, _timeout: number, action: (signal: AbortSignal) => Promise<unknown>) => (
+      action(new AbortController().signal)
+    ),
+    prepareTemporaryChatSurface: async () => { preparationCalls += 1; },
+    selectModelAndEffort: async (_page: unknown, model: string, effort: string) => {
+      effortAttempts += 1;
+      if (effortAttempts === 1) {
+        throw new Error("ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.");
+      }
+      return resolveChatGptWebModelMode(model, effort, capabilities);
+    },
+    captureSubmissionBaseline: async () => ({}),
+    attachPromptWithCompactionRetry: async () => { throw reachedPrompt; },
+  });
+
+  try {
+    await expect(worker.runBrowserTurn({
+      traceId: "model_controls_retry_fixture",
+      modelId: "gpt-5.6-sol",
+      reasoning: "high",
+      capabilities,
+      prepare: async () => ({ text: "Retry the UI", images: [], release: () => { released = true; } }),
+    }, undefined, page)).rejects.toBe(reachedPrompt);
+    expect(effortAttempts).toBe(2);
+    expect(reloads).toBe(1);
+    expect(preparationCalls).toBe(2);
+    expect(released).toBe(true);
+  } finally {
+    rmSync(diagnostics, { recursive: true, force: true });
+  }
+});
