@@ -937,11 +937,9 @@ export function compileChatGptWebPrompt(
           message,
         })),
       ];
-      const emptyPart = (index: number): string => JSON.stringify({
-        version: 1, part_index: index + 1, total_parts: multipartParts, records: [],
-      });
+      const emptyPart = (index: number): string => multipartContextPayload([], index + 1, multipartParts!);
       const multipart: ChatGptWebMultipartPrompt = {
-        parts: Array.from({ length: multipartParts! }, (_, index) => emptyPart(index)),
+        parts: Array.from({ length: multipartParts! }, (_unused, index) => emptyPart(index)) as ChatGptWebMultipartParts,
         commit: [
           ...sharedContract,
           ...skillContract,
