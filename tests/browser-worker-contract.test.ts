@@ -665,6 +665,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     filter() { return this; },
     last() { return this; },
     getByText() { return this; },
+    getByTestId() { return this; },
     isVisible: async () => false,
   };
   const assistantLocator = { id: "assistant-turn" };
@@ -2425,7 +2426,7 @@ test("an unrelated Continue dialog is never auto-accepted", async () => {
   expect(lookedForButton).toBeFalse();
 });
 
-function dialogPage(text: string, buttonText = "Got it"): { page: Page; pressed: string[] } {
+function dialogPage(text: string, buttonText = "Got it", errorActionVisible = false): { page: Page; pressed: string[] } {
   const pressed: string[] = [];
   const createDialog = () => {
     let matches = true;
@@ -2455,6 +2456,13 @@ function dialogPage(text: string, buttonText = "Got it"): { page: Page; pressed:
     page: {
       locator: () => createDialog(),
       getByText: (hasText: string | RegExp) => createDialog().filter({ hasText }),
+      getByTestId: (testId: string) => {
+        const action = {
+          last: () => action,
+          isVisible: async () => errorActionVisible && testId === "regenerate-thread-error-button",
+        };
+        return action;
+      },
     } as unknown as Page,
     pressed,
   };
@@ -2555,6 +2563,20 @@ test("the known terminal ChatGPT error alert returns a structured retryable fail
     code: "upstream_server_error",
     retryable: true,
   });
+  expect(fixture.pressed).toEqual([]);
+});
+
+
+test("a previous response error cannot reject a newly accepted user submission", async () => {
+  const fixture = dialogPage("Something went wrong. Please see help.openai.com.", "Retry", true);
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    currentSubmissionEvidence: async () => "user_turn",
+  }) as {
+    waitForSubmissionAccepted(page: Page, baseline: unknown): Promise<string>;
+  };
+  await expect(worker.waitForSubmissionAccepted(fixture.page, {
+    responseTurns: { last: () => fixture.page },
+  })).resolves.toBe("user_turn");
   expect(fixture.pressed).toEqual([]);
 });
 
