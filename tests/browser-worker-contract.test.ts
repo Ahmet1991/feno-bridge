@@ -24,6 +24,18 @@ import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
  * The preflight asks by anchored pattern so a localized control still resolves. A fake page
  * therefore cannot compare the requested name for equality; it answers for the label it carries.
  */
+/**
+ * Read a budget constant out of the worker source. Budget assertions must track the constant
+ * they are about: a hard-coded copy silently passes after the constant is recalibrated, which
+ * is how a 500 ms cleanup budget shipped green against a 661 ms measured floor.
+ */
+function workerBudgetMs(name: string): number {
+  const source = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const match = source.match(new RegExp("const " + name + " = ([0-9_]+);"));
+  if (!match) throw new Error("missing budget constant " + name);
+  return Number(match[1]!.replaceAll("_", ""));
+}
+
 function asksFor(name: string | RegExp, label: string): boolean {
   return typeof name === "string" ? name === label : name.test(label);
 }
@@ -542,6 +554,23 @@ test("personalization turn preflight budget contains its sequential proof and st
   expect(worstCasePreflightMs).toBeLessThanOrEqual(
     constant("CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS"),
   );
+
+  // Containment alone is not enough. Three of these sub-budgets were once set BELOW their own
+  // measured cost - reload at 750 ms against a 1,499 ms observed minimum, proof cleanup at 500 ms
+  // against a 661 ms observed minimum, proof at 1,000 ms against a 1,465 ms observed maximum. Each
+  // shipped green because no test compared a budget to the behaviour it has to outlast, and the
+  // cleanup one failed 108 of 108 real proofs. These floors are measured on this machine and are
+  // the maximum observed cost of the step each budget covers; a budget at or under its floor is a
+  // budget that cannot succeed.
+  const measuredFloorsMs = {
+    CHATGPT_PERSONALIZATION_PROOF_TIMEOUT_MS: 1_465,
+    CHATGPT_PERSONALIZATION_PROOF_CLEANUP_TIMEOUT_MS: 2_006,
+    CHATGPT_PERSONALIZATION_INTERACTION_TIMEOUT_MS: 4_163,
+    CHATGPT_PERSONALIZATION_RELOAD_TIMEOUT_MS: 6_335,
+  } as const;
+  for (const [name, floor] of Object.entries(measuredFloorsMs)) {
+    expect(constant(name)).toBeGreaterThan(floor);
+  }
 });
 test("personalization structural control visibility has its own short readiness budget", async () => {
   let controlWaitTimeout = 0;
@@ -562,7 +591,9 @@ test("personalization structural control visibility has its own short readiness 
 
   await expect(ensureChatGptPersonalizedConnectorAccess(page, undefined, async () => false))
     .rejects.toThrow("structural personalization control");
-  expect(controlWaitTimeout).toBeLessThanOrEqual(2_000);
+  // Its own budget, not the turn deadline: this is the property the test is named for.
+  expect(controlWaitTimeout).toBeLessThanOrEqual(workerBudgetMs("CHATGPT_PERSONALIZATION_INTERACTION_TIMEOUT_MS"));
+  expect(controlWaitTimeout).toBeLessThan(workerBudgetMs("CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS"));
 });
 
 test("personalization owned-menu discovery has its own short readiness budget", async () => {
@@ -589,7 +620,9 @@ test("personalization owned-menu discovery has its own short readiness budget", 
   } as any;
 
   await expect(ensureChatGptPersonalizedConnectorAccess(page, undefined, async () => false)).rejects.toThrow();
-  expect(ownedMenuAttributeTimeout).toBeLessThanOrEqual(2_000);
+  // Its own budget, not the turn deadline: this is the property the test is named for.
+  expect(ownedMenuAttributeTimeout).toBeLessThanOrEqual(workerBudgetMs("CHATGPT_PERSONALIZATION_INTERACTION_TIMEOUT_MS"));
+  expect(ownedMenuAttributeTimeout).toBeLessThan(workerBudgetMs("CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS"));
 });
 
 test("structural personalization never toggles away from an already Personalized account", async () => {
