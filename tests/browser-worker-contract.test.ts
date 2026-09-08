@@ -289,6 +289,196 @@ test("a mutating stage timeout preserves a failed cleanup integrity error", asyn
   expect(menuOpen).toBeTrue();
 });
 
+test("personalization turn preflight budget contains its sequential proof and structural sub-budgets", () => {
+  const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
+  const constant = (name: string): number => {
+    const match = workerSource.match(new RegExp("const " + name + " = ([0-9_]+);"));
+    if (!match) throw new Error("missing budget constant " + name);
+    return Number(match[1]!.replaceAll("_", ""));
+  };
+  const worstCasePreflightMs =
+    2 * constant("CHATGPT_PERSONALIZATION_PROOF_TIMEOUT_MS")
+    + constant("CHATGPT_PERSONALIZATION_INTERACTION_TIMEOUT_MS")
+    + 2 * constant("CHATGPT_PERSONALIZATION_PROOF_CLEANUP_TIMEOUT_MS");
+
+  expect(worstCasePreflightMs).toBeLessThanOrEqual(
+    constant("CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS"),
+  );
+});
+test("personalization structural control visibility has its own short readiness budget", async () => {
+  let controlWaitTimeout = 0;
+  const timeoutError = new Error("structural control missing");
+  timeoutError.name = "TimeoutError";
+  const namedControl = { filter: () => namedControl, count: async () => 0 };
+  const control = {
+    waitFor: async (options: { timeout: number }) => {
+      controlWaitTimeout = options.timeout;
+      throw timeoutError;
+    },
+  };
+  const controls = { filter: () => controls, first: () => control };
+  const page = {
+    getByRole: (_role: string, _options: { name: string | RegExp }) => namedControl,
+    locator: (selector: string) => selector === "body" ? { press: async () => {} } : controls,
+  } as any;
+
+  await expect(ensureChatGptPersonalizedConnectorAccess(page, undefined, async () => false))
+    .rejects.toThrow("structural personalization control");
+  expect(controlWaitTimeout).toBeLessThanOrEqual(2_000);
+});
+
+test("personalization owned-menu discovery has its own short readiness budget", async () => {
+  let ownedMenuAttributeTimeout = 0;
+  const timeoutError = new Error("owned menu id missing");
+  timeoutError.name = "TimeoutError";
+  const namedControl = { filter: () => namedControl, count: async () => 0 };
+  const control = {
+    waitFor: async () => {},
+    click: async () => {},
+    getAttribute: async (_name: string, options: { timeout: number }) => {
+      ownedMenuAttributeTimeout = options.timeout;
+      throw timeoutError;
+    },
+  };
+  const controls = {
+    filter: () => controls,
+    first: () => control,
+    count: async () => 1,
+  };
+  const page = {
+    getByRole: (_role: string, _options: { name: string | RegExp }) => namedControl,
+    locator: (selector: string) => selector === "body" ? { press: async () => {} } : controls,
+  } as any;
+
+  await expect(ensureChatGptPersonalizedConnectorAccess(page, undefined, async () => false)).rejects.toThrow();
+  expect(ownedMenuAttributeTimeout).toBeLessThanOrEqual(2_000);
+});
+
+test("structural personalization never toggles away from an already Personalized account", async () => {
+  let checkedIndex = 0;
+  const clicks: number[] = [];
+  const namedControl = { filter: () => namedControl, count: async () => 0 };
+  const choiceAt = (index: number) => ({
+    getAttribute: async (name: string) => name === "aria-checked" ? String(checkedIndex === index) : null,
+    click: async () => {
+      checkedIndex = index;
+      clicks.push(index);
+    },
+  });
+  const choices = {
+    filter: () => choices,
+    count: async () => 2,
+    nth: (index: number) => choiceAt(index),
+  };
+  const personalizedChoice = {
+    filter: () => personalizedChoice,
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "aria-checked" ? String(checkedIndex === 0) : null,
+    click: async () => {
+      checkedIndex = 0;
+      clicks.push(0);
+    },
+  };
+  const missingChoice = { filter: () => missingChoice, count: async () => 0 };
+  const menu = {
+    waitFor: async () => {},
+    locator: () => choices,
+    getByRole: (role: string, options: { name: string | RegExp }) => (
+      role === "menuitemradio" && asksFor(options.name, "Personalized") ? personalizedChoice : missingChoice
+    ),
+  };
+  const control = {
+    waitFor: async () => {},
+    click: async () => {},
+    getAttribute: async () => "personalization-menu",
+  };
+  const controls = {
+    filter: () => controls,
+    first: () => control,
+    count: async () => 1,
+  };
+  const page = {
+    getByRole: (_role: string, _options: { name: string | RegExp }) => namedControl,
+    locator: (selector: string) => {
+      if (selector === "body") return { press: async () => {} };
+      if (selector.includes("personalization-menu")) return menu;
+      return controls;
+    },
+  } as any;
+
+  await expect(ensureChatGptPersonalizedConnectorAccess(page, undefined, async () => false))
+    .rejects.toThrow("remained unavailable");
+  expect(clicks).toEqual([]);
+  expect(checkedIndex).toBe(0);
+});
+
+test("submission acceptance retries one transient multiple-turn observation inside the same turn", async () => {
+  let attempts = 0;
+  let mutationWaits = 0;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    waitForSubmissionAccepted: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("ChatGPT exposed 2 new conversation turns for one submitted message");
+      return "user_turn";
+    },
+    waitForTurnDomMutation: async () => { mutationWaits += 1; },
+  });
+  const waitForSubmissionAcceptedWithRecovery = (ChatGptBrowserWorker.prototype as unknown as {
+    waitForSubmissionAcceptedWithRecovery(...args: unknown[]): Promise<unknown>;
+  }).waitForSubmissionAcceptedWithRecovery;
+
+  await expect(waitForSubmissionAcceptedWithRecovery.call(worker, {}, {})).resolves.toBe("user_turn");
+  expect(attempts).toBe(2);
+  expect(mutationWaits).toBe(1);
+});
+
+test("connector preflight retries once after reloading a clean Temporary Chat", async () => {
+  let reloaded = false;
+  let reloads = 0;
+  const timeoutError = new Error("structural control missing");
+  timeoutError.name = "TimeoutError";
+  const composer = {
+    fill: async () => {},
+    focus: async () => {},
+    pressSequentially: async () => {},
+  };
+  const namedControl = (name: string | RegExp) => ({
+    filter: () => namedControl(name),
+    count: async () => reloaded && asksFor(name, "Personalized") ? 1 : 0,
+  });
+  const control = { waitFor: async () => { throw timeoutError; } };
+  const controls = { filter: () => controls, first: () => control };
+  const appResult = {
+    waitFor: async () => { throw timeoutError; },
+  };
+  const menuRows = { filter: () => appResult };
+  const page = {
+    reload: async () => {
+      reloads += 1;
+      reloaded = true;
+    },
+    getByRole: (_role: string, options: { name: string | RegExp }) => namedControl(options.name),
+    getByText: () => ({}),
+    locator: (selector: string) => {
+      if (selector === "body") return { press: async () => {} };
+      if (selector === '.__menu-item[tabindex="0"]') return menuRows;
+      return controls;
+    },
+  } as any;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { appName: "Codex Native2" },
+    activeComposer: async () => composer,
+    clearChatGptComposerState: async () => {},
+    connectorIsSelected: async () => true,
+  });
+  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown): Promise<unknown>;
+  }).selectConnector;
+
+  await expect(selectConnector.call(worker, page)).resolves.toBe(composer);
+  expect(reloads).toBe(1);
+});
+
 test("compaction retry submission evidence cannot make prompt-stage settlement unbounded", async () => {
   let evaluateStarted = false;
   const page = {

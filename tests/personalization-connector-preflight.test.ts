@@ -76,6 +76,7 @@ test("an Unpersonalized Temporary Chat is switched through its owned radio menu 
     },
   });
   const choice = {
+    filter: () => choice,
     count: async () => 1,
     click: async () => { enabled = true; events.push("choice-clicked"); },
   };
@@ -88,6 +89,9 @@ test("an Unpersonalized Temporary Chat is switched through its owned radio menu 
       }
       events.push("menu-visible");
     },
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      asksFor(options.name, "Personalized") ? choice : visibleLocator(() => 0)
+    ),
     locator: (selector: string) => {
       expect(selector).toBe('[role="menuitemradio"], [role="radio"]');
       return {
@@ -99,7 +103,7 @@ test("an Unpersonalized Temporary Chat is switched through its owned radio menu 
     },
   };
   const page = {
-    getByRole: (_role: string, options: { name: string }) => (
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
       asksFor(options.name, "Personalized") ? personalized : unpersonalized
     ),
     locator: (selector: string) => {
@@ -158,6 +162,7 @@ test("a localized Unpersonalized Temporary Chat toggles the structural state and
       },
     }),
   };
+  const personalizedChoice = visibleLocator(() => 1, choices.nth(1));
   const menu = {
     waitFor: async ({ state }: { state: string }) => {
       if (state === "visible") expect(menuOpen).toBeTrue();
@@ -170,6 +175,9 @@ test("a localized Unpersonalized Temporary Chat toggles the structural state and
       expect(selector).toBe('[role="menuitemradio"], [role="radio"]');
       return choices;
     },
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+    ),
   };
   const control = {
     waitFor: async ({ state }: { state: string }) => {
@@ -234,6 +242,7 @@ test("a localized preflight waits for its semantic control to hydrate without as
       },
     }),
   };
+  const personalizedChoice = visibleLocator(() => 1, choices.nth(1));
   const control = {
     waitFor: async ({ state, signal, timeout }: { state: string; signal?: AbortSignal; timeout?: number }) => {
       expect(state).toBe("visible");
@@ -276,6 +285,9 @@ test("a localized preflight waits for its semantic control to hydrate without as
       expect(selector).toBe('[role="menuitemradio"], [role="radio"]');
       return choices;
     },
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+    ),
   };
   const page = {
     getByRole: () => absent,
@@ -343,7 +355,7 @@ test("an aborted localized preflight cannot click after its structural readiness
   expect(controlClicks).toBe(0);
 });
 
-test("an abort during localized connector proof restores the exact preflight personalization state", async () => {
+test("an abort during localized connector proof leaves the bridge-required Personalized state enabled", async () => {
   const controller = new AbortController();
   let personalized = false;
   let menuOpen = false;
@@ -370,8 +382,12 @@ test("an abort during localized connector proof restores the exact preflight per
       },
     }),
   };
+  const personalizedChoice = visibleLocator(() => 1, choices.nth(1));
   const menu = {
     locator: () => choices,
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+    ),
     waitFor: async ({ state, signal }: { state: string; signal?: AbortSignal }) => {
       expect(signal?.aborted).toBeFalse();
       expect(menuOpen).toBe(state === "visible");
@@ -424,10 +440,10 @@ test("an abort during localized connector proof restores the exact preflight per
   );
   await expect(preflight).rejects.toMatchObject({ name: "AbortError" });
   expect(proofCalls).toBe(2);
-  expect(choiceClicks).toEqual([1, 0]);
-  expect(personalized).toBeFalse();
+  expect(choiceClicks).toEqual([1]);
+  expect(personalized).toBeTrue();
   await new Promise(resolve => setTimeout(resolve, 20));
-  expect(personalized).toBeFalse();
+  expect(personalized).toBeTrue();
 });
 
 test("a missing owned personalization menu closes the opened control and returns a connector error", async () => {
@@ -597,7 +613,7 @@ test("the absolute personalization deadline always returns the connector deadlin
   }
 });
 
-test("an absolute deadline never hides a failed personalization rollback", async () => {
+test("an absolute deadline leaves the bridge-required Personalized state enabled", async () => {
   const originalNow = Date.now;
   let now = 20_000;
   let personalized = false;
@@ -620,8 +636,12 @@ test("an absolute deadline never hides a failed personalization rollback", async
       },
     }),
   };
+  const personalizedChoice = visibleLocator(() => 1, choices.nth(1));
   const menu = {
     locator: () => choices,
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+    ),
     waitFor: async ({ state }: { state: string }) => {
       expect(menuOpen).toBe(state === "visible");
     },
@@ -659,10 +679,10 @@ test("an absolute deadline never hides a failed personalization rollback", async
       failure = error;
     }
     expect(failure).toMatchObject({
-      name: "ChatGptPersistentBrowserStateError",
-      message: "ChatGPT personalization proof failed and the original state could not be restored",
+      status: 424,
+      code: "connector_not_found",
+      message: "ChatGPT personalization preflight exceeded its readiness deadline",
     });
-    expect(failure).toBeInstanceOf(AggregateError);
     expect(personalized).toBeTrue();
   } finally {
     Date.now = originalNow;
@@ -700,9 +720,16 @@ test("a Turkish-labeled Unpersonalized Temporary Chat is resolved and switched b
     waitFor: async ({ state }: { state: string }) => { expect(state).toBe("hidden"); },
   });
   const absent = visibleLocator(() => 0);
-  const choice = { count: async () => 1, click: async () => { enabled = true; } };
+  const choice = {
+    filter: () => choice,
+    count: async () => 1,
+    click: async () => { enabled = true; },
+  };
   const menu = {
     waitFor: async () => { expect(menuOpen).toBeTrue(); },
+    getByRole: (_role: string, options: { name: string | RegExp }) => (
+      asksFor(options.name, "Kişiselleştirilmiş") ? choice : absent
+    ),
     locator: () => ({
       filter: ({ hasText }: { hasText: RegExp }) => {
         expect(hasText.test("Kişiselleştirilmiş — bu sohbet eklentilere başvurabilir")).toBeTrue();
