@@ -224,17 +224,27 @@ export const CHATGPT_UNPERSONALIZED_NAME_PATTERN = /^(?:Unpersonalized|Kişisell
 const CHATGPT_PERSONALIZED_CHOICE_PATTERN = /^(?:Personalized|Kişiselleştirilmiş)/;
 const CHATGPT_PERSONALIZATION_PREFLIGHT_TIMEOUT_MS = 30_000;
 const CHATGPT_PERSONALIZATION_CLEANUP_TIMEOUT_MS = 5_000;
-const CHATGPT_PERSONALIZATION_INTERACTION_TIMEOUT_MS = 2_000;
-// Healthy end-to-end preflights measured max 2,314 ms over n=105; 8 s also contains the
-// sequential two-proof + structural-interaction + two proof-cleanup worst-case budget.
-const CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS = 8_000;
+// A ChatGPT menu interaction on this machine measured p95 2,901 ms and max 4,163 ms over n=277
+// effort-selection stages (click, menu render, read, confirm). 2 s would have cut 72 of those 277
+// short; 5 s covers the observed maximum. This is a ceiling, not a target: a generous ceiling
+// costs nothing on the healthy path and only lengthens a genuine failure.
+const CHATGPT_PERSONALIZATION_INTERACTION_TIMEOUT_MS = 5_000;
+// Healthy end-to-end preflights measured max 2,314 ms over n=105, so this ceiling is ~7x the
+// observed cost. It must also contain the sequential worst case its sub-budgets allow:
+// 2 proofs + one structural interaction + 2 proof cleanups. Keep this the derived value, never
+// a hand-picked one - three sub-budgets were previously set below their own measured minimums.
+const CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS = 16_000;
 // Temporary Chat navigation/preparation measured p95 6,335 ms (max 9,318 ms) over n=126;
 // 8 s deliberately covers the observed p95 with headroom while keeping retry latency bounded.
 const CHATGPT_PERSONALIZATION_RELOAD_TIMEOUT_MS = 8_000;
 // Connector proof measured max 1,465 ms over n=105 healthy proofs; the prior 2.5 s budget
 // covered all 105/105 successful observations and avoids false unpersonalized negatives.
 const CHATGPT_PERSONALIZATION_PROOF_TIMEOUT_MS = 2_500;
-const CHATGPT_PERSONALIZATION_PROOF_CLEANUP_TIMEOUT_MS = 500;
+// Clearing the composer after a connector proof measured min 661 ms, median 929 ms, max 2,006 ms
+// over n=108 healthy proofs: a 500 ms budget was below the observed MINIMUM and failed 108/108,
+// which threw away proofs that had already succeeded and failed every turn. 3 s covers the
+// observed maximum.
+const CHATGPT_PERSONALIZATION_PROOF_CLEANUP_TIMEOUT_MS = 3_000;
 const MAX_CHATGPT_TRANSIENT_UI_RETRIES = 1;
 
 class ChatGptPersonalizationDeadlineError extends Error {
