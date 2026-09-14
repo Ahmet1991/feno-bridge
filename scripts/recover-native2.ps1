@@ -43,17 +43,46 @@ function Invoke-BridgeCli($runtime, [string[]]$Arguments) {
   }
 }
 
+function Get-UnprovenChecks($report) {
+  $property = $report.PSObject.Properties["unproven"]
+  if (-not $property -or -not $property.Value) {
+    return @()
+  }
+  return @($property.Value)
+}
+
+function Write-UnprovenConnectorGuidance($Unproven) {
+  if (@($Unproven) -notcontains "connector") {
+    return
+  }
+  Write-Output ""
+  Write-Output "Local recovery is complete, but no local check can prove the ChatGPT connector is attached."
+  Write-Output "If ChatGPT still rejects the connector, the break is in ChatGPT and no restart here will clear it."
+  Write-Output "Confirm all of these once at https://chatgpt.com/#settings/Plugins :"
+  Write-Output "  - Developer Mode is enabled;"
+  Write-Output "  - the exact Tunnel is selected with Authentication set to None;"
+  Write-Output "  - the connector, the Tunnel, and the ChatGPT workspace are on one OpenAI account;"
+  Write-Output "  - the connector grants Allow all actions; and"
+  Write-Output "  - Connect harness completed before Verify runtime."
+  Write-Output "ChatGPT caches a connector's MCP contract by connector identity, so recreate the connector"
+  Write-Output "under a new name instead of renaming or refreshing the rejected one."
+}
+
 function Invoke-Doctor($runtime) {
   $result = Invoke-BridgeCli $runtime @("doctor", "--json")
   if ($result.ExitCode -eq 0) {
     try {
       $report = $result.Output | ConvertFrom-Json
       if ($report.ok -eq $true) {
-        return [pscustomobject]@{ Healthy = $true; Output = $result.Output }
+        return [pscustomobject]@{
+          Healthy = $true
+          Unproven = @(Get-UnprovenChecks $report)
+          Output = $result.Output
+        }
       }
     } catch {}
   }
-  return [pscustomobject]@{ Healthy = $false; Output = $result.Output }
+  return [pscustomobject]@{ Healthy = $false; Unproven = @(); Output = $result.Output }
 }
 
 function Set-StandardContextPreference {
@@ -133,6 +162,7 @@ Write-Step "3. Restart Codex Web GPT if context preference changed"
 Write-Step "4. Run doctor"
 Write-Step "5. Restart Codex Web GPT only if doctor still fails"
 Write-Step "6. Run doctor again and report final health"
+Write-Step "7. Report every check that cannot be proven from this machine"
 
 if ($DryRun) {
   Write-Output "DRY_RUN_OK"
@@ -156,7 +186,8 @@ try {
 
   $doctor = Invoke-Doctor $runtime
   if ($doctor.Healthy) {
-    Write-Output "Native2 is healthy; launcher restart was not needed."
+    Write-Output "Native2 passed every local check; launcher restart was not needed."
+    Write-UnprovenConnectorGuidance $doctor.Unproven
     exit 0
   }
 
@@ -170,7 +201,8 @@ try {
     exit 1
   }
 
-  Write-Output "Native2 recovery completed successfully. No PC restart or reinstall was required."
+  Write-Output "Native2 local recovery completed successfully. No PC restart or reinstall was required."
+  Write-UnprovenConnectorGuidance $finalDoctor.Unproven
   exit 0
 } catch {
   Write-Error $_

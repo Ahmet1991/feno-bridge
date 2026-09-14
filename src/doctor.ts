@@ -21,12 +21,24 @@ export interface DoctorCheck {
   status: CheckStatus;
   message: string;
   detail?: string;
+  /**
+   * The evidence for this check lives off this machine, so a passing report says nothing
+   * about it. Such a check stays a warning: failing it locally would fail every healthy
+   * install, and passing it silently is what lets callers claim proof they never had.
+   */
+  unprovenLocally?: boolean;
 }
 
 export interface DoctorReport {
   ok: boolean;
   mode?: AppConfig["mode"];
   checks: DoctorCheck[];
+  /**
+   * Ids of checks that no local evidence can settle. `ok` deliberately ignores them, so a
+   * caller that reads `ok === true` as "the ChatGPT connector works" is wrong: only the
+   * launcher's connector verification proves that attachment.
+   */
+  unproven: string[];
 }
 
 function secureFile(path: string): boolean {
@@ -105,7 +117,7 @@ export async function runDoctor(): Promise<DoctorReport> {
     checks.push({ id: "config", status: "ok", message: `Configuration is valid (${getConfigPath()})` });
   } catch (error) {
     checks.push({ id: "config", status: "error", message: "Configuration is invalid", detail: error instanceof Error ? error.message : String(error) });
-    return { ok: false, checks };
+    return { ok: false, checks, unproven: [] };
   }
 
   if (config.browserHost === "launcher") {
@@ -212,6 +224,7 @@ export async function runDoctor(): Promise<DoctorReport> {
     checks.push({
       id: "connector",
       status: "warning",
+      unprovenLocally: true,
       message: `Local checks cannot prove that ChatGPT connector ${JSON.stringify(config.appName)} is attached to this tunnel`,
       detail: "Verify it once at https://chatgpt.com/#settings/Plugins while the tunnel is ready.",
     });
@@ -223,6 +236,7 @@ export async function runDoctor(): Promise<DoctorReport> {
     ok: !checks.some(check => check.status === "error"),
     mode: config.mode,
     checks,
+    unproven: checks.filter(check => check.unprovenLocally).map(check => check.id),
   };
 }
 
@@ -232,6 +246,12 @@ export function formatDoctorReport(report: DoctorReport): string {
     `${icon[check.status]} ${check.message}`,
     ...(check.detail ? [`  ${check.detail}`] : []),
   ]);
-  lines.push(report.ok ? "Doctor result: ready" : "Doctor result: not ready");
+  if (!report.ok) {
+    lines.push("Doctor result: not ready");
+  } else if (report.unproven.length > 0) {
+    lines.push(`Doctor result: ready for local checks; unproven from this machine: ${report.unproven.join(", ")}`);
+  } else {
+    lines.push("Doctor result: ready");
+  }
   return `${lines.join("\n")}\n`;
 }

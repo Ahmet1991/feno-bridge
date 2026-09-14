@@ -72,12 +72,18 @@ export interface DoctorCheck {
   status: "ok" | "warning" | "error";
   message: string;
   detail?: string;
+  unprovenLocally?: boolean;
 }
 
 export interface DoctorReport {
   ok: boolean;
   mode?: "browser-only" | "full";
   checks: DoctorCheck[];
+  /**
+   * Present on reports the runtime produced. The launcher also synthesizes reports of its own,
+   * which carry no such list, so read it defensively.
+   */
+  unproven?: string[];
 }
 
 export interface OperationState {
