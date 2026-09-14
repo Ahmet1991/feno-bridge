@@ -122,7 +122,13 @@ Referans makinede ölçülen süre **120-190 saniye**. 90 saniyede "açılmadı"
 
     bun run doctor
 
-**Doğrulama:** Son satır `Doctor result: ready` olmalı.
+**Doğrulama:** Full harness'ta son satır şu olmalı:
+
+    Doctor result: ready for local checks; unproven from this machine: connector
+
+Bu **beklenen** çıktıdır, hata değil. `ready for local checks` = yerel kontrollerin hepsi
+geçti; `unproven from this machine` ise doctor'un ispatlayamadığı kontrolleri sayar. Sadece
+browser-only kurulumda son satır düz `Doctor result: ready` olur.
 
 Tek bir `!` uyarısı **normaldir**: connector'ın bu tünele bağlı olduğu yerelden
 ispatlanamaz. `https://chatgpt.com/#settings/Plugins` adresinden bir kez kontrol et. Bu
@@ -237,7 +243,7 @@ dosyayı değişmiş gösterir.
     launcher\artifacts\codex-web-gpt-5.0.4-win-x64.exe /S
 
 Sonra **runtime bundle'ı kenara al** (yukarıdaki tuzak) ve launcher'ı yeniden başlat. En
-son `bun run doctor` ile `ready` gör.
+son `bun run doctor` çalıştır ve 8. adımdaki son satırı gör.
 
 ---
 

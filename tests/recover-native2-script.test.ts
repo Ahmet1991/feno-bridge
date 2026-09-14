@@ -45,6 +45,7 @@ test("Native2 recovery dry-run describes the safe recovery sequence", async () =
   expect(stdout).toContain("4. Run doctor");
   expect(stdout).toContain("5. Restart Codex Web GPT only if doctor still fails");
   expect(stdout).toContain("6. Run doctor again and report final health");
+  expect(stdout).toContain("7. Report every check that cannot be proven from this machine");
 });
 
 test("Native2 recovery synchronizes Standard Context across bridge and launcher state", async () => {
@@ -100,4 +101,28 @@ test("Native2 recovery command wrapper supports a one-command dry-run", async ()
 
   expect(exitCode, stderr).toBe(0);
   expect(stdout).toContain("DRY_RUN_OK");
+});
+
+// Runs on every platform: the regression this guards is a claim in the script text, and the
+// Windows-only tests above cannot catch it on a Linux or macOS CI leg.
+test("Native2 recovery never reports health that doctor did not prove", () => {
+  const script = readFileSync(join(import.meta.dir, "..", "scripts", "recover-native2.ps1"), "utf8");
+
+  // A passing doctor covers local checks only; the ChatGPT-side connector is never proven by it.
+  expect(script).not.toContain("Native2 is healthy");
+  expect(script).toContain("Native2 passed every local check");
+  expect(script).toContain("Native2 local recovery completed successfully");
+});
+
+test("Native2 recovery surfaces the connector checks doctor cannot prove", () => {
+  const script = readFileSync(join(import.meta.dir, "..", "scripts", "recover-native2.ps1"), "utf8");
+
+  expect(script).toContain("function Get-UnprovenChecks");
+  expect(script).toContain("function Write-UnprovenConnectorGuidance");
+  // Read defensively: an older bundled runtime emits a report with no unproven field.
+  expect(script).toContain('$report.PSObject.Properties["unproven"]');
+  // The cloud-side remedy the script now names instead of declaring victory.
+  expect(script).toContain("Authentication set to None");
+  expect(script).toContain("Allow all actions");
+  expect(script).toContain("under a new name instead of renaming or refreshing the rejected one");
 });
