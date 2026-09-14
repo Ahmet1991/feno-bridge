@@ -4,6 +4,8 @@ import { getConfigDir, getConfigPath, loadConfig } from "./config";
 import { join } from "node:path";
 import { inspectCodexIntegration } from "./codex-integration";
 import { browserLoginStateExists, loginVerificationMarkerPath } from "./browser-login";
+import { formatRuntimeBuildStamp } from "./build-stamp";
+import { VERSION } from "./version";
 import { getServiceStatus } from "./service";
 import { tunnelStatus } from "./tunnel";
 import { getTunnelServiceStatus } from "./tunnel-service";
@@ -111,6 +113,9 @@ async function proxyCheck(config: AppConfig): Promise<DoctorCheck> {
 
 export async function runDoctor(): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
+  // Reported before the configuration is read: an invalid configuration returns early, and that
+  // is exactly when knowing which build is installed matters most. VERSION cannot answer it.
+  checks.push({ id: "build", status: "ok", message: `Runtime ${VERSION}, ${formatRuntimeBuildStamp()}` });
   let config: AppConfig;
   try {
     config = loadConfig();
