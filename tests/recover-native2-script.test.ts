@@ -3,6 +3,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Every test below starts a PowerShell or cmd process, and a cold PowerShell start on a loaded
+// runner costs far more than Bun's 5s default per-test budget: the dry-run test timed out at
+// exactly 5000ms on an ubuntu runner while the same run takes ~400ms locally once PowerShell is
+// warm. The budget has to cover process startup, not the assertions, which finish in microseconds.
+const SHELL_TEST_TIMEOUT_MS = 60_000;
+
 // Discovery is exercised against a staged USERPROFILE rather than whatever happens to be
 // installed on the machine. Reading a real installation made this assert a developer-machine
 // precondition, so it failed on every CI runner, where no bridge is installed.
@@ -49,7 +55,7 @@ test("Native2 runtime discovery works without overwriting PowerShell HOME", asyn
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, SHELL_TEST_TIMEOUT_MS);
 
 test("Native2 recovery dry-run describes the safe recovery sequence", async () => {
   const script = join(import.meta.dir, "..", "scripts", "recover-native2.ps1");
@@ -73,7 +79,7 @@ test("Native2 recovery dry-run describes the safe recovery sequence", async () =
   expect(stdout).toContain("5. Restart Codex Web GPT only if doctor still fails");
   expect(stdout).toContain("6. Run doctor again and report final health");
   expect(stdout).toContain("7. Report every check that cannot be proven from this machine");
-});
+}, SHELL_TEST_TIMEOUT_MS);
 
 test("Native2 recovery synchronizes Standard Context across bridge and launcher state", async () => {
   if (process.platform !== "win32") return;
@@ -110,7 +116,7 @@ test("Native2 recovery synchronizes Standard Context across bridge and launcher 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, SHELL_TEST_TIMEOUT_MS);
 
 test("Native2 recovery command wrapper supports a one-command dry-run", async () => {
   if (process.platform !== "win32") return;
@@ -128,7 +134,7 @@ test("Native2 recovery command wrapper supports a one-command dry-run", async ()
 
   expect(exitCode, stderr).toBe(0);
   expect(stdout).toContain("DRY_RUN_OK");
-});
+}, SHELL_TEST_TIMEOUT_MS);
 
 // Runs on every platform: the regression this guards is a claim in the script text, and the
 // Windows-only tests above cannot catch it on a Linux or macOS CI leg.
