@@ -8,6 +8,7 @@ import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { isHeavyChatGptStage } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptPromptPrefixLadder } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptTurnProgressWatchdog } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -3249,6 +3250,133 @@ test("auto-approval recognizes the observed non-dialog approval card", async () 
 
   expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", true)).toBeTrue();
   expect(fixture.pressed).toEqual(["Allow once:Enter"]);
+});
+
+function localizedToolConfirmationPage(options: {
+  disappearAfterReads?: number;
+  denyLabel?: string;
+  answered?: boolean;
+} = {}): {
+  page: Page;
+  pressed: string[];
+} {
+  let reads = 0;
+  let visible = true;
+  const pressed: string[] = [];
+  // Labels of a Turkish ChatGPT UI. Only an exact Deny label may ever be pressed.
+  const availableButtons = ["Her zaman izin ver", "Izin ver", options.denyLabel ?? "Reddet"];
+  const button = (name: string | RegExp) => {
+    const actualName = availableButtons.find(candidate => (
+      typeof name === "string" ? candidate === name : name.test(candidate)
+    ));
+    return {
+      last: () => button(name),
+      waitFor: async () => {
+        if (!actualName) throw new Error(`Approval button not found: ${String(name)}`);
+      },
+      press: async (key: string) => {
+        if (!actualName) throw new Error(`Approval button not found: ${String(name)}`);
+        pressed.push(`${actualName}:${key}`);
+        visible = false;
+      },
+    };
+  };
+  const hidden = {
+    filter: () => hidden,
+    last: () => hidden,
+    isVisible: async () => false,
+  };
+  const actionButtons = { testId: "tool-action-buttons" };
+  const answeredCardButtons = { testId: "answered" };
+  const card = {
+    filter: ({ has }: { has?: unknown }) => (has === actionButtons ? card : hidden),
+    last: () => card,
+    isVisible: async () => {
+      reads += 1;
+      if (options.disappearAfterReads !== undefined && reads >= options.disappearAfterReads) visible = false;
+      return visible;
+    },
+    getByRole: (_role: string, input: { name: string | RegExp }) => button(input.name),
+    waitFor: async ({ state }: { state: string }) => {
+      expect(state).toBe("hidden");
+      expect(visible).toBeFalse();
+    },
+  };
+  return {
+    page: {
+      locator: (selector: string) => {
+        if (selector === '[data-testid="tool-action-buttons"]') return options.answered ? answeredCardButtons : actionButtons;
+        if (selector === '[data-testid="tool-approval-card"]') return card;
+        return hidden;
+      },
+    } as unknown as Page,
+    pressed,
+  };
+}
+
+test("a localized ChatGPT approval card is found by its test id, not by English copy", async () => {
+  const fixture = localizedToolConfirmationPage({ disappearAfterReads: 3 });
+
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 100)).toBeTrue();
+  expect(fixture.pressed).toEqual([]);
+});
+
+test("an answered localized approval card left in the transcript is not a new request", async () => {
+  const fixture = localizedToolConfirmationPage({ answered: true });
+
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 2)).toBeFalse();
+  expect(fixture.pressed).toEqual([]);
+});
+
+test("an unanswered Turkish approval card is denied instead of stalling the turn", async () => {
+  const fixture = localizedToolConfirmationPage();
+
+  expect(await resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 2)).toBeTrue();
+  expect(fixture.pressed).toEqual(["Reddet:Enter"]);
+});
+
+test("auto-approval never guesses a localized Allow action", async () => {
+  const fixture = localizedToolConfirmationPage();
+
+  await expect(resolveChatGptToolConfirmation(fixture.page, "Codex Native", true, undefined, 2)).rejects.toMatchObject({
+    name: "ChatGptWebAdapterError",
+    code: "chatgpt_tool_approval_unanswered",
+    retryable: false,
+  });
+  expect(fixture.pressed).toEqual([]);
+});
+
+test("a localized approval card without a known Deny label fails with an explicit approval error", async () => {
+  const fixture = localizedToolConfirmationPage({ denyLabel: "Engelle" });
+
+  await expect(resolveChatGptToolConfirmation(fixture.page, "Codex Native", false, undefined, 2)).rejects.toMatchObject({
+    code: "chatgpt_tool_approval_unanswered",
+    retryable: false,
+  });
+  expect(fixture.pressed).toEqual([]);
+});
+
+test("the turn watchdog ends a browser turn that stops producing text, traces and tool activity", () => {
+  const watchdog = new ChatGptTurnProgressWatchdog(0, 1_000);
+
+  expect(watchdog.update({ contentProgress: false }, 999)).toBeUndefined();
+  expect(watchdog.update({ contentProgress: false }, 1_000)).toContain("made no progress");
+});
+
+test("new text and newer broker activity keep a long browser turn alive", () => {
+  const watchdog = new ChatGptTurnProgressWatchdog(0, 1_000);
+
+  expect(watchdog.update({ contentProgress: true }, 900)).toBeUndefined();
+  expect(watchdog.update({ contentProgress: false }, 1_800)).toBeUndefined();
+  expect(watchdog.update({ contentProgress: false, externalLastProgressAt: 2_500 }, 2_600)).toBeUndefined();
+  expect(watchdog.update({ contentProgress: false, externalLastProgressAt: 2_500 }, 3_400)).toBeUndefined();
+  expect(watchdog.update({ contentProgress: false, externalLastProgressAt: 2_500 }, 3_500)).toContain("made no progress");
+});
+
+test("a broker timestamp from the future cannot hold a stalled browser turn open", () => {
+  const watchdog = new ChatGptTurnProgressWatchdog(0, 1_000);
+
+  expect(watchdog.update({ contentProgress: false, externalLastProgressAt: 10_000_000 }, 1_000)).toContain("made no progress");
 });
 
 test("browser preflight separates model context from one-message transport limits", () => {

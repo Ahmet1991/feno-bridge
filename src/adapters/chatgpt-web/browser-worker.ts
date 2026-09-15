@@ -126,6 +126,13 @@ export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
 export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
+export const CHATGPT_TOOL_APPROVAL_CARD_SELECTOR = '[data-testid="tool-approval-card"]';
+export const CHATGPT_TOOL_ACTION_BUTTONS_SELECTOR = '[data-testid="tool-action-buttons"]';
+/**
+ * Longest silence a browser turn may keep once nothing arrives: no new Markdown, no new visible
+ * trace and no newer broker tool activity. See `ChatGptTurnProgressWatchdog`.
+ */
+export const CHATGPT_TURN_NO_PROGRESS_MS = 15 * 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
@@ -883,13 +890,26 @@ export async function resolveChatGptToolConfirmation(
   timeoutMs = CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS,
   onVisible?: () => Promise<void>,
 ): Promise<boolean> {
-  const dialog = page.locator('[role="dialog"], [data-testid="tool-approval-card"]')
+  const englishDialog = page.locator(`[role="dialog"], ${CHATGPT_TOOL_APPROVAL_CARD_SELECTOR}`)
     .filter({ hasText: `Allow ChatGPT to use ${appName}?` })
     .last();
-  if (!await dialog.isVisible().catch(() => false)) return false;
+  const englishCopy = await englishDialog.isVisible().catch(() => false);
+  // ChatGPT localizes the approval copy: a Turkish UI never says "Allow ChatGPT to use ...", so the
+  // card stayed unanswered and each turn failed a minute later as "the ChatGPT DOM may have changed"
+  // (14.09.2026, four turns). A pending card keeps its test id and its action buttons, while answered
+  // cards left in the transcript lose the buttons, so structure identifies a live request in any language.
+  const dialog = englishCopy
+    ? englishDialog
+    : page.locator(CHATGPT_TOOL_APPROVAL_CARD_SELECTOR)
+      .filter({ has: page.locator(CHATGPT_TOOL_ACTION_BUTTONS_SELECTOR) })
+      .last();
+  if (!englishCopy && !await dialog.isVisible().catch(() => false)) return false;
   await onVisible?.();
+  if (!englishCopy) {
+    console.warn(`[chatgpt-web] ${appName} approval card is waiting in a localized ChatGPT UI (autoApprove=${autoApprove})`);
+  }
 
-  if (autoApprove) {
+  if (autoApprove && englishCopy) {
     // ChatGPT exposes either "Allow once" or the shorter "Allow" for the
     // current one-shot approval. Keep the matcher anchored so persistent
     // actions such as "Always allow" cannot match.
@@ -909,8 +929,26 @@ export async function resolveChatGptToolConfirmation(
   }
 
   if (!await dialog.isVisible().catch(() => false)) return true;
-  const deny = dialog.getByRole("button", { name: "Deny", exact: true }).last();
-  await deny.waitFor({ state: "visible", timeout: 5_000 });
+  if (englishCopy) {
+    const deny = dialog.getByRole("button", { name: "Deny", exact: true }).last();
+    await deny.waitFor({ state: "visible", timeout: 5_000 });
+    await deny.press("Enter");
+    await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    return true;
+  }
+  // Localized card. Never infer an Allow action from position or partial text, and with auto-approval
+  // on the user asked for the action to run, so a silent denial would be wrong as well. Deny only
+  // through an exact known label; otherwise end the turn with an error that names the real cause.
+  const deny = dialog.getByRole("button", { name: /^(?:Deny|Reddet)$/ }).last();
+  const denyFound = !autoApprove
+    && await deny.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false);
+  if (!denyFound) {
+    throw new ChatGptWebAdapterError(
+      `ChatGPT is waiting for approval to use ${appName} and the request was not answered within `
+      + `${Math.round(timeoutMs / 1_000)}s. Answer the approval card in the ChatGPT tab, then retry the turn.`,
+      { status: 409, errorType: "invalid_request_error", code: "chatgpt_tool_approval_unanswered", retryable: false },
+    );
+  }
   await deny.press("Enter");
   await dialog.waitFor({ state: "hidden", timeout: 10_000 });
   return true;
@@ -1714,6 +1752,45 @@ export const CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS = 10 * 60_000;
 
 /** Tolerated clock difference between the recording daemon and the observing helper process. */
 export const CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS = 5_000;
+
+/**
+ * Ends a browser turn that stopped making progress without reaching any terminal DOM verdict.
+ *
+ * `ChatGptTurnDomHealthTracker` only concludes once ChatGPT stops running. A response that keeps its
+ * stop control visible, or keeps re-rendering while nothing new arrives, never satisfies it, and a
+ * turn without an explicit deadline then waits forever: on 15.09.2026 a turn stayed open for hours
+ * after its last tool result while Codex received nothing. Progress is new Markdown, a new visible
+ * trace, or newer broker activity; a broker timestamp from the future is not evidence.
+ */
+export class ChatGptTurnProgressWatchdog {
+  private lastProgressAt: number;
+  private lastExternalProgressAt?: number;
+
+  constructor(
+    startedAt: number,
+    private readonly limitMs = CHATGPT_TURN_NO_PROGRESS_MS,
+  ) {
+    this.lastProgressAt = startedAt;
+  }
+
+  update(
+    state: { contentProgress: boolean; externalLastProgressAt?: number },
+    now = Date.now(),
+  ): string | undefined {
+    if (state.contentProgress) this.lastProgressAt = now;
+    const external = state.externalLastProgressAt;
+    if (external !== undefined && external !== this.lastExternalProgressAt) {
+      this.lastExternalProgressAt = external;
+      if (external <= now + CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS) {
+        this.lastProgressAt = Math.max(this.lastProgressAt, Math.min(external, now));
+      }
+    }
+    const idleMs = now - this.lastProgressAt;
+    if (idleMs < this.limitMs) return undefined;
+    return `ChatGPT browser turn made no progress for ${Math.round(idleMs / 1_000)}s`
+      + " (no new text, trace or tool activity); ending it instead of waiting indefinitely";
+  }
+}
 
 /** Proven MCP activity, additionally required to be recent enough to still be evidence. */
 export function chatGptExternalProgressSuppressesDomHealth(
@@ -5111,6 +5188,8 @@ export class ChatGptBrowserWorker {
       let loggedCompletionWait = false;
       let capturedResponse = false;
       const sentAt = Date.now();
+      const progressWatchdog = new ChatGptTurnProgressWatchdog(sentAt);
+      let contentProgressObserved = false;
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = new ChatGptMarkdownBuffer();
       const checkpointStream = turn.captureLunaCheckpoint
@@ -5255,6 +5334,25 @@ export class ChatGptBrowserWorker {
         const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
         const running = await stop.isVisible().catch(() => false);
         if (running) sawRunning = true;
+        const noProgress = progressWatchdog.update({
+          contentProgress: contentProgressObserved,
+          externalLastProgressAt: externalProgressSnapshot?.lastProgressAt,
+        });
+        contentProgressObserved = false;
+        if (noProgress) {
+          await diagnostics.capture(page, "turn-no-progress");
+          console.warn(
+            `[chatgpt-web] browser turn ${turn.traceId} no-progress watchdog`
+            + ` (running=${running}, sawRunning=${sawRunning}, toolCallsInFlight=${externalToolCallsInFlight},`
+            + ` textChars=${snapshot.visibleText.length}, completionActionVisible=${snapshot.completionActionVisible})`,
+          );
+          throw new ChatGptWebAdapterError(noProgress, {
+            status: 504,
+            errorType: "server_error",
+            code: "chatgpt_turn_no_progress",
+            retryable: true,
+          });
+        }
         if (snapshot.responsePresent) {
           if (!capturedResponse) {
             capturedResponse = true;
@@ -5268,10 +5366,14 @@ export class ChatGptBrowserWorker {
             }
           })();
           for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
+            contentProgressObserved = true;
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
           }
-          if (textDelta) emitMarkdownDelta(textDelta);
+          if (textDelta) {
+            contentProgressObserved = true;
+            emitMarkdownDelta(textDelta);
+          }
           const domError = domHealthTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
