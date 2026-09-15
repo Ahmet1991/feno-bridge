@@ -1135,9 +1135,27 @@ export function createChatGptWebAdapter(
               }
               const handoffError = error instanceof Error ? error : new Error(String(error));
               console.error("[chatgpt-web] structured context handoff failed:", handoffError);
+              // Nine distinct failures reach this catch - a five-minute settle timeout, an empty
+              // handoff, a missing or conflicting latest-user marker, a missing MCP tool boundary,
+              // missing native ids - and collapsing them into one sentence told the user to retry
+              // even for the ones that can only ever fail the same way again.
+              //
+              // An error that already classified itself knows better than this site can: its
+              // message, code and retry posture pass through untouched.
+              if (handoffError instanceof ChatGptWebAdapterError) {
+                emit({
+                  type: "error",
+                  message: handoffError.message,
+                  status: handoffError.status,
+                  errorType: handoffError.errorType,
+                  code: handoffError.code,
+                  retryable: handoffError.retryable,
+                });
+                return;
+              }
               emit({
                 type: "error",
-                message: "ChatGPT did not complete the context handoff. Retry the task.",
+                message: `ChatGPT did not complete the context handoff: ${handoffError.message}`,
                 status: 409,
                 errorType: "invalid_request_error",
                 code: "compaction_handoff_failed",
