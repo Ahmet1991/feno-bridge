@@ -15,6 +15,9 @@ const markerPath = path.join(scratch, "ready.json");
 const coreHome = path.join(scratch, "core-home");
 let macAppBundle;
 
+/** See the call site: the Windows silent install is the one step whose cost tracks runner load. */
+const WINDOWS_INSTALL_TIMEOUT_MS = 300_000;
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd || scratch,
@@ -97,7 +100,14 @@ try {
     env.APPIMAGE_EXTRACT_AND_RUN = "1";
   } else if (process.platform === "win32") {
     const installer = artifact(/-win-x64\.exe$/, "Windows installer");
-    run(installer, ["/S", "/currentuser"], { timeout: 120_000 });
+    // Budgeted for a loaded runner, not an idle one. The silent install writes the whole embedded
+    // runtime - roughly six thousand files - to a GitHub runner's disk, and it does not have a
+    // fixed cost. Measured on this repository: a *passing* run spent 124.0s in this whole smoke
+    // (install, launch, marker, bundle validation), against a 120s budget for the install alone;
+    // the next run exceeded it at ~123s and failed a pull request whose diff added one JSON key.
+    // Nothing here is skipped or asserted less strictly - the budget now covers what it was always
+    // paying for. Same defect as the PowerShell start budget fixed in #3.
+    run(installer, ["/S", "/currentuser"], { timeout: WINDOWS_INSTALL_TIMEOUT_MS });
     executable = path.join(windowsInstallLocation(), `${launcherManifest.build.productName}.exe`);
     command = executable;
     args = ["--launcher-smoke-test"];
