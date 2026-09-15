@@ -1583,11 +1583,84 @@ test("a disappeared retained source cannot leave its fresh compaction rebuild pa
     );
     expect(performance.now() - startedAt).toBeLessThan(1_000);
     expect(browserStarts).toBe(2);
+    // The failure this test is named for is a deadline, and the error now says so. It used to
+    // report "ChatGPT did not complete the context handoff. Retry the task." - which named no
+    // deadline, and advised a retry that a deadline this short can only fail again.
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "compaction_handoff_timeout",
+      status: 409,
+      errorType: "invalid_request_error",
+      retryable: false,
+      message: "ChatGPT compaction did not fully settle within 25ms",
+    });
+  } finally {
+    releaseBrowser?.();
+    await cancelStructuredCompactionTrace(fallbackTrace, new Error("test cleanup"));
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a compaction failure that never classified itself still names its reason", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-unclassified-handoff-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://unclassified-handoff-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: true,
+      turnTimeoutMs: 30_000,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const sourceRequest = request(false);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  chatGptTurnSessions.getOrCreate(sourceKey, () => ({
+    mode: "read-only",
+    browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey: chatGptConversationKey(sourceRequest, namespace)!,
+    cancel() {},
+  }));
+  await chatGptTurnSessions.find(sourceKey)!.browserOutcome;
+
+  let browserStarts = 0;
+  let releaseBrowser: (() => void) | undefined;
+  let fallbackTrace = "";
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserStarts += 1;
+    if (turn.requireRetainedConversation) throw chatGptRetainedConversationUnavailableError();
+    fallbackTrace = turn.traceId;
+    releaseBrowser = () => {};
+    // One of the nine plain Errors this catch can receive. It classifies nothing, so the site has
+    // to say what happened itself rather than inventing a sentence that fits none of them.
+    throw new Error("ChatGPT returned an empty structured compaction handoff");
+  };
+  const events: AdapterEvent[] = [];
+  const startedAt = performance.now();
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      request(true),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
     expect(events.at(-1)).toMatchObject({
       type: "error",
       code: "compaction_handoff_failed",
       retryable: false,
-      message: "ChatGPT did not complete the context handoff. Retry the task.",
+      message: "ChatGPT did not complete the context handoff: ChatGPT returned an empty structured compaction handoff",
     });
   } finally {
     releaseBrowser?.();
