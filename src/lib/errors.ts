@@ -1,3 +1,22 @@
+/**
+ * `name: message` for an error and everything it was caused by, nearest cause first.
+ *
+ * Every wrap site in this codebase attaches a `cause`; until this existed, not one of them was
+ * ever read back. An error that is reduced to its own `message` loses the only record of what
+ * actually went wrong, which is precisely the failure nobody can diagnose afterwards.
+ */
+export function describeCauseChain(error: Error): string {
+  const described: string[] = [];
+  let current: unknown = error;
+  // Bounded because `cause` is attacker-adjacent data in the general case: a cycle or a chain
+  // thousands deep must not turn a diagnostic into a hang.
+  for (let depth = 0; current instanceof Error && depth < 8; depth += 1) {
+    described.push(`${current.name}: ${current.message}`);
+    current = current.cause;
+  }
+  return described.join(" <- ");
+}
+
 export interface CodexErrorPayload {
   message: string;
   type: string;
