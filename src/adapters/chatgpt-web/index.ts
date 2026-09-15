@@ -305,12 +305,38 @@ function replayEvents(events: AdapterEvent[], emit: (event: AdapterEvent) => voi
   for (const event of events) emit(event);
 }
 
+/** `name: message` for an error and everything it was caused by, nearest cause first. */
+export function describeCauseChain(error: Error): string {
+  const described: string[] = [];
+  let current: unknown = error;
+  // Bounded because `cause` is attacker-adjacent data in the general case: a cycle or a chain
+  // thousands deep must not turn a diagnostic into a hang.
+  for (let depth = 0; current instanceof Error && depth < 8; depth += 1) {
+    described.push(`${current.name}: ${current.message}`);
+    current = current.cause;
+  }
+  return described.join(" <- ");
+}
+
 function submittedTurnFailure(session: ChatGptTurnSession, error: unknown): Error {
   const normalized = error instanceof Error ? error : new Error(String(error));
   if (normalized instanceof ChatGptWebAdapterError) return normalized;
   const phase = session.runtime.submission?.phase;
   if (!phase || phase === "prepared") return normalized;
   const ambiguous = phase === "send_activated";
+  // The turn is about to be reported by a message that deliberately says nothing about the cause,
+  // and the `cause` attached below is never read: the round event carries only message, status,
+  // errorType, code and retryable. Without this line the one failure that most needs explaining
+  // leaves no trace anywhere, which is exactly what it did on the install that prompted this.
+  //
+  // stderr rather than the round event, because the operator needs the detail and the model does
+  // not. The launcher captures it into launcher.jsonl under its usual redaction, and the traceId
+  // ties it to the browser.turn_started / browser.turn_ended records already logged there.
+  console.error(
+    `[chatgpt-web] submitted turn failed (traceId=${session.traceId ?? "unknown"}, phase=${phase}): `
+    + describeCauseChain(normalized),
+  );
+  if (normalized.stack) console.error(normalized.stack);
   return new ChatGptWebAdapterError(
     ambiguous
       ? "ChatGPT did not confirm that the prompt was sent. Check the ChatGPT tab before continuing."
