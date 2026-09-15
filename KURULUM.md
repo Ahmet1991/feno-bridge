@@ -229,6 +229,50 @@ dosyayı değişmiş gösterir.
 | `Codex rollout path escapes the sessions directory` | Düzeltildi. Alıyorsan sürüm eski demektir, `git pull` yap. |
 | `missing cwd in trusted Codex environment context` | Düzeltildi. Alıyorsan sürüm eski demektir. |
 | `Even multipart browser transport up to 12 parts cannot...` | Bağlam gerçekten çok büyük. Mesaj kaç parça gerektiğini söyler; Codex bağlamını küçült. |
+| ChatGPT ekranda Türkçe bir uyarı gösteriyor ama köprü bulanık bir hatayla ölüyor | Köprü o uyarıyı **metninden** tanıyor ve elindeki karşılıklar İngilizce/Çince/Japonca. Aşağıdaki bölüme bak. |
+
+---
+
+## ChatGPT'nin Türkçe uyarı metnini yakalamak
+
+Köprü, ChatGPT'nin bazı uyarılarını **ekrandaki metinden** tanıyor: oturum süresi dolduğunda,
+istek sınırına takıldığında, geçici sohbet karşılama kutusu çıktığında. Elindeki karşılıklar
+İngilizce, kısmen Çince ve Japonca — **Türkçe yok**.
+
+Sonucu şu: oturumun gerçekten sona erdiğinde ChatGPT sana Türkçe uyarıyı gösterir, köprü onu
+göremez, ve sana `The ChatGPT session has expired. Sign in again` gibi net bir mesaj yerine
+bulanık bir tur hatası döner.
+
+Düzeltmek için **birebir metin** gerekiyor. Tahminle yazılan bir karşılık, bugünkü durumla
+aynı şekilde sessizce tutmaz — o yüzden metni görmeden eklemiyoruz.
+
+**Yakalama:** tanı ekran görüntülerini aç, hatayı bir kez tekrarlat.
+
+    setx CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS 1
+
+Launcher'ı kapat-aç (yeni değişken ancak yeni süreçte görünür), hatayı bir kez üret. Görüntüler
+şuraya düşer:
+
+    %USERPROFILE%\.codex-chatgpt-web\diagnostics\browser-turns\
+
+En yeni klasördeki `.png` dosyalarında uyarı kutusu görünür. **Sadece uyarının metnini** paylaş;
+görüntülerde sohbet içeriği de olabilir, klasörün tamamını gönderme.
+
+İşi bitince geri kapat:
+
+    setx CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS ""
+
+**Şu an Türkçesi eksik olanlar** (İngilizcesiyle birlikte):
+
+| İngilizce | Nerede çıkar |
+|---|---|
+| `Your session has expired` | Oturum sona erdiğinde — en önemlisi |
+| `Too many requests` / `making requests too quickly` | İstek sınırı uyarısı |
+| `Got it` | O uyarıyı kapatan buton |
+| `Personalized` / `Unpersonalized` | Geçici sohbette kişiselleştirme düğmeleri |
+| `Not in history` / `No model training` / `Memory off` + `Continue` | Geçici sohbet karşılama kutusu |
+| `Failed to load subscription` | Abonelik yüklenemedi uyarısı |
+| `Think` / `Deny` | Kompozer ve izin diyaloğu butonları |
 
 ---
 
