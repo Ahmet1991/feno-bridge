@@ -1,8 +1,8 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "5.0.4",
+  "version": "5.0.5",
   "private": true,
-  "description": "Desktop control center for Codex ChatGPT Web",
+  "description": "Feno Bridge desktop launcher",
   "author": "miuuyy",
   "type": "module",
   "main": "electron/main.cjs",
@@ -43,8 +43,8 @@
   },
   "build": {
     "appId": "dev.codexwebgpt.launcher",
-    "productName": "Codex Web GPT",
-    "artifactName": "codex-web-gpt-${version}-${os}-${arch}.${ext}",
+    "productName": "Feno Bridge",
+    "artifactName": "feno-bridge-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "asarUnpack": [
       "assets/linux-appimage-runner.sh"

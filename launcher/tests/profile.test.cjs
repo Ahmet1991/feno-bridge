@@ -19,6 +19,7 @@ test("DEV launcher profile isolates every durable home from production", () => {
   });
 
   assert.equal(production.kind, "production");
+  assert.equal(production.displayName, "Feno Bridge");
   assert.equal(development.kind, "development");
   assert.notEqual(development.coreHome, production.coreHome);
   assert.notEqual(development.codexHome, production.codexHome);

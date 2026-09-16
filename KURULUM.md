@@ -71,19 +71,37 @@ paketle yap, tek test filtreleme.
 `build` adımı `dist/runtime` üretir. `app:package` electron-builder ile NSIS kurulumunu
 üretir; birkaç dakika sürer, ilk seferde Electron indirir.
 
-**Doğrulama:** `launcher/artifacts/codex-web-gpt-5.0.4-win-x64.exe` oluşmalı, ~150 MB.
+**Doğrulama:** `launcher/artifacts/feno-bridge-5.0.5-win-x64.exe` oluşmalı, ~150 MB.
 
 ---
 
 ## 5. Kur
 
-    launcher\artifacts\codex-web-gpt-5.0.4-win-x64.exe /S
+    .\launcher\artifacts\feno-bridge-5.0.5-win-x64.exe /S
 
 `/S` sessiz kurulum. `perMachine: false` olduğu için **yönetici yetkisi istemez**. Referans
 makinede ~42 saniye sürdü.
 
 **Doğrulama:** Şu dosya oluşmalı:
-`C:\Users\<kullanıcı>\AppData\Local\Programs\Codex Web GPT\Codex Web GPT.exe`
+`C:\Users\<kullanıcı>\AppData\Local\Programs\Feno Bridge\Feno Bridge.exe`
+
+### Özel depodan güncelleme
+
+Feno Bridge, açılışta `Ahmet1991/feno-bridge` deposunun en son **Releases** sürümünü
+denetler. Yeni sürüm varsa sol altta **Güncelle v…** görünür. Düğme sürümü indirir,
+`checksums.txt` ile SHA-256 doğrular, uygulamayı kapatıp kurar ve yeniden açar.
+Etkin Codex görevi bu sırada kesilebilir; güncellemeyi boşta yapın.
+
+Depo özel kaldığı için her bilgisayarda depoya erişimi olan GitHub hesabıyla bir kez
+GitHub CLI kurulup `gh auth login` yapılmalıdır. Tarayıcıdaki GitHub girişi tek başına
+CLI'ya yetki vermez. Uygulama erişim anahtarını paketlemez veya kaydetmez; GitHub CLI'nın
+yerel oturumunu kullanır. Sol alttaki **Güncellemeleri denetle** düğmesi girişten sonra
+yeniden denemek içindir.
+
+Yalnızca kodu GitHub'a göndermek sürüm yayınlamaz. `package.json` ve
+`launcher/package.json` sürümleri eşit biçimde artırılıp `vX.Y.Z` etiketi gönderildiğinde
+release iş akışı paketleri ve sağlamalarını aynı özel depoda yayımlar.
+Eski 5.0.3/5.0.4 kurulumlarında bu denetim kapalıdır; 5.0.5 setup'ı bir kez elle kurun.
 
 ---
 
@@ -106,7 +124,7 @@ değiştirilmesi gerekir. Kendi kafana göre bir model seçme.
 
 ## 7. Launcher'ı başlat
 
-    "C:\Users\%USERNAME%\AppData\Local\Programs\Codex Web GPT\Codex Web GPT.exe"
+    & "$env:LOCALAPPDATA\Programs\Feno Bridge\Feno Bridge.exe"
 
 **Sabırlı ol.** Launcher önce tarayıcı oturumunu tazeliyor, sonra daemon'u kaldırıyor.
 Referans makinede ölçülen süre **120-190 saniye**. 90 saniyede "açılmadı" hükmü verme.
@@ -205,7 +223,7 @@ sürüm numarasında kendi içinde tutarlı bir bundle zaten varsa geçerli say�
 
 `src/` değişikliğini devreye almak için kurulumdan sonra bundle'ı kenara al:
 
-    Move-Item "$HOME\.codex-chatgpt-web\versions\5.0.4-win32-x64" "$HOME\.codex-chatgpt-web\versions\5.0.4-win32-x64.eski"
+    Move-Item "$HOME\.codex-chatgpt-web\versions\5.0.5-win32-x64" "$HOME\.codex-chatgpt-web\versions\5.0.5-win32-x64.eski"
 
 sonra launcher'ı yeniden başlat. Açılışta paketten temiz bundle'ı kendisi kurar.
 
@@ -284,7 +302,7 @@ görüntülerde sohbet içeriği de olabilir, klasörün tamamını gönderme.
     bun run test
     bun run build
     bun run app:package
-    launcher\artifacts\codex-web-gpt-5.0.4-win-x64.exe /S
+    .\launcher\artifacts\feno-bridge-5.0.5-win-x64.exe /S
 
 Sonra **runtime bundle'ı kenara al** (yukarıdaki tuzak) ve launcher'ı yeniden başlat. En
 son `bun run doctor` çalıştır ve 8. adımdaki son satırı gör.

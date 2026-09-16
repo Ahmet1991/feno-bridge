@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-REPOSITORY="${CODEX_CHATGPT_WEB_REPOSITORY:-miuuyy/codex-chatgpt-web}"
-VERSION="${CODEX_CHATGPT_WEB_VERSION:-5.0.4}"
+REPOSITORY="${CODEX_CHATGPT_WEB_REPOSITORY:-Ahmet1991/feno-bridge}"
+VERSION="${CODEX_CHATGPT_WEB_VERSION:-5.0.5}"
 BIN_DIR="${CODEX_CHATGPT_WEB_BIN_DIR:-$HOME/.local/bin}"
 LIB_DIR="${CODEX_CHATGPT_WEB_LIB_DIR:-$HOME/.local/lib/codex-chatgpt-web}"
 DOC_DIR="${CODEX_CHATGPT_WEB_DOC_DIR:-$HOME/.local/share/doc/codex-chatgpt-web}"
@@ -18,16 +18,20 @@ case "$(uname -m)" in
   *) echo "Unsupported macOS architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
+if ! command -v gh >/dev/null 2>&1; then
+  echo "GitHub CLI (gh) is required; install it and run gh auth login with a repository collaborator account" >&2
+  exit 1
+fi
+
 ASSET="codex-chatgpt-web-darwin-$ARCH.tar.gz"
-BASE_URL="https://github.com/$REPOSITORY/releases/download/v$VERSION"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-chatgpt-web.XXXXXX")"
 STAGE_DIR="$LIB_DIR/.stage-$VERSION-$$"
 TARGET_DIR="$LIB_DIR/$VERSION"
 BACKUP_DIR="$LIB_DIR/.previous-$VERSION-$$"
 trap 'rm -rf "$TEMP_DIR" "$STAGE_DIR"' EXIT HUP INT TERM
 
-curl -fsSL "$BASE_URL/$ASSET" -o "$TEMP_DIR/$ASSET"
-curl -fsSL "$BASE_URL/checksums.txt" -o "$TEMP_DIR/checksums.txt"
+gh release download "v$VERSION" --repo "$REPOSITORY" --pattern "$ASSET" --output "$TEMP_DIR/$ASSET"
+gh release download "v$VERSION" --repo "$REPOSITORY" --pattern "checksums.txt" --output "$TEMP_DIR/checksums.txt"
 
 EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
 ACTUAL="$(shasum -a 256 "$TEMP_DIR/$ASSET" | awk '{ print $1 }')"
@@ -37,7 +41,7 @@ if [ -z "$EXPECTED" ] || [ "$ACTUAL" != "$EXPECTED" ]; then
 fi
 
 for DOC in LICENSE Bun-1.4.0.md THIRD_PARTY_NOTICES.txt; do
-  curl -fsSL "$BASE_URL/$DOC" -o "$TEMP_DIR/$DOC"
+  gh release download "v$VERSION" --repo "$REPOSITORY" --pattern "$DOC" --output "$TEMP_DIR/$DOC"
   DOC_EXPECTED="$(awk -v asset="$DOC" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
   DOC_ACTUAL="$(shasum -a 256 "$TEMP_DIR/$DOC" | awk '{ print $1 }')"
   if [ -z "$DOC_EXPECTED" ] || [ "$DOC_ACTUAL" != "$DOC_EXPECTED" ]; then

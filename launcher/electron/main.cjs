@@ -50,7 +50,7 @@ const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browse
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
-const GITHUB_URL = "https://github.com/miuuyy/codex-chatgpt-web";
+const GITHUB_URL = "https://github.com/Ahmet1991/feno-bridge";
 const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
 const TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels";
@@ -192,24 +192,32 @@ function trayImage() {
 
 const NATIVE_COPY = Object.freeze({
   en: Object.freeze({
-    openLauncher: "Open Codex Web GPT",
+    openLauncher: "Open Feno Bridge",
     quit: "Quit",
     exportDiagnostics: "Export privacy-safe diagnostics",
     cancel: "Cancel",
     remove: "Remove",
-    removeTitle: "Remove Codex Web GPT",
+    removeTitle: "Remove Feno Bridge",
     removeMessage: "Remove the ChatGPT Web models from Codex and restore the previous model route?",
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
+    updateNow: "Update now",
+    updateTitle: "Update Feno Bridge",
+    updateMessage: "Feno Bridge will close and reopen to install the update.",
+    updateDetail: "Active Codex tasks may be interrupted. Start the update when they are idle.",
   }),
   tr: Object.freeze({
-    openLauncher: "Codex Web GPT'yi aç",
+    openLauncher: "Feno Bridge'i aç",
     quit: "Çık",
     exportDiagnostics: "Gizliliğe uygun tanılamayı dışa aktar",
     cancel: "İptal",
     remove: "Kaldır",
-    removeTitle: "Codex Web GPT'yi kaldır",
+    removeTitle: "Feno Bridge'i kaldır",
     removeMessage: "ChatGPT Web modelleri Codex'ten kaldırılsın ve önceki model rotası geri yüklensin mi?",
     removeDetail: "Uygulamadaki ChatGPT oturum açma profili korunacak. Codex'in bir kez yeniden başlatılması gerekir.",
+    updateNow: "Şimdi güncelle",
+    updateTitle: "Feno Bridge'i güncelle",
+    updateMessage: "Güncellemeyi kurmak için Feno Bridge kapanıp yeniden açılacak.",
+    updateDetail: "Etkin Codex görevleri kesilebilir. Güncellemeyi görevler boşta iken başlatın.",
   }),
 });
 
@@ -451,7 +459,6 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:complete-onboarding", (_event, language, rawInteractionMode) => {
     const current = stateStore.read();
-    if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
     if (current.autoStart) setAutostart(app, true);
     const next = stateStore.update({
       language: validateLanguage(language),
@@ -834,6 +841,17 @@ function registerIpc({ logger, stateStore }) {
   });
   handle("launcher:update-install", async () => {
     if (!updateController) throw new Error("Launcher updates are unavailable");
+    const copy = nativeCopyFor(stateStore.read().language);
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: [copy.cancel, copy.updateNow],
+      defaultId: 0,
+      cancelId: 0,
+      title: copy.updateTitle,
+      message: copy.updateMessage,
+      detail: copy.updateDetail,
+    });
+    if (confirmation.response !== 1) return false;
     const launch = await updateController.beginInstall();
     const result = await requestQuit();
     if (!result.ok) {
@@ -841,6 +859,10 @@ function registerIpc({ logger, stateStore }) {
       throw new Error(result.message);
     }
     return true;
+  });
+  handle("launcher:update-check", async () => {
+    if (!updateController) throw new Error("Launcher updates are unavailable");
+    return updateController.checkOnce({ force: true });
   });
   handle("launcher:window-state", (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);
@@ -863,7 +885,7 @@ async function requestQuit() {
   try {
     const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
     if (activeOperation) {
-      throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
+      throw new Error(`Wait for ${activeOperation} to finish before quitting Feno Bridge`);
     }
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
@@ -1037,10 +1059,7 @@ async function start() {
     });
   }
   await loadRenderer(mainWindow);
-  // Feno fork: no launcher self-update check. This build is produced from this
-  // repository, so an upstream release must never be offered or installed over it.
-  // The controller stays in its idle state, which keeps the update UI hidden because
-  // App.tsx only renders it for available/downloading/installing.
+  if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
     const smokeRuntimeRoot = runtimeRootProvider();
     if (app.isPackaged && !smokeRuntimeRoot) {
@@ -1209,7 +1228,7 @@ async function start() {
     if (runtime.status === "external" || runtime.status === "needs-setup") {
       const detail = runtime.detail || (
         runtime.status === "external"
-          ? "Another process owns the configured Codex Web GPT runtime"
+          ? "Another process owns the configured Feno Bridge runtime"
           : "The installed runtime configuration must be repaired from Setup"
       );
       publishOperation({
@@ -1252,7 +1271,7 @@ void start().catch((error) => {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);
   } catch {}
   try {
-    dialog.showErrorBox("Codex Web GPT could not start", message);
+    dialog.showErrorBox("Feno Bridge could not start", message);
   } catch {}
   app.exit(1);
 });

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPOSITORY="${CODEX_WEB_GPT_REPOSITORY:-miuuyy/codex-chatgpt-web}"
+REPOSITORY="${CODEX_WEB_GPT_REPOSITORY:-Ahmet1991/feno-bridge}"
 VERSION="${CODEX_WEB_GPT_VERSION:-}"
 OS="$(uname -s)"
 MACHINE="$(uname -m)"
@@ -32,30 +32,28 @@ case "$OS" in
   *) echo "Use install-launcher.ps1 on Windows; unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
+if ! command -v gh >/dev/null 2>&1; then
+  echo "GitHub CLI (gh) is required; install it and run gh auth login with a repository collaborator account" >&2
+  exit 1
+fi
 if [ -z "$VERSION" ]; then
-  VERSION="$(curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 \
-    "https://api.github.com/repos/$REPOSITORY/releases/latest" \
-    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' \
-    | head -n 1)"
+  VERSION="$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName)"
 fi
 VERSION="${VERSION#v}"
 if [ -z "$VERSION" ]; then
-  echo "Could not resolve the latest Codex Web GPT release" >&2
+  echo "Could not resolve the latest Feno Bridge release" >&2
   exit 1
 fi
 case "$VERSION" in
   *[!A-Za-z0-9._-]*) echo "Invalid release version: $VERSION" >&2; exit 1 ;;
 esac
 
-ASSET="codex-web-gpt-$VERSION-$PLATFORM-$ARCH.$EXTENSION"
-BASE_URL="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+ASSET="feno-bridge-$VERSION-$PLATFORM-$ARCH.$EXTENSION"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-web-gpt-launcher.XXXXXX")"
 trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 
-curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 900 \
-  "$BASE_URL/$ASSET" -o "$TEMP_DIR/$ASSET"
-curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 60 \
-  "$BASE_URL/checksums.txt" -o "$TEMP_DIR/checksums.txt"
+gh release download "v$VERSION" --repo "$REPOSITORY" --pattern "$ASSET" --output "$TEMP_DIR/$ASSET"
+gh release download "v$VERSION" --repo "$REPOSITORY" --pattern "checksums.txt" --output "$TEMP_DIR/checksums.txt"
 EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
 if [ "$OS" = "Darwin" ]; then
   ACTUAL="$(shasum -a 256 "$TEMP_DIR/$ASSET" | awk '{ print $1}')"
@@ -76,8 +74,8 @@ if [ "$OS" = "Darwin" ]; then
   STAGE_DIR="$TEMP_DIR/stage"
   mkdir "$STAGE_DIR"
   ditto -x -k "$TEMP_DIR/$ASSET" "$STAGE_DIR"
-  SOURCE_APP="$STAGE_DIR/Codex Web GPT.app"
-  if [ ! -d "$SOURCE_APP" ] || [ ! -x "$SOURCE_APP/Contents/MacOS/Codex Web GPT" ]; then
+  SOURCE_APP="$STAGE_DIR/Feno Bridge.app"
+  if [ ! -d "$SOURCE_APP" ] || [ ! -x "$SOURCE_APP/Contents/MacOS/Feno Bridge" ]; then
     echo "Launcher archive is incomplete" >&2
     exit 1
   fi
@@ -85,12 +83,12 @@ if [ "$OS" = "Darwin" ]; then
     INSTALL_DIR="$HOME/Applications"
     mkdir -p "$INSTALL_DIR"
   fi
-  TARGET_APP="$INSTALL_DIR/Codex Web GPT.app"
-  if pgrep -x "Codex Web GPT" >/dev/null 2>&1; then
-    echo "Quit Codex Web GPT before updating it" >&2
+  TARGET_APP="$INSTALL_DIR/Feno Bridge.app"
+  if pgrep -x "Feno Bridge" >/dev/null 2>&1 || pgrep -x "Codex Web GPT" >/dev/null 2>&1; then
+    echo "Quit Feno Bridge before updating it" >&2
     exit 1
   fi
-  BACKUP_APP="$TEMP_DIR/Codex Web GPT.previous.app"
+  BACKUP_APP="$TEMP_DIR/Feno Bridge.previous.app"
   if [ -e "$TARGET_APP" ]; then mv "$TARGET_APP" "$BACKUP_APP"; fi
   if ! ditto "$SOURCE_APP" "$TARGET_APP"; then
     rm -rf "$TARGET_APP"
@@ -105,7 +103,7 @@ fi
 LIB_DIR="${CODEX_WEB_GPT_LIB_DIR:-$HOME/.local/lib/codex-web-gpt}"
 BIN_DIR="${CODEX_WEB_GPT_BIN_DIR:-$HOME/.local/bin}"
 TARGET_DIR="$LIB_DIR/$VERSION"
-TARGET="$TARGET_DIR/Codex Web GPT.AppImage"
+TARGET="$TARGET_DIR/Feno Bridge.AppImage"
 WRAPPER="$BIN_DIR/codex-web-gpt"
 CORE_HOME="${CODEX_CHATGPT_WEB_HOME:-$HOME/.codex-chatgpt-web}"
 DESCRIPTOR="$CORE_HOME/runtime/launcher-browser.json"
@@ -114,8 +112,8 @@ if [ -f "$DESCRIPTOR" ]; then
   RUNNING_PID="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$DESCRIPTOR" | head -n 1)"
 fi
 if { [ -n "$RUNNING_PID" ] && kill -0 "$RUNNING_PID" 2>/dev/null; } \
-  || pgrep -f "Codex Web GPT\\.AppImage" >/dev/null 2>&1; then
-  echo "Quit Codex Web GPT before updating it" >&2
+  || pgrep -f "Feno Bridge\\.AppImage" >/dev/null 2>&1; then
+  echo "Quit Feno Bridge before updating it" >&2
   exit 1
 fi
 EXTRACT_DIR="$TEMP_DIR/appimage"
@@ -181,8 +179,8 @@ cat > "$APPLICATIONS_DIR/codex-web-gpt.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Codex Web GPT
-Comment=ChatGPT Web models inside the native Codex harness
+Name=Feno Bridge
+Comment=Feno Bridge launcher for Codex
 Exec="$DESKTOP_WRAPPER"
 Icon=codex-web-gpt
 Terminal=false

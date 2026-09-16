@@ -1,15 +1,11 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
-const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const { pipeline } = require("node:stream/promises");
 
-const REPOSITORY = "miuuyy/codex-chatgpt-web";
-const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
-const USER_AGENT = "codex-web-gpt-launcher-updater";
-const MAX_REDIRECTS = 5;
+const REPOSITORY = "Ahmet1991/feno-bridge";
+const MAX_GH_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 function parseVersion(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(value || "").trim());
@@ -43,13 +39,13 @@ function releaseVersion(tagName) {
 
 function releaseAssetName(version, platform = process.platform, arch = process.arch) {
   if (platform === "darwin" && ["arm64", "x64"].includes(arch)) {
-    return `codex-web-gpt-${version}-mac-${arch}.zip`;
+    return `feno-bridge-${version}-mac-${arch}.zip`;
   }
   if (platform === "win32" && arch === "x64") {
-    return `codex-web-gpt-${version}-win-x64.exe`;
+    return `feno-bridge-${version}-win-x64.exe`;
   }
   if (platform === "linux" && arch === "x64") {
-    return `codex-web-gpt-${version}-linux-x64.AppImage`;
+    return `feno-bridge-${version}-linux-x64.AppImage`;
   }
   return null;
 }
@@ -71,56 +67,88 @@ function validateReleaseAssetUrl(raw, version, assetName) {
   return url.toString();
 }
 
-function request(url, redirects = 0) {
+function runGitHubCli(args, maxOutputBytes = MAX_GH_OUTPUT_BYTES) {
   return new Promise((resolve, reject) => {
-    if (redirects > MAX_REDIRECTS) {
-      reject(new Error(`Too many redirects while downloading ${url}`));
-      return;
-    }
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") {
-      reject(new Error(`Refusing non-HTTPS update URL: ${parsed.protocol}`));
-      return;
-    }
-    const req = https.get(parsed, {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": USER_AGENT,
-      },
-    }, (response) => {
-      if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
-        response.resume();
-        const next = new URL(response.headers.location, parsed).toString();
-        request(next, redirects + 1).then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume();
-        reject(new Error(`Update download failed with HTTP ${response.statusCode}`));
-        return;
-      }
-      resolve(response);
+    const child = spawn("gh", args, {
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GH_PROMPT_DISABLED: "1" },
     });
-    req.setTimeout(60_000, () => req.destroy(new Error("Update request timed out")));
-    req.once("error", reject);
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.kill();
+      reject(error);
+    };
+    const timeout = setTimeout(() => fail(new Error("GitHub release request timed out")), 15 * 60_000);
+    const collect = (chunks) => (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > maxOutputBytes) {
+        fail(new Error("GitHub CLI output exceeded its size limit"));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    child.once("error", (error) => fail(error.code === "ENOENT"
+      ? new Error("GitHub CLI (gh) is required for private updates. Install gh and run gh auth login with a repository collaborator account.")
+      : error));
+    child.once("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (code !== 0) {
+        const detail = Buffer.concat(stderr).toString("utf8").trim();
+        reject(new Error(`Private update check failed. Run gh auth login with a repository collaborator account and confirm a release exists. ${detail}`.trim()));
+        return;
+      }
+      resolve(Buffer.concat(stdout).toString("utf8"));
+    });
   });
 }
 
-async function downloadText(url, maxBytes = 2 * 1024 * 1024) {
-  const response = await request(url);
-  const chunks = [];
-  let bytes = 0;
-  for await (const chunk of response) {
-    bytes += chunk.length;
-    if (bytes > maxBytes) throw new Error("Update metadata exceeded its size limit");
-    chunks.push(chunk);
+function releaseAssetParts(raw) {
+  const url = new URL(raw);
+  const prefix = `/${REPOSITORY}/releases/download/`;
+  if (url.protocol !== "https:" || url.hostname !== "github.com"
+    || !url.pathname.startsWith(prefix) || url.search || url.hash) {
+    throw new Error("Unexpected private release URL");
   }
-  return Buffer.concat(chunks).toString("utf8");
+  const [tag, asset, extra] = url.pathname.slice(prefix.length).split("/");
+  if (!tag || !asset || extra || !parseVersion(tag.replace(/^v/, ""))) {
+    throw new Error("Unexpected private release asset");
+  }
+  return { tag, asset };
 }
 
-async function downloadFile(url, destination) {
-  const response = await request(url);
-  await pipeline(response, fs.createWriteStream(destination, { flags: "wx", mode: 0o600 }));
+async function fetchPrivateRelease() {
+  const result = JSON.parse(await runGitHubCli(["release", "view", "--repo", REPOSITORY, "--json", "tagName,assets"]));
+  const tag = result?.tagName;
+  releaseVersion(tag);
+  return {
+    tag_name: tag,
+    assets: (Array.isArray(result.assets) ? result.assets : []).map((asset) => ({
+      name: asset.name,
+      browser_download_url: `https://github.com/${REPOSITORY}/releases/download/${tag}/${asset.name}`,
+    })),
+  };
+}
+
+async function downloadPrivateText(url) {
+  const { tag, asset } = releaseAssetParts(url);
+  return runGitHubCli(["release", "download", tag, "--repo", REPOSITORY, "--pattern", asset, "--output", "-"]);
+}
+
+async function downloadPrivateFile(url, destination) {
+  const { tag, asset } = releaseAssetParts(url);
+  await runGitHubCli(["release", "download", tag, "--repo", REPOSITORY, "--pattern", asset, "--output", destination]);
 }
 
 function sha256(filePath) {
@@ -150,7 +178,7 @@ function findMacApplication(root) {
   const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
   if (!appEntry) throw new Error("The macOS update archive does not contain an application bundle");
   const application = path.join(root, appEntry.name);
-  const executable = path.join(application, "Contents", "MacOS", "Codex Web GPT");
+  const executable = path.join(application, "Contents", "MacOS", "Feno Bridge");
   if (!fs.existsSync(executable) || !fs.statSync(executable).isFile()) {
     throw new Error("The macOS update archive is incomplete");
   }
@@ -207,9 +235,9 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
 
 function defaultDependencies() {
   return {
-    fetchRelease: async () => JSON.parse(await downloadText(RELEASE_API_URL)),
-    downloadText,
-    downloadFile,
+    fetchRelease: fetchPrivateRelease,
+    downloadText: downloadPrivateText,
+    downloadFile: downloadPrivateFile,
     sha256,
     extractMac(archive, destination) {
       fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
@@ -269,7 +297,8 @@ function createUpdateController({
     return state;
   };
 
-  async function checkOnce() {
+  async function checkOnce({ force = false } = {}) {
+    if (force && state.status !== "downloading" && state.status !== "installing") checked = false;
     if (state.status === "disabled" || checked) return state;
     checked = true;
     transition({ status: "checking" });
@@ -297,6 +326,7 @@ function createUpdateController({
       logger?.info("launcher.update_available", { currentVersion, version, platform, arch });
       return transition({ status: "available", version });
     } catch (error) {
+      checked = false;
       const message = error instanceof Error ? error.message : String(error);
       logger?.warn("launcher.update_check_failed", { message });
       return transition({ status: "error", message });
@@ -380,6 +410,7 @@ module.exports = {
   expectedChecksum,
   macApplicationPath,
   parseVersion,
+  releaseAssetParts,
   releaseAssetName,
   releaseVersion,
   validateReleaseAssetUrl,
