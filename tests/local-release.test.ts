@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,21 +14,26 @@ test("local Windows release chooses the next patch version", async () => {
 
 test("release prepares a stable setup download with matching checksums", async () => {
   const { prepareReleaseAssets } = await import("../scripts/release-windows");
-  const artifacts = mkdtempSync(join(tmpdir(), "feno-release-assets-"));
+  const scratch = mkdtempSync(join(tmpdir(), "feno-release-assets-"));
+  const artifacts = join(scratch, "artifacts");
+  const setup = join(scratch, "Setup");
   try {
+    mkdirSync(artifacts);
+    mkdirSync(setup);
+    writeFileSync(join(setup, "feno-bridge-setup.exe"), "old installer");
     const versioned = join(artifacts, "feno-bridge-5.0.6-win-x64.exe");
     writeFileSync(versioned, "abc");
 
-    const assets = await prepareReleaseAssets("5.0.6", artifacts);
+    const assets = await prepareReleaseAssets("5.0.6", artifacts, setup);
     expect(assets.installer).toBe(versioned);
-    expect(assets.stableInstaller).toBe(join(artifacts, "feno-bridge-setup.exe"));
+    expect(assets.stableInstaller).toBe(join(setup, "feno-bridge-setup.exe"));
     expect(readFileSync(assets.stableInstaller, "utf8")).toBe("abc");
     expect(readFileSync(assets.checksums, "utf8")).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  feno-bridge-5.0.6-win-x64.exe\n" +
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  feno-bridge-setup.exe\n",
     );
   } finally {
-    rmSync(artifacts, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
   }
 });
 

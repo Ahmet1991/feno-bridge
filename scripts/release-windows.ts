@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
@@ -105,7 +105,7 @@ async function sha256(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-export async function prepareReleaseAssets(version: string, artifacts: string): Promise<{
+export async function prepareReleaseAssets(version: string, artifacts: string, setup: string): Promise<{
   installer: string;
   stableInstaller: string;
   checksums: string;
@@ -113,9 +113,19 @@ export async function prepareReleaseAssets(version: string, artifacts: string): 
 }> {
   const installer = join(artifacts, `feno-bridge-${version}-win-x64.exe`);
   if (!existsSync(installer)) throw new Error(`Installer was not created: ${installer}`);
-  const stableInstaller = join(artifacts, STABLE_INSTALLER_NAME);
-  copyFileSync(installer, stableInstaller);
   const installerHash = await sha256(installer);
+  mkdirSync(setup, { recursive: true });
+  const stableInstaller = join(setup, STABLE_INSTALLER_NAME);
+  const temporaryInstaller = `${stableInstaller}.tmp`;
+  try {
+    copyFileSync(installer, temporaryInstaller);
+    if (await sha256(temporaryInstaller) !== installerHash) {
+      throw new Error(`Setup copy checksum mismatch: ${temporaryInstaller}`);
+    }
+    renameSync(temporaryInstaller, stableInstaller);
+  } finally {
+    if (existsSync(temporaryInstaller)) unlinkSync(temporaryInstaller);
+  }
   const checksums = join(artifacts, "checksums.txt");
   writeFileSync(checksums,
     `${installerHash}  ${basename(installer)}\n${installerHash}  ${STABLE_INSTALLER_NAME}\n`, "utf8");
@@ -197,7 +207,7 @@ async function main(): Promise<void> {
     await runChecked(process.execPath, ["run", "app:smoke"]);
 
     const { installer, stableInstaller, checksums, installerHash } = await prepareReleaseAssets(
-      targetVersion, join(ROOT, "launcher", "artifacts"));
+      targetVersion, join(ROOT, "launcher", "artifacts"), join(ROOT, "Setup"));
 
     if (versionChanged) {
       await runChecked("git", ["add", ...VERSION_FILES]);
