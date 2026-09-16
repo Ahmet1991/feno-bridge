@@ -3,6 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { validateRuntimeBundle } = require("../electron/runtime-install.cjs");
+const { stageWindowsSmoke } = require("./stage-windows-smoke.cjs");
 
 const launcherRoot = path.resolve(__dirname, "..");
 const artifactsDirectory = path.join(launcherRoot, "artifacts");
@@ -15,8 +16,6 @@ const markerPath = path.join(scratch, "ready.json");
 const coreHome = path.join(scratch, "core-home");
 let macAppBundle;
 
-/** See the call site: the Windows silent install is the one step whose cost tracks runner load. */
-const WINDOWS_INSTALL_TIMEOUT_MS = 300_000;
 const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = 120_000;
 
 function run(command, args, options = {}) {
@@ -34,24 +33,6 @@ function run(command, args, options = {}) {
       `${command} failed with status ${result.status}: ${result.stderr?.trim() || result.stdout?.trim() || "no output"}`,
     );
   }
-}
-
-function windowsInstallLocation() {
-  const guid = launcherManifest.build.nsis.guid;
-  const registryKey = `HKCU\\Software\\${guid}`;
-  const result = spawnSync("reg.exe", ["query", registryKey, "/v", "InstallLocation"], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`Windows installer did not register ${registryKey}: ${result.stderr?.trim() || "no output"}`);
-  }
-  const match = result.stdout.match(/^\s*InstallLocation\s+REG_SZ\s+(.+?)\s*$/mi);
-  if (!match || !path.win32.isAbsolute(match[1])) {
-    throw new Error(`Windows installer registered an invalid InstallLocation: ${result.stdout.trim()}`);
-  }
-  return match[1];
 }
 
 function artifact(pattern, label) {
@@ -101,15 +82,7 @@ try {
     env.APPIMAGE_EXTRACT_AND_RUN = "1";
   } else if (process.platform === "win32") {
     const installer = artifact(/-win-x64\.exe$/, "Windows installer");
-    // Budgeted for a loaded runner, not an idle one. The silent install writes the whole embedded
-    // runtime - roughly six thousand files - to a GitHub runner's disk, and it does not have a
-    // fixed cost. Measured on this repository: a *passing* run spent 124.0s in this whole smoke
-    // (install, launch, marker, bundle validation), against a 120s budget for the install alone;
-    // the next run exceeded it at ~123s and failed a pull request whose diff added one JSON key.
-    // Nothing here is skipped or asserted less strictly - the budget now covers what it was always
-    // paying for. Same defect as the PowerShell start budget fixed in #3.
-    run(installer, ["/S", "/currentuser"], { timeout: WINDOWS_INSTALL_TIMEOUT_MS });
-    executable = path.join(windowsInstallLocation(), `${launcherManifest.build.productName}.exe`);
+    executable = stageWindowsSmoke({ installer, scratch, productName: launcherManifest.build.productName, run });
     command = executable;
     args = ["--launcher-smoke-test"];
   } else {

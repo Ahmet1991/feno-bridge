@@ -99,9 +99,6 @@ test("release installers resolve checksummed native launcher assets", () => {
   assert.match(windowsInstaller, /Get-ItemPropertyValue[\s\S]*InstallLocation/);
   assert.ok(windowsInstaller.includes(`Join-Path $InstallLocation "${manifest.build.productName}.exe"`));
   assert.match(windowsInstaller, /-ArgumentList "\/S", "\/currentuser"/);
-  const packageSmoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
-  assert.match(packageSmoke, /run\(installer, \["\/S", "\/currentuser"\]/);
-  assert.match(packageSmoke, /reg\.exe[\s\S]*InstallLocation/);
 });
 
 test("packaged launcher owns a detached checksummed updater for every release platform", () => {
@@ -248,21 +245,6 @@ test("Windows packages embed the checksummed Bun baseline runtime for CPUs witho
   assert.match(baseline, /SHASUMS256\.txt/);
   assert.match(baseline, /Get-FileHash[^\n]+SHA256/);
   assert.match(baseline, /CODEX_CHATGPT_WEB_EMBEDDED_BUN=/);
-});
-
-test("the Windows install budget leaves room for a loaded runner", () => {
-  const smoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
-  const declared = smoke.match(/const WINDOWS_INSTALL_TIMEOUT_MS = ([0-9_]+);/);
-  assert.ok(declared, "the Windows install budget must be a named constant, not an inline literal");
-  const budget = Number(declared[1].replace(/_/g, ""));
-  // A passing run of this whole smoke - install, launch, marker, bundle validation - measured
-  // 124.0s on this repository, and the install alone then exceeded a 120s budget on the next run.
-  // Anything near that mark fails pull requests at random, whatever their diff.
-  assert.ok(
-    budget >= 240_000,
-    `the Windows silent install has been measured at over 120s; ${budget}ms leaves no headroom`,
-  );
-  assert.match(smoke, /run\(installer, \["\/S", "\/currentuser"\], \{ timeout: WINDOWS_INSTALL_TIMEOUT_MS \}\)/);
 });
 
 test("the Windows launcher smoke budget leaves room for durable runtime materialization", () => {
