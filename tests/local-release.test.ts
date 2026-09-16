@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
@@ -8,6 +10,26 @@ test("local Windows release chooses the next patch version", async () => {
   expect(nextPatchVersion("5.0.5")).toBe("5.0.6");
   expect(nextPatchVersion("9.12.99")).toBe("9.12.100");
   expect(() => nextPatchVersion("5.0.5-beta.1")).toThrow(/stable x\.y\.z/i);
+});
+
+test("release prepares a stable setup download with matching checksums", async () => {
+  const { prepareReleaseAssets } = await import("../scripts/release-windows");
+  const artifacts = mkdtempSync(join(tmpdir(), "feno-release-assets-"));
+  try {
+    const versioned = join(artifacts, "feno-bridge-5.0.6-win-x64.exe");
+    writeFileSync(versioned, "abc");
+
+    const assets = await prepareReleaseAssets("5.0.6", artifacts);
+    expect(assets.installer).toBe(versioned);
+    expect(assets.stableInstaller).toBe(join(artifacts, "feno-bridge-setup.exe"));
+    expect(readFileSync(assets.stableInstaller, "utf8")).toBe("abc");
+    expect(readFileSync(assets.checksums, "utf8")).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  feno-bridge-5.0.6-win-x64.exe\n" +
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  feno-bridge-setup.exe\n",
+    );
+  } finally {
+    rmSync(artifacts, { recursive: true, force: true });
+  }
 });
 
 test("local Windows release dry-run is safe and explicit", async () => {

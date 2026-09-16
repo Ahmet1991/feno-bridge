@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 const REPOSITORY = "Ahmet1991/feno-bridge";
 const ROOT = resolve(import.meta.dir, "..");
+const STABLE_INSTALLER_NAME = "feno-bridge-setup.exe";
 const VERSION_FILES = [
   "package.json",
   "launcher/package.json",
@@ -71,7 +72,9 @@ async function releaseIsComplete(version: string): Promise<boolean> {
   const result = await run("gh", ["release", "view", tag, "--repo", REPOSITORY, "--json", "assets", "--jq", ".assets[].name"], true);
   if (result.exitCode !== 0) return false;
   const assets = new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
-  return assets.has(`feno-bridge-${version}-win-x64.exe`) && assets.has("checksums.txt");
+  return assets.has(`feno-bridge-${version}-win-x64.exe`)
+    && assets.has(STABLE_INSTALLER_NAME)
+    && assets.has("checksums.txt");
 }
 
 async function gitTagExists(tag: string): Promise<boolean> {
@@ -100,6 +103,23 @@ async function sha256(path: string): Promise<string> {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest("hex");
+}
+
+export async function prepareReleaseAssets(version: string, artifacts: string): Promise<{
+  installer: string;
+  stableInstaller: string;
+  checksums: string;
+  installerHash: string;
+}> {
+  const installer = join(artifacts, `feno-bridge-${version}-win-x64.exe`);
+  if (!existsSync(installer)) throw new Error(`Installer was not created: ${installer}`);
+  const stableInstaller = join(artifacts, STABLE_INSTALLER_NAME);
+  copyFileSync(installer, stableInstaller);
+  const installerHash = await sha256(installer);
+  const checksums = join(artifacts, "checksums.txt");
+  writeFileSync(checksums,
+    `${installerHash}  ${basename(installer)}\n${installerHash}  ${STABLE_INSTALLER_NAME}\n`, "utf8");
+  return { installer, stableInstaller, checksums, installerHash };
 }
 
 async function askToContinue(version: string): Promise<boolean> {
@@ -176,12 +196,8 @@ async function main(): Promise<void> {
     await runChecked(process.execPath, ["run", "--cwd", "launcher", "package:win"]);
     await runChecked(process.execPath, ["run", "app:smoke"]);
 
-    const installer = join(ROOT, "launcher", "artifacts", `feno-bridge-${targetVersion}-win-x64.exe`);
-    if (!existsSync(installer)) throw new Error(`Installer was not created: ${installer}`);
-
-    const installerHash = await sha256(installer);
-    const checksums = join(ROOT, "launcher", "artifacts", "checksums.txt");
-    writeFileSync(checksums, `${installerHash}  ${basename(installer)}\n`, "utf8");
+    const { installer, stableInstaller, checksums, installerHash } = await prepareReleaseAssets(
+      targetVersion, join(ROOT, "launcher", "artifacts"));
 
     if (versionChanged) {
       await runChecked("git", ["add", ...VERSION_FILES]);
@@ -203,11 +219,11 @@ async function main(): Promise<void> {
 
     const releaseExists = (await run("gh", ["release", "view", tag, "--repo", REPOSITORY], true)).exitCode === 0;
     if (releaseExists) {
-      await runChecked("gh", ["release", "upload", tag, installer, checksums, "--repo", REPOSITORY, "--clobber"]);
+      await runChecked("gh", ["release", "upload", tag, installer, stableInstaller, checksums, "--repo", REPOSITORY, "--clobber"]);
       await runChecked("gh", ["release", "edit", tag, "--repo", REPOSITORY, "--title", `Feno Bridge ${tag}`, "--draft=false", "--latest"]);
     } else {
       await runChecked("gh", [
-        "release", "create", tag, installer, checksums,
+        "release", "create", tag, installer, stableInstaller, checksums,
         "--repo", REPOSITORY,
         "--title", `Feno Bridge ${tag}`,
         "--notes", "Private Windows release for Feno Bridge collaborators.",
@@ -226,6 +242,12 @@ async function main(): Promise<void> {
       .find((line) => line.startsWith(`${basename(installer)}\t`));
     if (!installerLine || installerLine.split("\t")[1]?.trim() !== expectedDigest) {
       throw new Error(`Published installer digest mismatch for ${basename(installer)}`);
+    }
+    const stableLine = remoteAssets.stdout
+      .split(/\r?\n/)
+      .find((line) => line.startsWith(`${STABLE_INSTALLER_NAME}\t`));
+    if (!stableLine || stableLine.split("\t")[1]?.trim() !== expectedDigest) {
+      throw new Error(`Published installer digest mismatch for ${STABLE_INSTALLER_NAME}`);
     }
     if (!remoteAssets.stdout.split(/\r?\n/).some((line) => line.startsWith("checksums.txt\t"))) {
       throw new Error("Published release is missing checksums.txt");
