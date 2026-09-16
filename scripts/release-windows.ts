@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 export const SOURCE_REPOSITORY = "Ahmet1991/feno-bridge";
@@ -15,6 +15,13 @@ const VERSION_FILES = [
 ] as const;
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
+
+export function releaseRuntimeIsMutableBuildPath(executablePath: string): boolean {
+  const mutableRoot = join(ROOT, "launcher", "build", "runtime");
+  const candidate = resolve(executablePath);
+  const fromMutableRoot = relative(mutableRoot, candidate);
+  return fromMutableRoot === "" || (!fromMutableRoot.startsWith("..") && !isAbsolute(fromMutableRoot));
+}
 
 export function nextPatchVersion(version: string): string {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
@@ -153,6 +160,10 @@ async function main(): Promise<void> {
   const yes = args.includes("--yes") || args.includes("-y");
   const requestedVersion = args.find((arg) => !arg.startsWith("-"));
   const beforeVersion = currentVersion();
+
+  if (!dryRun && releaseRuntimeIsMutableBuildPath(process.execPath)) {
+    throw new Error("Release cannot run from launcher/build/runtime because packaging replaces that directory; use YAYINLA.bat or another Bun executable");
+  }
 
   if (requestedVersion) parseStableVersion(requestedVersion);
 

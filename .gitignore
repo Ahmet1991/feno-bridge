@@ -15,6 +15,7 @@ launcher/build/
 launcher/release/
 launcher/artifacts/
 feno-bridge-*-win-x64.exe
+release-bun.exe
 .playwright-cli/
 output/
 notes.md
