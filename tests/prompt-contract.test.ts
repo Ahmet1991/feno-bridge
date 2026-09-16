@@ -52,6 +52,11 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
   expect(transportOnly).toContain("Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.");
   expect(transportOnly).toContain("Use actual Codex Native results as evidence for local observations and effects.");
+  expect(transportOnly).toContain("When the needed local capability is deferred behind a discovery tool, invoke that discovery tool first, then inspect the newly loaded exact tool before acting; do not substitute a similarly named capability.");
+  expect(transportOnly).toContain("Before using a generic bridge wrapper for command execution or patching, discover the current outer harness tools when the matching exact tool is not already visible; use the generic wrapper only when no exact harness capability is available.");
+  expect(transportOnly).toContain("When both a generic bridge wrapper and the outer harness's exact tool can perform the same local action, use the exact harness tool and treat the generic wrapper as fallback so native schema, approvals, and UI lifecycle are preserved.");
+  expect(transportOnly).toContain("For shell work, prefer one direct, single-purpose command with bounded scope and bounded output. Avoid nested shell wrappers and multi-operation command strings when a direct command can do the work.");
+  expect(transportOnly).toContain("After a deterministic generic-wrapper failure, do not retry equivalent shell or quoting variants; switch to the matching exact harness tool when available, otherwise simplify the command shape before continuing.");
   expect(transportOnly).toContain("A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.");
   expect(transportOnly).toContain("After a deterministic tool failure, update the working hypothesis from that result");
   expect(transportOnly).toContain("do not repeat the same call unless its inputs or observable state changed.");
