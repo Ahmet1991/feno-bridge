@@ -17,6 +17,7 @@ let macAppBundle;
 
 /** See the call site: the Windows silent install is the one step whose cost tracks runner load. */
 const WINDOWS_INSTALL_TIMEOUT_MS = 300_000;
+const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = 120_000;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -116,7 +117,11 @@ try {
   }
 
   if (!fs.existsSync(executable)) throw new Error(`Packaged launcher executable is missing: ${executable}`);
-  run(command, args, { env });
+  if (process.platform === "win32") {
+    run(command, args, { env, timeout: WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS });
+  } else {
+    run(command, args, { env });
+  }
   if (!fs.existsSync(markerPath)) throw new Error("Packaged launcher did not write its readiness marker");
   const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
   if (marker.ok !== true

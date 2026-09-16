@@ -264,3 +264,18 @@ test("the Windows install budget leaves room for a loaded runner", () => {
   );
   assert.match(smoke, /run\(installer, \["\/S", "\/currentuser"\], \{ timeout: WINDOWS_INSTALL_TIMEOUT_MS \}\)/);
 });
+
+test("the Windows launcher smoke budget leaves room for durable runtime materialization", () => {
+  const smoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
+  const declared = smoke.match(/const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = ([0-9_]+);/);
+  assert.ok(declared, "the Windows launcher smoke budget must be a named constant");
+  const budget = Number(declared[1].replace(/_/g, ""));
+  assert.ok(
+    budget >= 120_000,
+    `the packaged launcher materializes a large runtime before writing its marker; ${budget}ms leaves no headroom`,
+  );
+  assert.match(
+    smoke,
+    /run\(command, args, \{ env, timeout: WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS \}\)/,
+  );
+});
