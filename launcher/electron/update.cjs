@@ -2,10 +2,16 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const { spawn, spawnSync } = require("node:child_process");
 
-const REPOSITORY = "Ahmet1991/feno-bridge";
-const MAX_GH_OUTPUT_BYTES = 2 * 1024 * 1024;
+const RELEASE_REPOSITORY = "Ahmet1991/codex-chatgpt-web";
+const RELEASE_API_URL = `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`;
+const RELEASE_HEADERS = {
+  Accept: "application/vnd.github+json",
+  "User-Agent": "Feno-Bridge-Updater",
+};
 
 function parseVersion(value) {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(value || "").trim());
@@ -60,63 +66,16 @@ function expectedChecksum(contents, assetName) {
 
 function validateReleaseAssetUrl(raw, version, assetName) {
   const url = new URL(raw);
-  const expectedPath = `/${REPOSITORY}/releases/download/v${version}/${assetName}`;
+  const expectedPath = `/${RELEASE_REPOSITORY}/releases/download/v${version}/${assetName}`;
   if (url.protocol !== "https:" || url.hostname !== "github.com" || url.pathname !== expectedPath) {
     throw new Error(`GitHub returned an unexpected release asset URL for ${assetName}`);
   }
   return url.toString();
 }
 
-function runGitHubCli(args, maxOutputBytes = MAX_GH_OUTPUT_BYTES) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("gh", args, {
-      windowsHide: true,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, GH_PROMPT_DISABLED: "1" },
-    });
-    const stdout = [];
-    const stderr = [];
-    let outputBytes = 0;
-    let settled = false;
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      child.kill();
-      reject(error);
-    };
-    const timeout = setTimeout(() => fail(new Error("GitHub release request timed out")), 15 * 60_000);
-    const collect = (chunks) => (chunk) => {
-      outputBytes += chunk.length;
-      if (outputBytes > maxOutputBytes) {
-        fail(new Error("GitHub CLI output exceeded its size limit"));
-        return;
-      }
-      chunks.push(chunk);
-    };
-    child.stdout.on("data", collect(stdout));
-    child.stderr.on("data", collect(stderr));
-    child.once("error", (error) => fail(error.code === "ENOENT"
-      ? new Error("GitHub CLI (gh) is required for private updates. Install gh and run gh auth login with a repository collaborator account.")
-      : error));
-    child.once("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (code !== 0) {
-        const detail = Buffer.concat(stderr).toString("utf8").trim();
-        reject(new Error(`Private update check failed. Run gh auth login with a repository collaborator account and confirm a release exists. ${detail}`.trim()));
-        return;
-      }
-      resolve(Buffer.concat(stdout).toString("utf8"));
-    });
-  });
-}
-
 function releaseAssetParts(raw) {
   const url = new URL(raw);
-  const prefix = `/${REPOSITORY}/releases/download/`;
+  const prefix = `/${RELEASE_REPOSITORY}/releases/download/`;
   if (url.protocol !== "https:" || url.hostname !== "github.com"
     || !url.pathname.startsWith(prefix) || url.search || url.hash) {
     throw new Error("Unexpected private release URL");
@@ -128,27 +87,31 @@ function releaseAssetParts(raw) {
   return { tag, asset };
 }
 
-async function fetchPrivateRelease() {
-  const result = JSON.parse(await runGitHubCli(["release", "view", "--repo", REPOSITORY, "--json", "tagName,assets"]));
-  const tag = result?.tagName;
-  releaseVersion(tag);
-  return {
-    tag_name: tag,
-    assets: (Array.isArray(result.assets) ? result.assets : []).map((asset) => ({
-      name: asset.name,
-      browser_download_url: `https://github.com/${REPOSITORY}/releases/download/${tag}/${asset.name}`,
-    })),
-  };
+async function checkedFetch(url, fetchImpl = globalThis.fetch) {
+  if (typeof fetchImpl !== "function") throw new Error("HTTPS update support is unavailable in this runtime");
+  const response = await fetchImpl(url, { headers: RELEASE_HEADERS, redirect: "follow" });
+  if (!response?.ok) {
+    throw new Error(`GitHub release request failed with HTTP ${response?.status ?? "unknown"}`);
+  }
+  return response;
 }
 
-async function downloadPrivateText(url) {
-  const { tag, asset } = releaseAssetParts(url);
-  return runGitHubCli(["release", "download", tag, "--repo", REPOSITORY, "--pattern", asset, "--output", "-"]);
+async function fetchPublicRelease(fetchImpl = globalThis.fetch) {
+  const response = await checkedFetch(RELEASE_API_URL, fetchImpl);
+  const release = await response.json();
+  releaseVersion(release?.tag_name);
+  return release;
 }
 
-async function downloadPrivateFile(url, destination) {
-  const { tag, asset } = releaseAssetParts(url);
-  await runGitHubCli(["release", "download", tag, "--repo", REPOSITORY, "--pattern", asset, "--output", destination]);
+async function downloadPublicText(url) {
+  const response = await checkedFetch(url);
+  return response.text();
+}
+
+async function downloadPublicFile(url, destination) {
+  const response = await checkedFetch(url);
+  if (!response.body) throw new Error("GitHub release download returned an empty body");
+  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(destination, { mode: 0o600 }));
 }
 
 function sha256(filePath) {
@@ -248,9 +211,9 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
 
 function defaultDependencies() {
   return {
-    fetchRelease: fetchPrivateRelease,
-    downloadText: downloadPrivateText,
-    downloadFile: downloadPrivateFile,
+    fetchRelease: fetchPublicRelease,
+    downloadText: downloadPublicText,
+    downloadFile: downloadPublicFile,
     sha256,
     extractMac(archive, destination) {
       fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
@@ -421,6 +384,7 @@ module.exports = {
   compareVersions,
   createUpdateController,
   expectedChecksum,
+  fetchPublicRelease,
   macApplicationPath,
   parseVersion,
   releaseAssetParts,

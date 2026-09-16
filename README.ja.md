@@ -1,4 +1,4 @@
-> **Feno Bridge Windows セットアップ：** [Setup フォルダー](Setup/README.md) · [最新版をダウンロード](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe)
+> **Feno Bridge Windows セットアップ：** [Setup フォルダー](Setup/README.md) · [最新版をダウンロード](https://github.com/Ahmet1991/codex-chatgpt-web/releases/latest/download/feno-bridge-setup.exe)
 
 <h1 align="center">Codex 用 ChatGPT Web</h1>
 

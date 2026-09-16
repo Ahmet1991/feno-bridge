@@ -1,4 +1,4 @@
-> **Feno Bridge Windows 安装：** [Setup 文件夹](Setup/README.md) · [下载最新版](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe)
+> **Feno Bridge Windows 安装：** [Setup 文件夹](Setup/README.md) · [下载最新版](https://github.com/Ahmet1991/codex-chatgpt-web/releases/latest/download/feno-bridge-setup.exe)
 
 <h1 align="center">ChatGPT Web for Codex</h1>
 

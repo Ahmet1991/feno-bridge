@@ -6,7 +6,9 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 
 test("local Windows release chooses the next patch version", async () => {
-  const { nextPatchVersion } = await import("../scripts/release-windows");
+  const { nextPatchVersion, RELEASE_REPOSITORY, SOURCE_REPOSITORY } = await import("../scripts/release-windows");
+  expect(SOURCE_REPOSITORY).toBe("Ahmet1991/feno-bridge");
+  expect(RELEASE_REPOSITORY).toBe("Ahmet1991/codex-chatgpt-web");
   expect(nextPatchVersion("5.0.5")).toBe("5.0.6");
   expect(nextPatchVersion("9.12.99")).toBe("9.12.100");
   expect(() => nextPatchVersion("5.0.5-beta.1")).toThrow(/stable x\.y\.z/i);

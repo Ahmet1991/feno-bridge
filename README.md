@@ -1,4 +1,4 @@
-> **Feno Bridge Windows kurulumu:** [Setup klasörü](Setup/README.md) · [En güncel kurulum dosyası](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe)
+> **Feno Bridge Windows kurulumu:** [Setup klasörü](Setup/README.md) · [En güncel kurulum dosyası](https://github.com/Ahmet1991/codex-chatgpt-web/releases/latest/download/feno-bridge-setup.exe)
 
 <h1 align="center">ChatGPT Web for Codex</h1>
 

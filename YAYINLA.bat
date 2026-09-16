@@ -5,6 +5,10 @@ cd /d "%~dp0"
 set "BUN_EXE="
 where bun.exe >nul 2>nul && set "BUN_EXE=bun.exe"
 
+if not defined BUN_EXE if exist "%~dp0launcher\build\runtime\runtime\bun.exe" (
+  set "BUN_EXE=%~dp0launcher\build\runtime\runtime\bun.exe"
+)
+
 if not defined BUN_EXE if exist "%LOCALAPPDATA%\Programs\Feno Bridge\resources\runtime\runtime\bun.exe" (
   set "BUN_EXE=%LOCALAPPDATA%\Programs\Feno Bridge\resources\runtime\runtime\bun.exe"
 )

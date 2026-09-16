@@ -3,7 +3,8 @@ import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, re
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
-const REPOSITORY = "Ahmet1991/feno-bridge";
+export const SOURCE_REPOSITORY = "Ahmet1991/feno-bridge";
+export const RELEASE_REPOSITORY = "Ahmet1991/codex-chatgpt-web";
 const ROOT = resolve(import.meta.dir, "..");
 const STABLE_INSTALLER_NAME = "feno-bridge-setup.exe";
 const VERSION_FILES = [
@@ -69,7 +70,7 @@ function currentVersion(): string {
 
 async function releaseIsComplete(version: string): Promise<boolean> {
   const tag = `v${version}`;
-  const result = await run("gh", ["release", "view", tag, "--repo", REPOSITORY, "--json", "assets", "--jq", ".assets[].name"], true);
+  const result = await run("gh", ["release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "assets", "--jq", ".assets[].name"], true);
   if (result.exitCode !== 0) return false;
   const assets = new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
   return assets.has(`feno-bridge-${version}-win-x64.exe`)
@@ -161,7 +162,11 @@ async function main(): Promise<void> {
     await runChecked("git", ["--version"], true);
     await runChecked("gh", ["--version"], true);
     await runChecked("gh", ["auth", "status"], true);
-    await runChecked("gh", ["repo", "view", REPOSITORY, "--json", "nameWithOwner"], true);
+    await runChecked("gh", ["repo", "view", SOURCE_REPOSITORY, "--json", "nameWithOwner"], true);
+    const releaseVisibility = await runChecked("gh", ["repo", "view", RELEASE_REPOSITORY, "--json", "visibility", "--jq", ".visibility"], true);
+    if (releaseVisibility.stdout.trim().toUpperCase() !== "PUBLIC") {
+      throw new Error(`${RELEASE_REPOSITORY} must be public so installed Feno Bridge clients can update without GitHub credentials`);
+    }
 
     const status = await runChecked("git", ["status", "--porcelain"], true);
     if (status.stdout.trim()) {
@@ -177,8 +182,9 @@ async function main(): Promise<void> {
   if (comparison < 0) throw new Error(`Refusing to release older version ${targetVersion}; current is ${beforeVersion}`);
 
   console.log(`YAYIN_PLANI v${targetVersion}`);
-  console.log(`Repo: ${REPOSITORY}`);
-  console.log("Akis: surum -> verify -> Windows setup -> checksum -> commit/tag -> private GitHub Release");
+  console.log(`Kaynak repo: ${SOURCE_REPOSITORY}`);
+  console.log(`Guncelleme repo: ${RELEASE_REPOSITORY}`);
+  console.log("Akis: surum -> verify -> Windows setup -> checksum -> commit/tag -> public GitHub Release");
   console.log("GitHub Actions kullanilmayacak.");
 
   if (dryRun) {
@@ -227,23 +233,23 @@ async function main(): Promise<void> {
     await runChecked("git", ["push", "origin", "HEAD"]);
     await runChecked("git", ["push", "origin", tag]);
 
-    const releaseExists = (await run("gh", ["release", "view", tag, "--repo", REPOSITORY], true)).exitCode === 0;
+    const releaseExists = (await run("gh", ["release", "view", tag, "--repo", RELEASE_REPOSITORY], true)).exitCode === 0;
     if (releaseExists) {
-      await runChecked("gh", ["release", "upload", tag, installer, stableInstaller, checksums, "--repo", REPOSITORY, "--clobber"]);
-      await runChecked("gh", ["release", "edit", tag, "--repo", REPOSITORY, "--title", `Feno Bridge ${tag}`, "--draft=false", "--latest"]);
+      await runChecked("gh", ["release", "upload", tag, installer, stableInstaller, checksums, "--repo", RELEASE_REPOSITORY, "--clobber"]);
+      await runChecked("gh", ["release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--title", `Feno Bridge ${tag}`, "--draft=false", "--latest"]);
     } else {
       await runChecked("gh", [
         "release", "create", tag, installer, stableInstaller, checksums,
-        "--repo", REPOSITORY,
+        "--repo", RELEASE_REPOSITORY,
         "--title", `Feno Bridge ${tag}`,
-        "--notes", "Private Windows release for Feno Bridge collaborators.",
+        "--notes", "Public update package for Feno Bridge. Source code remains in the private source repository.",
         "--latest",
       ]);
     }
 
     const remoteAssets = await runChecked(
       "gh",
-      ["release", "view", tag, "--repo", REPOSITORY, "--json", "assets", "--jq", ".assets[] | [.name, .digest] | @tsv"],
+      ["release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "assets", "--jq", ".assets[] | [.name, .digest] | @tsv"],
       true,
     );
     const expectedDigest = `sha256:${installerHash}`;
