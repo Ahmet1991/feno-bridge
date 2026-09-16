@@ -27,7 +27,7 @@ const {
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
-const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
+const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
 const {
@@ -65,7 +65,12 @@ app.setName(LAUNCHER_PROFILE.displayName);
 if (process.platform === "win32") {
   app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");
 }
-const launcherUserData = LAUNCHER_PROFILE.userData;
+const launcherUserData = !IS_DEV_PROFILE && LAUNCHER_PROFILE.legacyUserData
+  ? migrateLegacyLauncherUserData({
+      legacyPath: LAUNCHER_PROFILE.legacyUserData,
+      targetPath: LAUNCHER_PROFILE.userData,
+    })
+  : LAUNCHER_PROFILE.userData;
 fs.mkdirSync(launcherUserData, { recursive: true, mode: 0o700 });
 if (process.platform !== "win32") fs.chmodSync(launcherUserData, 0o700);
 app.setPath("userData", launcherUserData);

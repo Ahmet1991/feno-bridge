@@ -485,7 +485,7 @@ test("terminal uninstall refuses to race a launcher-owned runtime", async () => 
       CODEX_CHATGPT_WEB_HOME: appHome,
     });
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("must be removed from Codex Web GPT Settings");
+    expect(result.stderr).toContain("must be removed from Feno Bridge Settings");
     expect(existsSync(configPath)).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });

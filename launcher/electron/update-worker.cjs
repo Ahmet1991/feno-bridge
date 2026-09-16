@@ -112,7 +112,12 @@ function updateLinux(job) {
 function relaunchExisting(job) {
   try {
     if (job.platform === "darwin" && fs.existsSync(job.target)) launch("/usr/bin/open", [job.target]);
-    else if (job.platform === "win32" && fs.existsSync(job.target)) launch(job.target);
+    else if (job.platform === "win32") {
+      const target = fs.existsSync(job.target)
+        ? job.target
+        : (job.fallbackTarget && fs.existsSync(job.fallbackTarget) ? job.fallbackTarget : null);
+      if (target) launch(target);
+    }
     else if (job.platform === "linux") {
       const target = job.wrapper && fs.existsSync(job.wrapper) ? job.wrapper : job.target;
       if (fs.existsSync(target)) launch(target);

@@ -193,7 +193,7 @@ test("browser-only Medium directs users to the full harness", () => {
   const warning = chatGptReadOnlyContextWarning(request("medium"), capabilities);
   expect(warning).toStartWith("> **Local tools unavailable**");
   expect(warning).toContain("`MCP`");
-  expect(warning).toContain("`Codex Web GPT`");
+  expect(warning).toContain("`Feno Bridge`");
   expect(warning).toContain("`Full`");
   expect(warning).toContain("selected ChatGPT Web model");
   expect(warning).not.toContain("tool-capable ChatGPT Web model first");

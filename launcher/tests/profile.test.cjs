@@ -1,7 +1,41 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
-const { resolveLauncherProfile } = require("../electron/profile.cjs");
+const { migrateLegacyLauncherUserData, resolveLauncherProfile } = require("../electron/profile.cjs");
+
+test("production launcher profile uses the Feno Bridge user-data directory", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "Library", "Application Support");
+  const production = resolveLauncherProfile({
+    argv: ["electron", "."],
+    env: {},
+    homeDir,
+    appData,
+  });
+
+  assert.equal(production.userData, path.join(appData, "Feno Bridge"));
+  assert.equal(production.legacyUserData, path.join(appData, "Codex Web GPT"));
+});
+
+test("legacy launcher data is moved to Feno Bridge without losing files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "feno-profile-migration-"));
+  const legacy = path.join(root, "Codex Web GPT");
+  const target = path.join(root, "Feno Bridge");
+  fs.mkdirSync(path.join(legacy, "logs"), { recursive: true });
+  fs.writeFileSync(path.join(legacy, "launcher-state.json"), "state");
+  fs.writeFileSync(path.join(legacy, "logs", "latest.log"), "log");
+
+  try {
+    assert.equal(migrateLegacyLauncherUserData({ legacyPath: legacy, targetPath: target }), target);
+    assert.equal(fs.existsSync(legacy), false);
+    assert.equal(fs.readFileSync(path.join(target, "launcher-state.json"), "utf8"), "state");
+    assert.equal(fs.readFileSync(path.join(target, "logs", "latest.log"), "utf8"), "log");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("DEV launcher profile isolates every durable home from production", () => {
   const homeDir = path.resolve("/Users/tester");

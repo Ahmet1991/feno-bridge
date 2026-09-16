@@ -13,7 +13,18 @@ const {
   releaseAssetParts,
   releaseAssetName,
   validateReleaseAssetUrl,
+  windowsApplicationPath,
 } = require("../electron/update.cjs");
+
+test("Windows update migrates the legacy install directory to Feno Bridge", () => {
+  const legacy = "C:\\Users\\tester\\AppData\\Local\\Programs\\Codex Web GPT\\Feno Bridge.exe";
+  const current = "C:\\Users\\tester\\AppData\\Local\\Programs\\Feno Bridge\\Feno Bridge.exe";
+  assert.equal(
+    windowsApplicationPath(legacy, "C:\\Users\\tester\\AppData\\Local"),
+    current,
+  );
+  assert.equal(windowsApplicationPath(current, "C:\\Users\\tester\\AppData\\Local"), current);
+});
 
 test("Linux auto-update fails closed without the stable installer wrapper", () => {
   const previousAppImage = process.env.CODEX_WEB_GPT_APPIMAGE;

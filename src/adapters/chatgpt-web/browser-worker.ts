@@ -747,7 +747,7 @@ const chatGptExpiredSessionAlert = (page: Page): Locator => page
 export async function throwIfChatGptSessionFailureAlert(page: Page): Promise<void> {
   if (await chatGptExpiredSessionAlert(page).isVisible().catch(() => false)) {
     throw new ChatGptWebAdapterError(
-      "The ChatGPT session has expired. Sign in again in Codex Web GPT.",
+      "The ChatGPT session has expired. Sign in again in Feno Bridge.",
       { status: 401, errorType: "authentication_error", code: "chatgpt_session_expired", retryable: false },
     );
   }

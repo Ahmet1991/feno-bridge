@@ -291,7 +291,7 @@ describe("Zero Risk public MCP ABI", () => {
         "codex_write_stdin",
       ]);
       expect(listed.tools.find(tool => tool.name === "codex_turn_start")?.description)
-        .toContain("request_id included in the pasted Codex Web GPT request");
+        .toContain("request_id included in the pasted Feno Bridge request");
       expect(listed.tools.find(tool => tool.name === "codex_tool_inventory")?.description)
         .toStartWith("List tools available to the connected Zero Risk request");
       const startSchema = listed.tools.find(tool => tool.name === "codex_turn_start")?.inputSchema;

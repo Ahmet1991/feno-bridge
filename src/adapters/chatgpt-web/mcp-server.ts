@@ -41,7 +41,7 @@ export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 10_000;
 export const CHATGPT_WEB_MCP_INVOCATION_TIMEOUT_MS = 90_000;
 
 const ZERO_RISK_MCP_INSTRUCTIONS = [
-  "For each pasted Codex Web GPT request, begin with codex_turn_start using the request_id in its request block.",
+  "For each pasted Feno Bridge request, begin with codex_turn_start using the request_id in its request block.",
   "Use that request_id with the Codex tools needed for the task.",
   "When the task is finished, send the complete answer with codex_turn_complete.",
   "If a tool returns an error, report that error instead of changing the request_id.",
@@ -518,7 +518,7 @@ export async function runChatGptMcpServer(options: {
       "codex_turn_start",
       {
         title: "Connect a Codex Zero Risk request",
-        description: "Connect the request_id included in the pasted Codex Web GPT request so its Codex tools can be used.",
+        description: "Connect the request_id included in the pasted Feno Bridge request so its Codex tools can be used.",
         inputSchema: {
           request_id: turnTokenSchema,
         },

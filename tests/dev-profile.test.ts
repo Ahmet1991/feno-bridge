@@ -72,6 +72,8 @@ test("installed launcher discovery has explicit platform candidates", () => {
     homeDirectory: "/Users/tester",
     environment: {},
   })).toEqual([
+    "/Applications/Feno Bridge.app/Contents/MacOS/Feno Bridge",
+    "/Users/tester/Applications/Feno Bridge.app/Contents/MacOS/Feno Bridge",
     "/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
     "/Users/tester/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
   ]);
@@ -89,6 +91,8 @@ test("installed launcher discovery has explicit platform candidates", () => {
     homeDirectory: "C:\\Users\\tester",
     environment: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local" },
   })).toEqual([
+    "C:\\Users\\tester\\AppData\\Local\\Programs\\Feno Bridge\\Feno Bridge.exe",
+    "C:\\Users\\tester\\AppData\\Local\\Programs\\Codex Web GPT\\Feno Bridge.exe",
     "C:\\Users\\tester\\AppData\\Local\\Programs\\Codex Web GPT\\Codex Web GPT.exe",
   ]);
   expect(installedLauncherCandidates({
@@ -97,6 +101,7 @@ test("installed launcher discovery has explicit platform candidates", () => {
     environment: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local" },
     windowsInstallLocation: "D:\\Apps\\Codex Web GPT",
   })).toEqual([
+    "D:\\Apps\\Codex Web GPT\\Feno Bridge.exe",
     "D:\\Apps\\Codex Web GPT\\Codex Web GPT.exe",
   ]);
 });

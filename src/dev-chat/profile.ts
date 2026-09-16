@@ -128,6 +128,8 @@ export function installedLauncherCandidates({
   const targetPath = platform === "win32" ? win32 : posix;
   if (platform === "darwin") {
     candidates.push(
+      "/Applications/Feno Bridge.app/Contents/MacOS/Feno Bridge",
+      posix.join(homeDirectory, "Applications", "Feno Bridge.app", "Contents", "MacOS", "Feno Bridge"),
       "/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT",
       posix.join(homeDirectory, "Applications", "Codex Web GPT.app", "Contents", "MacOS", "Codex Web GPT"),
     );
@@ -139,10 +141,13 @@ export function installedLauncherCandidates({
         ? registeredWindowsLauncherInstallLocation()
         : undefined);
     if (registeredLocation && win32.isAbsolute(registeredLocation)) {
+      candidates.push(win32.join(registeredLocation, "Feno Bridge.exe"));
       candidates.push(win32.join(registeredLocation, "Codex Web GPT.exe"));
     } else {
       const localAppData = environment.LOCALAPPDATA?.trim();
       if (localAppData) {
+        candidates.push(win32.join(localAppData, "Programs", "Feno Bridge", "Feno Bridge.exe"));
+        candidates.push(win32.join(localAppData, "Programs", "Codex Web GPT", "Feno Bridge.exe"));
         candidates.push(win32.join(localAppData, "Programs", "Codex Web GPT", "Codex Web GPT.exe"));
       }
     }
@@ -160,7 +165,7 @@ export function findInstalledLauncherExecutable(options: Parameters<typeof insta
   const executable = candidates.find(executableFile);
   if (executable) return executable;
   throw new Error(
-    "Installed Codex Web GPT launcher was not found. Install it first or set CODEX_WEB_GPT_LAUNCHER_EXECUTABLE to its absolute executable path."
+    "Installed Feno Bridge launcher was not found. Install it first or set CODEX_WEB_GPT_LAUNCHER_EXECUTABLE to its absolute executable path."
       + ` Checked: ${candidates.join(", ") || "no platform candidates"}`,
   );
 }

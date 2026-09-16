@@ -1,8 +1,31 @@
+const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 const PRODUCTION_PROFILE = "production";
 const DEVELOPMENT_PROFILE = "development";
+
+function migrateLegacyLauncherUserData({ legacyPath, targetPath }) {
+  if (!legacyPath || !targetPath || path.resolve(legacyPath) === path.resolve(targetPath)) return targetPath;
+  if (!fs.existsSync(legacyPath)) return targetPath;
+
+  if (fs.existsSync(targetPath)) {
+    let backup = path.join(targetPath, "_legacy-backup");
+    let suffix = 2;
+    while (fs.existsSync(backup)) backup = path.join(targetPath, `_legacy-backup-${suffix++}`);
+    fs.renameSync(legacyPath, backup);
+    return targetPath;
+  }
+
+  try {
+    fs.renameSync(legacyPath, targetPath);
+  } catch (error) {
+    if (error?.code !== "EXDEV") throw error;
+    fs.cpSync(legacyPath, targetPath, { recursive: true, errorOnExist: true });
+    fs.rmSync(legacyPath, { recursive: true, force: true });
+  }
+  return targetPath;
+}
 
 function resolveUserPath(value, homeDir = os.homedir()) {
   if (value === "~") return homeDir;
@@ -26,10 +49,10 @@ function resolveLauncherProfile({
     const coreHome = env.CODEX_CHATGPT_WEB_HOME?.trim()
       ? resolveUserPath(env.CODEX_CHATGPT_WEB_HOME.trim(), homeDir)
       : path.join(homeDir, ".codex-chatgpt-web");
-    // Keep the existing browser and launcher state when upgrading the app name.
-    const userData = env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR?.trim()
-      ? resolveUserPath(env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR.trim(), homeDir)
-      : path.join(appData, "Codex Web GPT");
+    const configuredUserData = env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR?.trim();
+    const userData = configuredUserData
+      ? resolveUserPath(configuredUserData, homeDir)
+      : path.join(appData, "Feno Bridge");
     return {
       kind: PRODUCTION_PROFILE,
       displayName: "Feno Bridge",
@@ -38,6 +61,7 @@ function resolveLauncherProfile({
         ? resolveUserPath(env.CODEX_HOME.trim(), homeDir)
         : path.join(homeDir, ".codex"),
       userData,
+      legacyUserData: configuredUserData ? null : path.join(appData, "Codex Web GPT"),
       browserPartition: "persist:codex-web-gpt-chatgpt",
     };
   }
@@ -64,5 +88,6 @@ function resolveLauncherProfile({
 module.exports = {
   DEVELOPMENT_PROFILE,
   PRODUCTION_PROFILE,
+  migrateLegacyLauncherUserData,
   resolveLauncherProfile,
 };

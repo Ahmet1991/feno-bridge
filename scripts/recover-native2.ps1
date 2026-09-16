@@ -13,7 +13,7 @@ function Get-InstalledBridgeRuntime {
   $bridgeHome = Join-Path $env:USERPROFILE ".codex-chatgpt-web"
   $versions = Join-Path $bridgeHome "versions"
   if (-not (Test-Path -LiteralPath $versions)) {
-    throw "Codex Web GPT versions directory was not found: $versions"
+    throw "Feno Bridge versions directory was not found: $versions"
   }
 
   $candidate = Get-ChildItem -LiteralPath $versions -Directory |
@@ -25,7 +25,7 @@ function Get-InstalledBridgeRuntime {
     Select-Object -First 1
 
   if (-not $candidate) {
-    throw "No complete Codex Web GPT runtime installation was found."
+    throw "No complete Feno Bridge runtime installation was found."
   }
 
   return [pscustomobject]@{
@@ -88,6 +88,7 @@ function Invoke-Doctor($runtime) {
 function Set-StandardContextPreference {
   $targets = @(
     (Join-Path $env:USERPROFILE ".codex-chatgpt-web\config.json"),
+    (Join-Path $env:APPDATA "Feno Bridge\launcher-state.json"),
     (Join-Path $env:APPDATA "Codex Web GPT\launcher-state.json")
   )
   $changed = $false
@@ -119,16 +120,19 @@ function Set-StandardContextPreference {
 }
 
 function Restart-Launcher {
-  $launcher = Join-Path $env:LOCALAPPDATA "Programs\Codex Web GPT\Codex Web GPT.exe"
+  $launcherCandidates = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Feno Bridge\Feno Bridge.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Codex Web GPT\Feno Bridge.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Codex Web GPT\Codex Web GPT.exe")
+  )
+  $launcher = $launcherCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
   if (-not (Test-Path -LiteralPath $launcher)) {
-    throw "Codex Web GPT launcher was not found: $launcher"
+    throw "Feno Bridge launcher was not found. Checked: $($launcherCandidates -join ', ')"
   }
 
   $main = Get-CimInstance Win32_Process |
     Where-Object {
-      $_.Name -eq "Codex Web GPT.exe" -and
-      $_.ExecutablePath -eq $launcher -and
-      $_.CommandLine -match 'Codex Web GPT\.exe"?\s*$'
+      $_.ExecutablePath -eq $launcher
     } |
     Select-Object -First 1
 
@@ -153,14 +157,14 @@ function Restart-Launcher {
     }
   } while ((Get-Date) -lt $deadline)
 
-  throw "Codex Web GPT launcher did not become ready within 20 seconds."
+  throw "Feno Bridge launcher did not become ready within 20 seconds."
 }
 
 Write-Step "1. Cancel active Codex Web turns"
 Write-Step "2. Force Standard Context in bridge and launcher state"
-Write-Step "3. Restart Codex Web GPT if context preference changed"
+Write-Step "3. Restart Feno Bridge if context preference changed"
 Write-Step "4. Run doctor"
-Write-Step "5. Restart Codex Web GPT only if doctor still fails"
+Write-Step "5. Restart Feno Bridge only if doctor still fails"
 Write-Step "6. Run doctor again and report final health"
 Write-Step "7. Report every check that cannot be proven from this machine"
 
@@ -179,7 +183,7 @@ try {
 
   $contextChanged = Set-StandardContextPreference
   if ($contextChanged) {
-    Write-Output "Standard Context preference corrected. Restarting Codex Web GPT so the runtime reloads it..."
+    Write-Output "Standard Context preference corrected. Restarting Feno Bridge so the runtime reloads it..."
     Restart-Launcher
     Start-Sleep -Seconds 2
   }
@@ -191,7 +195,7 @@ try {
     exit 0
   }
 
-  Write-Output "Doctor still reports an unhealthy browser path. Restarting only Codex Web GPT..."
+  Write-Output "Doctor still reports an unhealthy browser path. Restarting only Feno Bridge..."
   Restart-Launcher
   Start-Sleep -Seconds 2
 

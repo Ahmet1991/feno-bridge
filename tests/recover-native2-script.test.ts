@@ -74,9 +74,9 @@ test("Native2 recovery dry-run describes the safe recovery sequence", async () =
   expect(exitCode, stderr).toBe(0);
   expect(stdout).toContain("1. Cancel active Codex Web turns");
   expect(stdout).toContain("2. Force Standard Context in bridge and launcher state");
-  expect(stdout).toContain("3. Restart Codex Web GPT if context preference changed");
+  expect(stdout).toContain("3. Restart Feno Bridge if context preference changed");
   expect(stdout).toContain("4. Run doctor");
-  expect(stdout).toContain("5. Restart Codex Web GPT only if doctor still fails");
+  expect(stdout).toContain("5. Restart Feno Bridge only if doctor still fails");
   expect(stdout).toContain("6. Run doctor again and report final health");
   expect(stdout).toContain("7. Report every check that cannot be proven from this machine");
 }, SHELL_TEST_TIMEOUT_MS);
@@ -88,7 +88,7 @@ test("Native2 recovery synchronizes Standard Context across bridge and launcher 
   const userProfile = join(root, "user");
   const appData = join(root, "roaming");
   const bridgeDir = join(userProfile, ".codex-chatgpt-web");
-  const launcherDir = join(appData, "Codex Web GPT");
+  const launcherDir = join(appData, "Feno Bridge");
   mkdirSync(bridgeDir, { recursive: true });
   mkdirSync(launcherDir, { recursive: true });
   writeFileSync(join(bridgeDir, "config.json"), JSON.stringify({ version: 3, experimentalBiggerContext: true }));

@@ -173,6 +173,18 @@ function macApplicationPath(executablePath) {
   return match[1];
 }
 
+function windowsApplicationPath(executablePath, localAppData = process.env.LOCALAPPDATA) {
+  if (!localAppData || !path.win32.isAbsolute(localAppData) || !path.win32.isAbsolute(executablePath)) {
+    return executablePath;
+  }
+  const executable = path.win32.normalize(executablePath);
+  const legacyDirectory = path.win32.normalize(path.win32.join(localAppData, "Programs", "Codex Web GPT"));
+  if (path.win32.dirname(executable).toLowerCase() !== legacyDirectory.toLowerCase()) return executablePath;
+  const name = path.win32.basename(executable).toLowerCase();
+  if (name !== "feno bridge.exe" && name !== "codex web gpt.exe") return executablePath;
+  return path.win32.join(localAppData, "Programs", "Feno Bridge", "Feno Bridge.exe");
+}
+
 function findMacApplication(root) {
   const entries = fs.readdirSync(root, { withFileTypes: true });
   const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
@@ -205,7 +217,8 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
       tempRoot,
       logPath,
       source: assetPath,
-      target: executablePath,
+      target: windowsApplicationPath(executablePath),
+      fallbackTarget: executablePath,
     };
   }
   if (platform === "linux") {
@@ -414,4 +427,5 @@ module.exports = {
   releaseAssetName,
   releaseVersion,
   validateReleaseAssetUrl,
+  windowsApplicationPath,
 };
