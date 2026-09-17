@@ -6,8 +6,10 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
   buildJob,
+  checkedFetch,
   compareVersions,
   createUpdateController,
+  downloadPublicFile,
   expectedChecksum,
   fetchPublicRelease,
   macApplicationPath,
@@ -117,6 +119,118 @@ test("public updater checks the dedicated release repository without GitHub CLI"
   assert.equal(release.tag_name, "v1.2.0");
 });
 
+test("update requests abort when response headers do not arrive in time", async () => {
+  let observedSignal = null;
+  await assert.rejects(
+    checkedFetch("https://api.github.com/example", async (_url, options) => {
+      observedSignal = options.signal;
+      return await new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+      });
+    }, {
+      headerTimeoutMs: 20,
+      maxAttempts: 1,
+    }),
+    /headers.*timed out/i,
+  );
+  assert.equal(observedSignal?.aborted, true);
+});
+
+test("update requests retry transient GET failures and honor Retry-After", async () => {
+  let calls = 0;
+  const delays = [];
+  const response = await checkedFetch("https://api.github.com/example", async () => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: (name) => name.toLowerCase() === "retry-after" ? "1" : null },
+      };
+    }
+    return { ok: true, status: 200, headers: { get: () => null } };
+  }, {
+    maxAttempts: 2,
+    sleep: async (milliseconds) => delays.push(milliseconds),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [1000]);
+});
+
+test("stalled update bodies time out, report progress, and leave no partial file", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "feno-update-stall-"));
+  const destination = path.join(root, "update.exe");
+  const progress = [];
+  try {
+    await assert.rejects(
+      downloadPublicFile("https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/update.exe", destination, {
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: (name) => name.toLowerCase() === "content-length" ? "10" : null },
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1, 2, 3]));
+            },
+          }),
+        }),
+        bodyStallTimeoutMs: 20,
+        maxAttempts: 1,
+        onProgress: (value) => progress.push(value),
+      }),
+      /body.*timed out/i,
+    );
+    assert.deepEqual(progress, [{ receivedBytes: 3, totalBytes: 10 }]);
+    assert.equal(fs.existsSync(destination), false);
+    assert.equal(fs.existsSync(`${destination}.part`), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cancelling update preparation aborts a download before the worker exists", async () => {
+  let observedSignal = null;
+  const controller = createUpdateController({
+    currentVersion: "1.1.4",
+    platform: "win32",
+    arch: "x64",
+    packaged: true,
+    executablePath: "C:\\Feno Bridge.exe",
+    runtimeExecutable: "C:\\bun.exe",
+    logsDirectory: "C:\\logs",
+    dependencies: {
+      fetchRelease: async () => ({
+        tag_name: "v1.2.0",
+        assets: [
+          {
+            name: "feno-bridge-1.2.0-win-x64.exe",
+            browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/feno-bridge-1.2.0-win-x64.exe",
+          },
+          {
+            name: "checksums.txt",
+            browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/checksums.txt",
+          },
+        ],
+      }),
+      downloadText: async (_url, options) => await new Promise((_resolve, reject) => {
+        observedSignal = options?.signal || null;
+        if (observedSignal) {
+          observedSignal.addEventListener("abort", () => reject(observedSignal.reason), { once: true });
+        }
+        setTimeout(() => reject(new Error("test download did not get cancelled")), 100);
+      }),
+    },
+  });
+  await controller.checkOnce();
+  const installing = controller.beginInstall();
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.cancelInstall();
+  await assert.rejects(installing, /cancel/i);
+  assert.equal(observedSignal?.aborted, true);
+  assert.deepEqual(controller.getState(), { status: "available", version: "1.2.0" });
+});
+
 test("manual update check can discover a release published after startup", async () => {
   let version = "v1.1.4";
   let calls = 0;
@@ -152,6 +266,45 @@ test("manual update check can discover a release published after startup", async
   assert.deepEqual(await controller.checkOnce(), { status: "up-to-date" });
   assert.deepEqual(await controller.checkOnce({ force: true }), { status: "available", version: "1.2.0" });
   assert.equal(calls, 2);
+});
+
+test("a stale startup check cannot overwrite a newer forced update result", async () => {
+  let resolveStartup;
+  const startup = new Promise((resolve) => { resolveStartup = resolve; });
+  let calls = 0;
+  const assets = [
+    {
+      name: "feno-bridge-1.2.0-win-x64.exe",
+      browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/feno-bridge-1.2.0-win-x64.exe",
+    },
+    {
+      name: "checksums.txt",
+      browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/checksums.txt",
+    },
+  ];
+  const controller = createUpdateController({
+    currentVersion: "1.1.4",
+    platform: "win32",
+    arch: "x64",
+    packaged: true,
+    executablePath: "C:\\Feno Bridge.exe",
+    runtimeExecutable: "C:\\bun.exe",
+    logsDirectory: "C:\\logs",
+    dependencies: {
+      fetchRelease: async () => {
+        calls += 1;
+        if (calls === 1) return await startup;
+        return { tag_name: "v1.2.0", assets };
+      },
+    },
+  });
+
+  const first = controller.checkOnce();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await controller.checkOnce({ force: true }), { status: "available", version: "1.2.0" });
+  resolveStartup({ tag_name: "v1.1.4", assets: [] });
+  assert.deepEqual(await first, { status: "available", version: "1.2.0" });
+  assert.deepEqual(controller.getState(), { status: "available", version: "1.2.0" });
 });
 
 test("macOS bundle resolution never guesses outside Contents/MacOS", () => {
@@ -280,12 +433,18 @@ test("detached worker replaces an installed Linux AppImage and removes the old v
   const source = path.join(jobRoot, "update.AppImage");
   const runnerSource = path.join(jobRoot, "run-appimage");
   const logPath = path.join(root, "logs", "update-worker.log");
+  const readyPath = path.join(root, "logs", "launcher-ready.json");
   fs.mkdirSync(path.dirname(oldTarget), { recursive: true });
   fs.mkdirSync(path.dirname(wrapper), { recursive: true });
   fs.mkdirSync(jobRoot, { recursive: true });
   fs.writeFileSync(oldTarget, "old");
   fs.writeFileSync(wrapper, "old wrapper");
-  fs.writeFileSync(source, `#!/bin/sh\nprintf launched > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  fs.writeFileSync(source, [
+    "#!/bin/sh",
+    `printf launched > ${JSON.stringify(marker)}`,
+    `printf '%s\\n' '{"version":"1.2.0","at":9999999999999,"startup":{"status":"ready","at":9999999999999}}' > ${JSON.stringify(readyPath)}`,
+    "",
+  ].join("\n"), { mode: 0o755 });
   fs.writeFileSync(runnerSource, "#!/bin/sh\ntarget=\"$1\"\nshift\nexec \"$target\" \"$@\"\n", { mode: 0o755 });
   const jobPath = path.join(jobRoot, "job.json");
   fs.writeFileSync(jobPath, JSON.stringify({
@@ -298,6 +457,7 @@ test("detached worker replaces an installed Linux AppImage and removes the old v
     target: oldTarget,
     wrapper,
     runnerSource,
+    readyPath,
   }));
   try {
     const result = spawnSync(process.execPath, [path.join(__dirname, "..", "electron", "update-worker.cjs"), jobPath], {

@@ -28,11 +28,33 @@ test("a public release is complete only with checksummed installers for every su
     "checksums.txt",
   ];
   const assets = names.map((name) => ({ name, digest: `sha256:${"a".repeat(64)}` }));
-  expect(releaseAssetsComplete(version, { isDraft: false, assets })).toBe(true);
+  expect(releaseAssetsComplete(version, { isDraft: false, isPrerelease: false, assets })).toBe(true);
   expect(releaseAssetsComplete(version, { isDraft: true, assets })).toBe(false);
-  expect(releaseAssetsComplete(version, { isDraft: false, assets: assets.slice(1) })).toBe(false);
-  expect(releaseAssetsComplete(version, { isDraft: false, assets: assets.map((asset) =>
+  expect(releaseAssetsComplete(version, { isDraft: false, isPrerelease: true, assets })).toBe(false);
+  expect(releaseAssetsComplete(version, { isDraft: false, isPrerelease: false, assets: assets.slice(1) })).toBe(false);
+  expect(releaseAssetsComplete(version, { isDraft: false, isPrerelease: false, assets: assets.map((asset) =>
     asset.name === "checksums.txt" ? { ...asset, digest: null } : asset) })).toBe(false);
+});
+
+test("release completion binds the Release workflow to the exact tag commit", async () => {
+  const { releaseWorkflowState } = await import("../scripts/release-windows");
+  const sha = "1".repeat(40);
+  const otherSha = "2".repeat(40);
+  const runs = [
+    { headSha: otherSha, status: "completed", conclusion: "success", databaseId: 10 },
+    { headSha: sha, status: "in_progress", conclusion: null, databaseId: 11 },
+  ];
+
+  expect(releaseWorkflowState(sha, runs)).toEqual({ status: "waiting", runId: 11 });
+  expect(releaseWorkflowState(sha, [
+    { headSha: sha, status: "completed", conclusion: "failure", databaseId: 12 },
+  ])).toEqual({ status: "failed", conclusion: "failure", runId: 12 });
+  expect(releaseWorkflowState(sha, [
+    { headSha: sha, status: "completed", conclusion: "success", databaseId: 13 },
+  ])).toEqual({ status: "success", runId: 13 });
+  expect(releaseWorkflowState(sha, [
+    { headSha: otherSha, status: "completed", conclusion: "success", databaseId: 14 },
+  ])).toEqual({ status: "waiting", runId: null });
 });
 
 test("release prepares a stable setup download with matching checksums", async () => {

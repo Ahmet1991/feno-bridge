@@ -627,7 +627,14 @@ function LauncherShell({
                   active={false}
                   disabled={updateBusy || snapshot.update.status === "checking" || operation?.status === "running" || browser?.status === "running"}
                   icon="update"
-                  label={updateBusy ? copy.updating : snapshot.update.status === "available"
+                  label={updateBusy
+                    ? snapshot.update.status === "downloading"
+                      && Number.isFinite(snapshot.update.receivedBytes)
+                      && Number.isFinite(snapshot.update.totalBytes)
+                      && Number(snapshot.update.totalBytes) > 0
+                        ? `${copy.updating} ${Math.min(100, Math.floor((Number(snapshot.update.receivedBytes) / Number(snapshot.update.totalBytes)) * 100))}%`
+                        : copy.updating
+                    : snapshot.update.status === "available"
                     ? `${copy.updateAvailable} v${updateVersion}`
                     : snapshot.update.status === "checking" ? copy.checkingUpdates
                     : snapshot.update.status === "up-to-date" ? copy.upToDate : copy.checkUpdates}

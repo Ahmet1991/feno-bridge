@@ -1,7 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const { waitForReadyMarker } = require("./update-ready.cjs");
+const { waitForFunctionalReadyMarker } = require("./update-ready.cjs");
+const { runWindowsUpdateTransaction } = require("./update-recovery.cjs");
 const { startWindowsUpdateProgress, showWindowsUpdateFailure } = require("./update-progress.cjs");
 
 function appendLog(job, message) {
@@ -40,9 +41,19 @@ function requireFile(filePath, label) {
   }
 }
 
-function updateMac(job) {
+function rollbackFailure(error, rollbackError, backupPath) {
+  const primary = error instanceof Error ? error.message : String(error);
+  const recovery = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+  const combined = new Error(`${primary}; restoring the previous installation failed: ${recovery}; backup retained at ${backupPath}`);
+  combined.rollbackFailed = true;
+  combined.backupPath = backupPath;
+  return combined;
+}
+
+async function updateMac(job) {
   const sourceExecutable = path.join(job.source, "Contents", "MacOS", "Feno Bridge");
   requireFile(sourceExecutable, "Staged macOS launcher");
+  const startedAt = Date.now();
   const next = `${job.target}.updating-${process.pid}`;
   const previous = `${job.target}.swap-${process.pid}`;
   fs.rmSync(next, { recursive: true, force: true });
@@ -55,25 +66,38 @@ function updateMac(job) {
   fs.renameSync(job.target, previous);
   try {
     fs.renameSync(next, job.target);
+    launch("/usr/bin/open", [job.target]);
+    const readiness = await waitForFunctionalReadyMarker(job.readyPath, job.version, startedAt);
+    appendLog(job, `startup readiness confirmed: ${readiness.startup.status}`);
+    fs.rmSync(previous, { recursive: true, force: true });
   } catch (error) {
-    fs.renameSync(previous, job.target);
+    try {
+      if (fs.existsSync(job.target)) fs.rmSync(job.target, { recursive: true, force: true });
+      if (fs.existsSync(previous)) fs.renameSync(previous, job.target);
+    } catch (rollbackError) {
+      throw rollbackFailure(error, rollbackError, previous);
+    }
+    if (error && typeof error === "object") error.rollbackRestored = true;
     throw error;
+  } finally {
+    if (fs.existsSync(next)) fs.rmSync(next, { recursive: true, force: true });
   }
-  fs.rmSync(previous, { recursive: true, force: true });
-  launch("/usr/bin/open", [job.target]);
 }
 
 async function updateWindows(job, onInstalled = () => {}) {
   requireFile(job.source, "Windows installer");
-  const startedAt = Date.now();
-  const result = spawnSync(job.source, ["/S"], { encoding: "utf8", timeout: 15 * 60_000, windowsHide: true });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Windows installer exited with code ${result.status}`);
-  requireFile(job.target, "Installed Windows launcher");
-  appendLog(job, `installer finished; waiting for Feno Bridge v${job.version} to open`);
-  onInstalled();
-  launch(job.target);
-  await waitForReadyMarker(job.readyPath, job.version, startedAt);
+  const readiness = await runWindowsUpdateTransaction(job, {
+    runInstaller: () => {
+      const result = spawnSync(job.source, ["/S"], { encoding: "utf8", timeout: 15 * 60_000, windowsHide: true });
+      if (result.error) throw result.error;
+      if (result.status !== 0) throw new Error(`Windows installer exited with code ${result.status}`);
+    },
+    launch,
+    waitForReadiness: waitForFunctionalReadyMarker,
+    onInstalled,
+    appendLog: (message) => appendLog(job, message),
+  });
+  appendLog(job, `startup readiness confirmed: ${readiness.startup.status}`);
 }
 
 function shellQuote(value) {
@@ -89,31 +113,63 @@ function installLinuxFile(source, target) {
   fs.renameSync(next, target);
 }
 
-function updateLinux(job) {
+async function updateLinux(job) {
   requireFile(job.source, "Linux AppImage");
   requireFile(job.runnerSource, "Linux AppImage runner");
   const wrapper = job.wrapper && path.isAbsolute(job.wrapper) ? job.wrapper : null;
   if (!wrapper) throw new Error("Linux update job requires an absolute stable launcher wrapper");
+  const startedAt = Date.now();
   const versionsRoot = path.dirname(path.dirname(job.target));
   const nextTarget = path.join(versionsRoot, job.version, path.basename(job.target));
   const runner = path.join(versionsRoot, "run-appimage");
-  installLinuxFile(job.source, nextTarget);
-  installLinuxFile(job.runnerSource, runner);
-  const wrapperNext = `${wrapper}.updating-${process.pid}`;
-  fs.writeFileSync(wrapperNext, [
-    "#!/bin/sh",
-    "set -eu",
-    `export CODEX_WEB_GPT_LAUNCHER_EXECUTABLE=${shellQuote(wrapper)}`,
-    `export CODEX_WEB_GPT_APPIMAGE=${shellQuote(nextTarget)}`,
-    `exec ${shellQuote(runner)} ${shellQuote(nextTarget)} "$@"`,
-    "",
-  ].join("\n"), { mode: 0o755 });
-  fs.renameSync(wrapperNext, wrapper);
-  if (path.dirname(job.target) !== path.dirname(nextTarget)
-    && path.dirname(path.dirname(job.target)) === versionsRoot) {
-    fs.rmSync(path.dirname(job.target), { recursive: true, force: true });
+  const wrapperBackup = path.join(job.tempRoot, "previous-linux-wrapper");
+  const runnerBackup = path.join(job.tempRoot, "previous-linux-runner");
+  fs.copyFileSync(wrapper, wrapperBackup);
+  const runnerExisted = fs.statSync(runner, { throwIfNoEntry: false })?.isFile() === true;
+  if (runnerExisted) fs.copyFileSync(runner, runnerBackup);
+  try {
+    installLinuxFile(job.source, nextTarget);
+    installLinuxFile(job.runnerSource, runner);
+    const wrapperNext = `${wrapper}.updating-${process.pid}`;
+    fs.writeFileSync(wrapperNext, [
+      "#!/bin/sh",
+      "set -eu",
+      `export CODEX_WEB_GPT_LAUNCHER_EXECUTABLE=${shellQuote(wrapper)}`,
+      `export CODEX_WEB_GPT_APPIMAGE=${shellQuote(nextTarget)}`,
+      `exec ${shellQuote(runner)} ${shellQuote(nextTarget)} "$@"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+    fs.renameSync(wrapperNext, wrapper);
+    launch(wrapper);
+    const readiness = await waitForFunctionalReadyMarker(job.readyPath, job.version, startedAt);
+    appendLog(job, `startup readiness confirmed: ${readiness.startup.status}`);
+    if (path.dirname(job.target) !== path.dirname(nextTarget)
+      && path.dirname(path.dirname(job.target)) === versionsRoot) {
+      fs.rmSync(path.dirname(job.target), { recursive: true, force: true });
+    }
+    fs.rmSync(wrapperBackup, { force: true });
+    fs.rmSync(runnerBackup, { force: true });
+  } catch (error) {
+    try {
+      fs.copyFileSync(wrapperBackup, wrapper);
+      fs.chmodSync(wrapper, 0o755);
+      if (runnerExisted) {
+        fs.copyFileSync(runnerBackup, runner);
+        fs.chmodSync(runner, 0o755);
+      } else {
+        fs.rmSync(runner, { force: true });
+      }
+      if (path.dirname(nextTarget) !== path.dirname(job.target)) {
+        fs.rmSync(path.dirname(nextTarget), { recursive: true, force: true });
+      }
+      fs.rmSync(wrapperBackup, { force: true });
+      fs.rmSync(runnerBackup, { force: true });
+    } catch (rollbackError) {
+      throw rollbackFailure(error, rollbackError, wrapperBackup);
+    }
+    if (error && typeof error === "object") error.rollbackRestored = true;
+    throw error;
   }
-  launch(wrapper);
 }
 
 function relaunchExisting(job) {
@@ -145,9 +201,9 @@ async function main() {
     })
     : null;
   try {
-    if (job.platform === "darwin") updateMac(job);
+    if (job.platform === "darwin") await updateMac(job);
     else if (job.platform === "win32") await updateWindows(job, () => progress?.setPhase("opening"));
-    else if (job.platform === "linux") updateLinux(job);
+    else if (job.platform === "linux") await updateLinux(job);
     else throw new Error(`Unsupported update platform: ${job.platform}`);
     appendLog(job, `v${job.version} installed and relaunched`);
     progress?.stop();
@@ -155,7 +211,8 @@ async function main() {
   } catch (error) {
     appendLog(job, `update failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     progress?.stop();
-    relaunchExisting(job);
+    if (!error?.rollbackFailed) relaunchExisting(job);
+    else appendLog(job, `automatic relaunch skipped because rollback failed; recovery backup: ${error.backupPath || "unknown"}`);
     if (job.platform === "win32") showWindowsUpdateFailure(job.tempRoot, {
       logPath: job.logPath,
       onError: (statusError) => appendLog(job, `update failure window unavailable: ${statusError.message}`),

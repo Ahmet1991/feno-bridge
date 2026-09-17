@@ -5,8 +5,16 @@
 On a clean `main` checkout, run `YAYINLA.bat` on Windows. It advances the patch version, verifies
 the code and Windows package, then pushes one `vX.Y.Z` tag. The tag starts the GitHub Actions
 Release workflow, which is the only publisher: it builds Windows, macOS, and Linux assets, copies
-the versioned Windows installer to the stable `feno-bridge-setup.exe` name, checksums every asset,
-and makes the release public. Do not create or upload a second release from the local machine.
+the versioned Windows installer to the stable `feno-bridge-setup.exe` name, and checksums every
+asset. The workflow stages those exact bytes in a draft release, verifies the complete remote asset
+inventory and every remote SHA-256 against the local build output, then makes the release public as
+its final publishing step. Same-tag workflow retries serialize instead of replacing an already
+public release. Do not create or upload a second release from the local machine.
+
+`YAYIN_TAMAM` requires two independent facts for the exact tagged commit: its GitHub Actions
+`Release` workflow completed successfully, and the public stable release exposes the required
+checksummed platform assets. A successful workflow for another SHA, a draft, a prerelease, or asset
+presence before the exact-SHA workflow succeeds is not release completion.
 
 Packaged Feno Bridge installations query the latest public release on startup or when users press
 **Check updates**. Once the workflow finishes, supported installations can download and verify the

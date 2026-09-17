@@ -77,16 +77,17 @@ function currentVersion(): string {
 
 async function releaseIsComplete(version: string): Promise<boolean> {
   const tag = `v${version}`;
-  const result = await run("gh", ["release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "isDraft,assets"], true);
+  const result = await run("gh", ["release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "isDraft,isPrerelease,assets"], true);
   if (result.exitCode !== 0) return false;
   return releaseAssetsComplete(version, JSON.parse(result.stdout));
 }
 
 export function releaseAssetsComplete(version: string, release: {
   isDraft?: boolean;
+  isPrerelease?: boolean;
   assets?: Array<{ name?: string; digest?: string | null }>;
 }): boolean {
-  if (release?.isDraft !== false || !Array.isArray(release.assets)) return false;
+  if (release?.isDraft !== false || release?.isPrerelease !== false || !Array.isArray(release.assets)) return false;
   const required = [
     `feno-bridge-${version}-win-x64.exe`,
     STABLE_INSTALLER_NAME,
@@ -99,20 +100,42 @@ export function releaseAssetsComplete(version: string, release: {
     && /^sha256:[a-f0-9]{64}$/i.test(asset.digest || "")));
 }
 
+type ReleaseWorkflowRun = {
+  headSha?: string;
+  status?: string;
+  conclusion?: string | null;
+  databaseId?: number;
+};
+
+export function releaseWorkflowState(expectedSha: string, runs: ReleaseWorkflowRun[]):
+  | { status: "success"; runId: number | null }
+  | { status: "waiting"; runId: number | null }
+  | { status: "failed"; conclusion: string; runId: number | null } {
+  const run = runs.find((candidate) => candidate?.headSha === expectedSha);
+  const runId = Number.isInteger(run?.databaseId) ? run!.databaseId! : null;
+  if (!run || run.status !== "completed") return { status: "waiting", runId };
+  if (run.conclusion === "success") return { status: "success", runId };
+  return { status: "failed", conclusion: run.conclusion || "unknown", runId };
+}
+
 async function waitForPublishedRelease(version: string): Promise<void> {
   const deadline = Date.now() + 30 * 60_000;
   const tag = `v${version}`;
+  const expectedSha = (await runChecked("git", ["rev-list", "-n", "1", tag], true)).stdout.trim();
+  if (!/^[a-f0-9]{40}$/i.test(expectedSha)) throw new Error(`Could not resolve ${tag} to a release commit`);
   for (;;) {
-    if (await releaseIsComplete(version)) return;
     const runs = await run("gh", [
       "run", "list", "--repo", RELEASE_REPOSITORY,
       "--workflow", "release.yml", "--branch", tag,
-      "--limit", "1", "--json", "status,conclusion",
+      "--limit", "20", "--json", "status,conclusion,headSha,databaseId",
     ], true);
     if (runs.exitCode === 0) {
-      const latest = JSON.parse(runs.stdout)[0];
-      if (latest?.status === "completed" && latest.conclusion !== "success") {
-        throw new Error(`GitHub Actions release failed for ${tag}: ${latest.conclusion}`);
+      const workflow = releaseWorkflowState(expectedSha, JSON.parse(runs.stdout));
+      if (workflow.status === "failed") {
+        throw new Error(`GitHub Actions release failed for ${tag} at ${expectedSha}: ${workflow.conclusion}`);
+      }
+      if (workflow.status === "success" && await releaseIsComplete(version)) {
+        return;
       }
     }
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for the public ${tag} release`);

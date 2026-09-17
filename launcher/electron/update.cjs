@@ -2,8 +2,6 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { Readable } = require("node:stream");
-const { pipeline } = require("node:stream/promises");
 const { spawn, spawnSync } = require("node:child_process");
 
 const RELEASE_REPOSITORY = "Ahmet1991/feno-bridge";
@@ -87,13 +85,64 @@ function releaseAssetParts(raw) {
   return { tag, asset };
 }
 
-async function checkedFetch(url, fetchImpl = globalThis.fetch) {
+function retryAfterMilliseconds(response, fallbackMs) {
+  const raw = response?.headers?.get?.("retry-after")?.trim();
+  if (!raw) return fallbackMs;
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return Math.min(30_000, Math.max(0, Math.ceil(Number(raw) * 1000)));
+  const at = Date.parse(raw);
+  if (!Number.isFinite(at)) return fallbackMs;
+  return Math.min(30_000, Math.max(0, at - Date.now()));
+}
+
+function transientHttpStatus(status) {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+async function checkedFetch(url, fetchImpl = globalThis.fetch, options = {}) {
   if (typeof fetchImpl !== "function") throw new Error("HTTPS update support is unavailable in this runtime");
-  const response = await fetchImpl(url, { headers: RELEASE_HEADERS, redirect: "follow" });
-  if (!response?.ok) {
-    throw new Error(`GitHub release request failed with HTTP ${response?.status ?? "unknown"}`);
+  const {
+    signal,
+    headerTimeoutMs = 15_000,
+    maxAttempts = 3,
+    sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  } = options;
+  if (!Number.isFinite(headerTimeoutMs) || headerTimeoutMs <= 0) throw new Error("Update header timeout must be positive");
+  if (!Number.isInteger(maxAttempts) || maxAttempts <= 0) throw new Error("Update request attempts must be positive");
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Update request cancelled");
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort(signal?.reason || new Error("Update request cancelled"));
+    signal?.addEventListener?.("abort", relayAbort, { once: true });
+    const timeout = setTimeout(() => {
+      controller.abort(new Error(`GitHub release response headers timed out after ${headerTimeoutMs} ms`));
+    }, headerTimeoutMs);
+    let response;
+    let failure = null;
+    try {
+      response = await fetchImpl(url, { headers: RELEASE_HEADERS, redirect: "follow", signal: controller.signal });
+      if (!response?.ok) {
+        failure = new Error(`GitHub release request failed with HTTP ${response?.status ?? "unknown"}`);
+        failure.httpStatus = response?.status;
+      }
+    } catch (error) {
+      failure = controller.signal.aborted && controller.signal.reason instanceof Error
+        ? controller.signal.reason
+        : error;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener?.("abort", relayAbort);
+    }
+
+    if (!failure) return response;
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Update request cancelled");
+    const status = failure.httpStatus;
+    const transient = status === undefined || transientHttpStatus(status);
+    if (!transient || attempt >= maxAttempts) throw failure;
+    const fallbackMs = Math.min(2_000, 250 * (2 ** (attempt - 1)));
+    await sleep(status === 429 ? retryAfterMilliseconds(response, fallbackMs) : fallbackMs);
   }
-  return response;
+  throw new Error("GitHub release request exhausted its retry budget");
 }
 
 async function fetchPublicRelease(fetchImpl = globalThis.fetch) {
@@ -103,15 +152,116 @@ async function fetchPublicRelease(fetchImpl = globalThis.fetch) {
   return release;
 }
 
-async function downloadPublicText(url) {
-  const response = await checkedFetch(url);
-  return response.text();
+function cancellationError(signal) {
+  return signal?.reason instanceof Error ? signal.reason : new Error("Update request cancelled");
 }
 
-async function downloadPublicFile(url, destination) {
-  const response = await checkedFetch(url);
-  if (!response.body) throw new Error("GitHub release download returned an empty body");
-  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(destination, { mode: 0o600 }));
+async function readBodyChunk(reader, signal, timeoutMs) {
+  if (signal?.aborted) throw cancellationError(signal);
+  let timer = null;
+  let abortListener = null;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`GitHub release response body timed out after ${timeoutMs} ms`)), timeoutMs);
+      }),
+      ...(signal ? [new Promise((_, reject) => {
+        abortListener = () => reject(cancellationError(signal));
+        signal.addEventListener("abort", abortListener, { once: true });
+      })] : []),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+  }
+}
+
+async function readResponseBody(response, {
+  signal,
+  bodyStallTimeoutMs = 30_000,
+  onChunk,
+} = {}) {
+  if (!response?.body?.getReader) throw new Error("GitHub release download returned an empty body");
+  if (!Number.isFinite(bodyStallTimeoutMs) || bodyStallTimeoutMs <= 0) {
+    throw new Error("Update body stall timeout must be positive");
+  }
+  const reader = response.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await readBodyChunk(reader, signal, bodyStallTimeoutMs);
+      if (done) break;
+      if (value?.byteLength) await onChunk?.(value);
+    }
+  } catch (error) {
+    try { await reader.cancel(error); } catch {}
+    throw error;
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+}
+
+async function downloadPublicText(url, options = {}) {
+  const response = await checkedFetch(url, options.fetchImpl || globalThis.fetch, options);
+  const chunks = [];
+  await readResponseBody(response, {
+    signal: options.signal,
+    bodyStallTimeoutMs: options.bodyStallTimeoutMs,
+    onChunk: (chunk) => chunks.push(Buffer.from(chunk)),
+  });
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function downloadPublicFile(url, destination, options = {}) {
+  const {
+    signal,
+    fetchImpl = globalThis.fetch,
+    headerTimeoutMs,
+    bodyStallTimeoutMs = 30_000,
+    maxAttempts = 3,
+    sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    onProgress,
+  } = options;
+  if (!Number.isInteger(maxAttempts) || maxAttempts <= 0) throw new Error("Update download attempts must be positive");
+  const partial = `${destination}.part`;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (signal?.aborted) throw cancellationError(signal);
+    fs.rmSync(partial, { force: true });
+    let handle = null;
+    try {
+      const response = await checkedFetch(url, fetchImpl, {
+        signal,
+        headerTimeoutMs,
+        maxAttempts: 1,
+      });
+      const contentLength = Number(response?.headers?.get?.("content-length"));
+      const totalBytes = Number.isFinite(contentLength) && contentLength >= 0 ? contentLength : null;
+      let receivedBytes = 0;
+      handle = fs.openSync(partial, "w", 0o600);
+      await readResponseBody(response, {
+        signal,
+        bodyStallTimeoutMs,
+        onChunk: (chunk) => {
+          const buffer = Buffer.from(chunk);
+          fs.writeSync(handle, buffer);
+          receivedBytes += buffer.byteLength;
+          onProgress?.({ receivedBytes, totalBytes });
+        },
+      });
+      fs.closeSync(handle);
+      handle = null;
+      fs.renameSync(partial, destination);
+      return;
+    } catch (error) {
+      if (handle !== null) {
+        try { fs.closeSync(handle); } catch {}
+      }
+      fs.rmSync(partial, { force: true });
+      if (signal?.aborted) throw cancellationError(signal);
+      if (attempt >= maxAttempts) throw error;
+      await sleep(Math.min(2_000, 250 * (2 ** (attempt - 1))));
+    }
+  }
 }
 
 function sha256(filePath) {
@@ -170,6 +320,7 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
       logPath,
       source: findMacApplication(stagingRoot),
       target: macApplicationPath(executablePath),
+      readyPath: path.join(path.dirname(logPath), "launcher-ready.json"),
     };
   }
   if (platform === "win32") {
@@ -205,6 +356,7 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
       target,
       wrapper,
       runnerSource: path.join(tempRoot, "linux-appimage-runner.sh"),
+      readyPath: path.join(path.dirname(logPath), "launcher-ready.json"),
     };
   }
   throw new Error(`Updates are not supported on ${platform}`);
@@ -265,7 +417,9 @@ function createUpdateController({
   const supportedAsset = releaseAssetName(currentVersion, platform, arch);
   let state = packaged && supportedAsset ? { status: "idle" } : { status: "disabled" };
   let checked = false;
+  let checkGeneration = 0;
   let pending = null;
+  let pendingAbortController = null;
   let candidate = null;
 
   const transition = (next) => {
@@ -277,10 +431,12 @@ function createUpdateController({
   async function checkOnce({ force = false } = {}) {
     if (force && state.status !== "downloading" && state.status !== "installing") checked = false;
     if (state.status === "disabled" || checked) return state;
+    const generation = ++checkGeneration;
     checked = true;
     transition({ status: "checking" });
     try {
       const release = await deps.fetchRelease();
+      if (generation !== checkGeneration) return state;
       const version = releaseVersion(release?.tag_name);
       if (compareVersions(version, currentVersion) <= 0) {
         candidate = null;
@@ -303,6 +459,7 @@ function createUpdateController({
       logger?.info("launcher.update_available", { currentVersion, version, platform, arch });
       return transition({ status: "available", version });
     } catch (error) {
+      if (generation !== checkGeneration) return state;
       checked = false;
       const message = error instanceof Error ? error.message : String(error);
       logger?.warn("launcher.update_check_failed", { message });
@@ -314,14 +471,21 @@ function createUpdateController({
     if (pending) throw new Error("An update is already being prepared");
     if (state.status !== "available" || !candidate) throw new Error("No launcher update is available");
     const available = candidate;
+    pendingAbortController = new AbortController();
+    const signal = pendingAbortController.signal;
     pending = (async () => {
       transition({ status: "downloading", version: available.version });
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-update-"));
       try {
-        const checksums = await deps.downloadText(available.checksumsUrl);
+        const checksums = await deps.downloadText(available.checksumsUrl, { signal });
         const expected = expectedChecksum(checksums, available.assetName);
         const assetPath = path.join(tempRoot, available.assetName);
-        await deps.downloadFile(available.assetUrl, assetPath);
+        await deps.downloadFile(available.assetUrl, assetPath, {
+          signal,
+          onProgress: ({ receivedBytes, totalBytes }) => {
+            transition({ status: "downloading", version: available.version, receivedBytes, totalBytes });
+          },
+        });
         const actual = deps.sha256(assetPath);
         if (actual !== expected) throw new Error(`SHA-256 verification failed for ${available.assetName}`);
 
@@ -337,6 +501,7 @@ function createUpdateController({
         const workerPath = path.join(tempRoot, "update-worker.cjs");
         fs.copyFileSync(path.join(__dirname, "update-worker.cjs"), workerPath);
         fs.copyFileSync(path.join(__dirname, "update-ready.cjs"), path.join(tempRoot, "update-ready.cjs"));
+        fs.copyFileSync(path.join(__dirname, "update-recovery.cjs"), path.join(tempRoot, "update-recovery.cjs"));
         fs.copyFileSync(path.join(__dirname, "update-progress.cjs"), path.join(tempRoot, "update-progress.cjs"));
         const job = buildJob({
           version: available.version,
@@ -365,10 +530,14 @@ function createUpdateController({
       return await pending;
     } finally {
       pending = null;
+      pendingAbortController = null;
     }
   }
 
   function cancelInstall(launch) {
+    if (pendingAbortController && !pendingAbortController.signal.aborted) {
+      pendingAbortController.abort(new Error("Update preparation cancelled"));
+    }
     try { launch?.child?.kill(); } catch {}
     if (launch?.tempRoot) fs.rmSync(launch.tempRoot, { recursive: true, force: true });
     if (candidate) transition({ status: "available", version: candidate.version });
@@ -384,8 +553,10 @@ function createUpdateController({
 
 module.exports = {
   buildJob,
+  checkedFetch,
   compareVersions,
   createUpdateController,
+  downloadPublicFile,
   expectedChecksum,
   fetchPublicRelease,
   macApplicationPath,

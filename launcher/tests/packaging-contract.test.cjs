@@ -112,8 +112,10 @@ test("packaged launcher owns a detached checksummed updater for every release pl
   assert.match(updater, /expectedChecksum/);
   assert.match(updater, /SHA-256 verification failed/);
   assert.match(updater, /detached:\s*true/);
+  assert.match(updater, /update-recovery\.cjs/);
   assert.match(worker, /waitForParent/);
-  assert.doesNotMatch(worker, /backup/i);
+  assert.match(worker, /runWindowsUpdateTransaction/);
+  assert.match(worker, /rollbackFailed/);
 });
 
 test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
@@ -137,7 +139,10 @@ test("CI packages and smoke-launches on macOS, Windows, and Linux", () => {
   assert.match(release, /prepare-windows-baseline-bun\.ps1 -Version 1\.4\.0/);
   assert.match(release, /codesign --verify --deep --strict --verbose=2/);
   assert.match(release, /Feno Bridge\.app/);
-  assert.doesNotMatch(release, /gh release create[\s\S]*?--draft/);
+  assert.match(release, /gh release create[\s\S]*?--draft/);
+  assert.match(release, /Refusing to modify already-public release/);
+  assert.match(release, /gh release edit[\s\S]*?--draft=false/);
+  assert.doesNotMatch(release, /--clobber/);
 });
 
 test("Linux AppImage fallback uses one owned extraction and removes it on exit", {

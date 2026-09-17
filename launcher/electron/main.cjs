@@ -98,6 +98,8 @@ let lastOperation = null;
 let catalogVerificationTimer = null;
 let catalogVerificationInFlight = false;
 let updateController = null;
+let startupReadiness = null;
+let launcherLogger = null;
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -121,6 +123,30 @@ function send(channel, value) {
 function publishOperation(operation) {
   lastOperation = operation;
   send("launcher:operation", operation);
+}
+
+function writeLauncherReadyMarker() {
+  try {
+    writeReadyMarker(
+      path.join(app.getPath("logs"), "launcher-ready.json"),
+      app.getVersion(),
+      Date.now(),
+      startupReadiness,
+    );
+  } catch (error) {
+    launcherLogger?.warn?.("launcher.ready_marker_failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function recordStartupReadiness(status, detail = "") {
+  startupReadiness = {
+    status,
+    at: Date.now(),
+    ...(detail ? { detail } : {}),
+  };
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) writeLauncherReadyMarker();
 }
 
 function stopCatalogVerificationMonitor() {
@@ -372,11 +398,7 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
     }
   });
   window.on("show", () => {
-    try {
-      writeReadyMarker(path.join(app.getPath("logs"), "launcher-ready.json"), app.getVersion());
-    } catch (error) {
-      logger.warn("launcher.ready_marker_failed", { message: error instanceof Error ? error.message : String(error) });
-    }
+    writeLauncherReadyMarker();
   });
   for (const event of ["enter-full-screen", "leave-full-screen", "maximize", "unmaximize"]) {
     window.on(event, () => send("launcher:window-state-changed", windowStateSnapshot(window)));
@@ -986,6 +1008,7 @@ async function start() {
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),
   });
+  launcherLogger = logger;
   if (app.isPackaged && !IS_DEV_PROFILE) {
     try {
       const result = syncBundledGuidance({
@@ -1225,6 +1248,12 @@ async function start() {
         send("launcher:state-changed", state);
       }
       startCatalogVerificationMonitor({ logger, stateStore });
+      const automatic = stateStore.read().browserInteractionMode === "automatic";
+      const authenticated = browserHost?.snapshot?.().authenticated === true;
+      recordStartupReadiness(
+        automatic && !authenticated ? "sign-in-required" : "ready",
+        automatic && !authenticated ? "ChatGPT sign-in is required" : "",
+      );
       return;
     }
     if (runtime.status === "not-configured") {
@@ -1247,6 +1276,12 @@ async function start() {
           message: `Local runtime is not configured; restoring the previous Codex route also failed: ${routeRecovery.error}`,
         });
       }
+      recordStartupReadiness(
+        routeRecovery.error ? "repair-required" : "setup-required",
+        routeRecovery.error
+          ? `Local runtime is not configured and the previous Codex route could not be restored: ${routeRecovery.error}`
+          : "Local runtime is not configured yet",
+      );
       return;
     }
     const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
@@ -1267,7 +1302,10 @@ async function start() {
             ? `${detail}; the previous Codex route was restored, restart Codex once`
             : detail,
       });
+      recordStartupReadiness("repair-required", detail);
+      return;
     }
+    recordStartupReadiness("repair-required", `Unexpected runtime startup status: ${runtime.status || "unknown"}`);
   }).catch(async (error) => {
     const primary = error instanceof Error ? error.message : String(error);
     const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
@@ -1280,6 +1318,7 @@ async function start() {
     const state = stateStore.update({ coreSetupComplete: false, codexCatalogVerified: false });
     send("launcher:state-changed", state);
     publishOperation({ name: "runtime-start", status: "failed", message });
+    recordStartupReadiness("repair-required", message);
   });
 
   app.on("activate", () => showMainWindow());

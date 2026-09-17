@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     strategy:
@@ -159,66 +163,104 @@ jobs:
             echo "checksums.txt is missing entries for:$missing" >&2
             exit 1
           fi
-      - name: Publish GitHub release
+      - name: Stage and verify draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mapfile -d '' release_files < <(find release-assets -type f -print0)
           test "${#release_files[@]}" -gt 0
+          prerelease=false
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease=true
+          fi
+
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            existing="$(gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json isDraft,isPrerelease \
+              --jq '[.isDraft, .isPrerelease] | @tsv')"
+            IFS=$'\t' read -r is_draft is_prerelease <<< "$existing"
+            if [ "$is_draft" != "true" ]; then
+              echo "Refusing to modify already-public release $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+            if [ "$is_prerelease" != "$prerelease" ]; then
+              echo "Existing draft prerelease state does not match tag: $GITHUB_REF_NAME" >&2
+              exit 1
+            fi
+          else
+            create_flags=(--draft)
+            if [ "$prerelease" = "true" ]; then create_flags+=(--prerelease); fi
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              "${create_flags[@]}" \
+              --generate-notes
+          fi
+
+          for file in "${release_files[@]}"; do
+            name="$(basename "$file")"
+            local_digest="sha256:$(sha256sum "$file" | awk '{ print $1 }')"
+            remote_digest="$(gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq ".assets[] | select(.name == \"$name\") | .digest")"
+            if [ -n "$remote_digest" ]; then
+              if [ "$remote_digest" != "$local_digest" ]; then
+                echo "Draft asset differs from local build output: $name" >&2
+                exit 1
+              fi
+              continue
+            fi
+            gh release upload "$GITHUB_REF_NAME" "$file" --repo "$GITHUB_REPOSITORY"
+          done
+
+          expected_names="$(mktemp)"
+          remote_names="$(mktemp)"
+          printf '%s\n' "${release_files[@]##*/}" | LC_ALL=C sort > "$expected_names"
+          gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' \
+            | LC_ALL=C sort > "$remote_names"
+          if ! cmp -s "$expected_names" "$remote_names"; then
+            echo "Draft release asset inventory does not match the build output" >&2
+            diff -u "$expected_names" "$remote_names" >&2 || true
+            exit 1
+          fi
+
+          while IFS= read -r file; do
+            name="$(basename "$file")"
+            remote_digest="$(gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq ".assets[] | select(.name == \"$name\") | .digest")"
+            local_digest="sha256:$(sha256sum "$file" | awk '{ print $1 }')"
+            if [ "$remote_digest" != "$local_digest" ]; then
+              echo "Draft release asset checksum mismatch: $name" >&2
+              exit 1
+            fi
+          done < <(find release-assets -type f | LC_ALL=C sort)
+
+          while read -r expected name; do
+            test -n "$expected"
+            test -n "$name"
+            actual="$(sha256sum "release-assets/$name" | awk '{ print $1 }')"
+            if [ "$actual" != "$expected" ]; then
+              echo "Local release manifest mismatch: $name" >&2
+              exit 1
+            fi
+          done < release-assets/checksums.txt
+
+      - name: Publish verified GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           release_flags=(--latest)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_flags=(--prerelease --latest=false)
           fi
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${release_files[@]}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-            gh release edit "$GITHUB_REF_NAME" \
-              --repo "$GITHUB_REPOSITORY" \
-              --draft=false \
-              "${release_flags[@]}"
-          else
-            gh release create "$GITHUB_REF_NAME" "${release_files[@]}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$GITHUB_REF_NAME" \
-              "${release_flags[@]}" \
-              --generate-notes
-          fi
-
-          published_manifest="$(mktemp)"
-          gh release view "$GITHUB_REF_NAME" \
+          gh release edit "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[] | select(.name != "checksums.txt") | [.name, .digest] | @tsv' \
-            | while IFS=$'\t' read -r name digest; do
-                if [[ "$digest" != sha256:* || -z "${digest#sha256:}" ]]; then
-                  echo "Published asset has no SHA-256 digest: $name" >&2
-                  exit 1
-                fi
-                printf '%s  %s\n' "${digest#sha256:}" "$name"
-              done \
-            | LC_ALL=C sort -k2 > "$published_manifest"
-          test -s "$published_manifest"
-          mv "$published_manifest" release-assets/checksums.txt
-          gh release upload "$GITHUB_REF_NAME" release-assets/checksums.txt \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
-
-          while IFS=$'\t' read -r name digest; do
-            if [ "$name" = checksums.txt ]; then continue; fi
-            expected="$(awk -v asset="$name" '$2 == asset { print $1 }' release-assets/checksums.txt)"
-            if [ -z "$expected" ] || [ "sha256:$expected" != "$digest" ]; then
-              echo "Published asset checksum mismatch: $name" >&2
-              exit 1
-            fi
-          done < <(gh release view "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[] | [.name, .digest] | @tsv')
-
-          local_manifest_digest="$(sha256sum release-assets/checksums.txt | awk '{ print $1 }')"
-          remote_manifest_digest="$(gh release view "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[] | select(.name == "checksums.txt") | .digest')"
-          test "sha256:$local_manifest_digest" = "$remote_manifest_digest"
+            --draft=false \
+            "${release_flags[@]}"

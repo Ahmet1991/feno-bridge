@@ -94,7 +94,8 @@ export interface OperationState {
 
 export type UpdateState =
   | { status: "disabled" | "idle" | "checking" | "up-to-date" }
-  | { status: "available" | "downloading" | "installing"; version: string }
+  | { status: "available" | "installing"; version: string }
+  | { status: "downloading"; version: string; receivedBytes?: number; totalBytes?: number | null }
   | { status: "error"; message: string };
 
 export interface LauncherSnapshot {
