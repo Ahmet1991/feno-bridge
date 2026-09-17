@@ -139,6 +139,12 @@ try {
       run(launchServices, ["-gc"]);
     }
   } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
+    try {
+      fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    } catch (error) {
+      if (!(process.platform === "win32" && ["EPERM", "EBUSY", "ENOTEMPTY"].includes(error?.code))) {
+        throw error;
+      }
+    }
   }
 }

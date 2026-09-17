@@ -261,3 +261,13 @@ test("the Windows launcher smoke budget leaves room for durable runtime material
     /run\(command, args, \{ env, timeout: WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS \}\)/,
   );
 });
+
+test("package smoke retries transient Windows cleanup locks", () => {
+  const smoke = fs.readFileSync(path.join(launcherRoot, "scripts", "smoke-package.cjs"), "utf8");
+  assert.match(
+    smoke,
+    /fs\.rmSync\(scratch, \{ recursive: true, force: true, maxRetries: [1-9][0-9]*, retryDelay: [1-9][0-9]* \}\)/,
+  );
+  assert.match(smoke, /\["EPERM", "EBUSY", "ENOTEMPTY"\]\.includes\(error\?\.code\)/);
+  assert.match(smoke, /process\.platform === "win32"/);
+});
