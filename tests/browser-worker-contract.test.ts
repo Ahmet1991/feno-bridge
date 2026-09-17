@@ -61,6 +61,60 @@ test("assistant tracking rebinds only one proven replacement after React detache
   )).toThrow("2 new conversation turns");
 });
 
+test("assistant tracking accepts a replacement turn during proven MCP continuation", async () => {
+  type Baseline = {
+    initialResponseTurnIdentities: string[];
+    domCache: Record<string, unknown>;
+  };
+  type Binding = {
+    identity: string;
+    locator: { count(): Promise<number> };
+    acceptedUserTurnIdentities: string[];
+  };
+  const replacementLocator = { id: "assistant-replacement" };
+  const page = {
+    locator: () => replacementLocator,
+  } as unknown as Page;
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    submissionDomState: async () => ({
+      userTurnCount: 2,
+      assistantTurnCount: 2,
+      visibleStopButtonCount: 0,
+      userIdentities: ["conversation-turn-user-1", "conversation-turn-user-2"],
+      responseIdentities: ["conversation-turn-assistant-1", "conversation-turn-assistant-3"],
+    }),
+  }) as unknown as {
+    reconcileAssistantTurnBinding(
+      page: Page,
+      baseline: Baseline,
+      binding: Binding,
+      signal?: AbortSignal,
+      allowMcpContinuationUserTurn?: boolean,
+    ): Promise<{ identity: string; locator: unknown; acceptedUserTurnIdentities: readonly string[] }>;
+  };
+
+  const rebound = await worker.reconcileAssistantTurnBinding(
+    page,
+    {
+      initialResponseTurnIdentities: ["conversation-turn-assistant-1"],
+      domCache: {},
+    },
+    {
+      identity: "conversation-turn-assistant-2",
+      locator: { count: async () => 0 },
+      acceptedUserTurnIdentities: ["conversation-turn-user-1"],
+    },
+    undefined,
+    true,
+  );
+
+  expect(rebound).toEqual({
+    identity: "conversation-turn-assistant-3",
+    locator: replacementLocator,
+    acceptedUserTurnIdentities: ["conversation-turn-user-1", "conversation-turn-user-2"],
+  });
+});
+
 test("a retained MCP conversation reuses its proven connector binding", () => {
   expect(chatGptConnectorAttachmentMode(true, false)).toBe("mention");
   expect(chatGptConnectorAttachmentMode(true, true)).toBe("retained");
