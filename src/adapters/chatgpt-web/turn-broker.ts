@@ -1306,6 +1306,11 @@ export async function callTurnBroker<T>(
         // frame is therefore the terminal boundary; ordinary calls still wait for physical close.
         finishResponse();
         socket.destroy();
+      } else {
+        // The server has finished writing the complete response frame. Close our writable half so
+        // Windows named pipes can complete the full-duplex close handshake, then let the `close`
+        // event settle the call only after both sides are actually finished.
+        socket.end();
       }
     });
   });
