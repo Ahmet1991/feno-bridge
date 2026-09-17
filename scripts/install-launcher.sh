@@ -32,12 +32,16 @@ case "$OS" in
   *) echo "Use install-launcher.ps1 on Windows; unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "GitHub CLI (gh) is required; install it and run gh auth login with a repository collaborator account" >&2
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required to download the public Feno Bridge release" >&2
   exit 1
 fi
 if [ -z "$VERSION" ]; then
-  VERSION="$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName)"
+  LATEST_URL="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest")"
+  case "$LATEST_URL" in
+    "https://github.com/$REPOSITORY/releases/tag/v"*) VERSION="${LATEST_URL##*/}" ;;
+    *) echo "Could not resolve the latest public Feno Bridge release" >&2; exit 1 ;;
+  esac
 fi
 VERSION="${VERSION#v}"
 if [ -z "$VERSION" ]; then
@@ -52,8 +56,9 @@ ASSET="feno-bridge-$VERSION-$PLATFORM-$ARCH.$EXTENSION"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-web-gpt-launcher.XXXXXX")"
 trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 
-gh release download "v$VERSION" --repo "$REPOSITORY" --pattern "$ASSET" --output "$TEMP_DIR/$ASSET"
-gh release download "v$VERSION" --repo "$REPOSITORY" --pattern "checksums.txt" --output "$TEMP_DIR/checksums.txt"
+DOWNLOAD_BASE="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+curl -fsSL --retry 3 -o "$TEMP_DIR/$ASSET" "$DOWNLOAD_BASE/$ASSET"
+curl -fsSL --retry 3 -o "$TEMP_DIR/checksums.txt" "$DOWNLOAD_BASE/checksums.txt"
 EXPECTED="$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$TEMP_DIR/checksums.txt")"
 if [ "$OS" = "Darwin" ]; then
   ACTUAL="$(shasum -a 256 "$TEMP_DIR/$ASSET" | awk '{ print $1}')"

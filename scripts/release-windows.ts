@@ -77,12 +77,47 @@ function currentVersion(): string {
 
 async function releaseIsComplete(version: string): Promise<boolean> {
   const tag = `v${version}`;
-  const result = await run("gh", ["release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "assets", "--jq", ".assets[].name"], true);
+  const result = await run("gh", ["release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "isDraft,assets"], true);
   if (result.exitCode !== 0) return false;
-  const assets = new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
-  return assets.has(`feno-bridge-${version}-win-x64.exe`)
-    && assets.has(STABLE_INSTALLER_NAME)
-    && assets.has("checksums.txt");
+  return releaseAssetsComplete(version, JSON.parse(result.stdout));
+}
+
+export function releaseAssetsComplete(version: string, release: {
+  isDraft?: boolean;
+  assets?: Array<{ name?: string; digest?: string | null }>;
+}): boolean {
+  if (release?.isDraft !== false || !Array.isArray(release.assets)) return false;
+  const required = [
+    `feno-bridge-${version}-win-x64.exe`,
+    STABLE_INSTALLER_NAME,
+    `feno-bridge-${version}-mac-arm64.zip`,
+    `feno-bridge-${version}-mac-x64.zip`,
+    `feno-bridge-${version}-linux-x64.AppImage`,
+    "checksums.txt",
+  ];
+  return required.every((name) => release.assets!.some((asset) => asset.name === name
+    && /^sha256:[a-f0-9]{64}$/i.test(asset.digest || "")));
+}
+
+async function waitForPublishedRelease(version: string): Promise<void> {
+  const deadline = Date.now() + 30 * 60_000;
+  const tag = `v${version}`;
+  for (;;) {
+    if (await releaseIsComplete(version)) return;
+    const runs = await run("gh", [
+      "run", "list", "--repo", RELEASE_REPOSITORY,
+      "--workflow", "release.yml", "--branch", tag,
+      "--limit", "1", "--json", "status,conclusion",
+    ], true);
+    if (runs.exitCode === 0) {
+      const latest = JSON.parse(runs.stdout)[0];
+      if (latest?.status === "completed" && latest.conclusion !== "success") {
+        throw new Error(`GitHub Actions release failed for ${tag}: ${latest.conclusion}`);
+      }
+    }
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for the public ${tag} release`);
+    await Bun.sleep(30_000);
+  }
 }
 
 async function gitTagExists(tag: string): Promise<boolean> {
@@ -195,8 +230,8 @@ async function main(): Promise<void> {
   console.log(`YAYIN_PLANI v${targetVersion}`);
   console.log(`Kaynak repo: ${SOURCE_REPOSITORY}`);
   console.log(`Guncelleme repo: ${RELEASE_REPOSITORY}`);
-  console.log("Akis: surum -> verify -> Windows setup -> checksum -> commit/tag -> public GitHub Release");
-  console.log("GitHub Actions kullanilmayacak.");
+  console.log("Akis: surum -> verify -> Windows setup -> commit/tag -> GitHub Actions -> public GitHub Release");
+  console.log("GitHub Actions tum platform paketlerini ve checksum dosyasini tek yayinda olusturacak.");
 
   if (dryRun) {
     console.log("DRY_RUN_OK");
@@ -223,12 +258,12 @@ async function main(): Promise<void> {
     await runChecked(process.execPath, ["run", "--cwd", "launcher", "package:win"]);
     await runChecked(process.execPath, ["run", "app:smoke"]);
 
-    const { installer, stableInstaller, checksums, installerHash } = await prepareReleaseAssets(
+    await prepareReleaseAssets(
       targetVersion, join(ROOT, "launcher", "artifacts"), join(ROOT, "Setup"));
 
     if (versionChanged) {
       await runChecked("git", ["add", ...VERSION_FILES]);
-      await runChecked("git", ["commit", "-m", `chore: release v${targetVersion} [skip ci]`]);
+      await runChecked("git", ["commit", "-m", `chore: release v${targetVersion}`]);
       releaseCommitCreated = true;
     }
 
@@ -243,46 +278,11 @@ async function main(): Promise<void> {
 
     await runChecked("git", ["push", "origin", "HEAD"]);
     await runChecked("git", ["push", "origin", tag]);
-
-    const releaseExists = (await run("gh", ["release", "view", tag, "--repo", RELEASE_REPOSITORY], true)).exitCode === 0;
-    if (releaseExists) {
-      await runChecked("gh", ["release", "upload", tag, installer, stableInstaller, checksums, "--repo", RELEASE_REPOSITORY, "--clobber"]);
-      await runChecked("gh", ["release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--title", `Feno Bridge ${tag}`, "--draft=false", "--latest"]);
-    } else {
-      await runChecked("gh", [
-        "release", "create", tag, installer, stableInstaller, checksums,
-        "--repo", RELEASE_REPOSITORY,
-        "--title", `Feno Bridge ${tag}`,
-        "--notes", "Windows update package for Feno Bridge.",
-        "--latest",
-      ]);
-    }
-
-    const remoteAssets = await runChecked(
-      "gh",
-      ["release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "assets", "--jq", ".assets[] | [.name, .digest] | @tsv"],
-      true,
-    );
-    const expectedDigest = `sha256:${installerHash}`;
-    const installerLine = remoteAssets.stdout
-      .split(/\r?\n/)
-      .find((line) => line.startsWith(`${basename(installer)}\t`));
-    if (!installerLine || installerLine.split("\t")[1]?.trim() !== expectedDigest) {
-      throw new Error(`Published installer digest mismatch for ${basename(installer)}`);
-    }
-    const stableLine = remoteAssets.stdout
-      .split(/\r?\n/)
-      .find((line) => line.startsWith(`${STABLE_INSTALLER_NAME}\t`));
-    if (!stableLine || stableLine.split("\t")[1]?.trim() !== expectedDigest) {
-      throw new Error(`Published installer digest mismatch for ${STABLE_INSTALLER_NAME}`);
-    }
-    if (!remoteAssets.stdout.split(/\r?\n/).some((line) => line.startsWith("checksums.txt\t"))) {
-      throw new Error("Published release is missing checksums.txt");
-    }
+    console.log(`${tag} etiketi gonderildi; GitHub Actions yayini bekleniyor.`);
+    await waitForPublishedRelease(targetVersion);
 
     console.log(`YAYIN_TAMAM v${targetVersion}`);
-    console.log(`SHA256 ${installerHash}`);
-    console.log(`Diger Windows bilgisayarlar uygulama icinden v${targetVersion} guncellemesini gorebilir.`);
+    console.log(`Diger bilgisayarlar uygulama icinden v${targetVersion} guncellemesini gorebilir.`);
   } catch (error) {
     if (versionChanged && !releaseCommitCreated) await restoreVersionFiles();
     throw error;

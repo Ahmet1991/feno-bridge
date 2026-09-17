@@ -72,21 +72,21 @@ Full モードでは、次のコンパクション境界まで、MCP が ChatGPT
 
 ## クイックスタート
 
-デスクトップランチャーをインストールまたは更新します。既存のインストールを更新・修復する場合は、
-ランチャーを終了して同じコマンドをもう一度実行してください。ChatGPT プロファイルとランチャー設定を保持したまま、
-アプリケーションと内蔵ランタイムが置き換えられます。
+公開されている Feno Bridge Release からデスクトップランチャーをインストールします。インストール済みのアプリは起動時に更新を確認し、アプリ内の **更新を確認** からも更新できます。更新パッケージは SHA-256 で検証され、ChatGPT プロファイルと設定は保持されます。アプリ内更新と Windows の直接インストールに GitHub アカウントや CLI は不要です。
 
 **macOS または Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.sh | sh
 ```
 
-**Windows PowerShell**
+**Windows x64:** [最新のインストーラーをダウンロード](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe)、または PowerShell を使用：
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.ps1 | iex
 ```
+
+v5.0.8 に同梱されたインストールスクリプトには GitHub CLI が必要です。Windows の直接インストーラーとアプリ内更新には不要です。次のリリースには認証不要のインストールスクリプトが含まれます。
 
 アプリ内で次の 3 項目を完了します。
 

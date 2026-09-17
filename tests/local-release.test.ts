@@ -16,6 +16,25 @@ test("local Windows release chooses the next patch version", async () => {
   expect(() => nextPatchVersion("5.0.5-beta.1")).toThrow(/stable x\.y\.z/i);
 });
 
+test("a public release is complete only with checksummed installers for every supported platform", async () => {
+  const { releaseAssetsComplete } = await import("../scripts/release-windows");
+  const version = "5.0.9";
+  const names = [
+    `feno-bridge-${version}-win-x64.exe`,
+    "feno-bridge-setup.exe",
+    `feno-bridge-${version}-mac-arm64.zip`,
+    `feno-bridge-${version}-mac-x64.zip`,
+    `feno-bridge-${version}-linux-x64.AppImage`,
+    "checksums.txt",
+  ];
+  const assets = names.map((name) => ({ name, digest: `sha256:${"a".repeat(64)}` }));
+  expect(releaseAssetsComplete(version, { isDraft: false, assets })).toBe(true);
+  expect(releaseAssetsComplete(version, { isDraft: true, assets })).toBe(false);
+  expect(releaseAssetsComplete(version, { isDraft: false, assets: assets.slice(1) })).toBe(false);
+  expect(releaseAssetsComplete(version, { isDraft: false, assets: assets.map((asset) =>
+    asset.name === "checksums.txt" ? { ...asset, digest: null } : asset) })).toBe(false);
+});
+
 test("release prepares a stable setup download with matching checksums", async () => {
   const { prepareReleaseAssets } = await import("../scripts/release-windows");
   const scratch = mkdtempSync(join(tmpdir(), "feno-release-assets-"));

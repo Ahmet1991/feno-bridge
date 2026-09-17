@@ -31,15 +31,13 @@ $Repository = if ($env:CODEX_WEB_GPT_REPOSITORY) { $env:CODEX_WEB_GPT_REPOSITORY
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
   throw "Invalid GitHub repository: $Repository"
 }
-if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-  throw "GitHub CLI (gh) is required. Install it and run gh auth login with a repository collaborator account."
-}
 $Version = $env:CODEX_WEB_GPT_VERSION
 if (-not $Version) {
-  $Version = Invoke-WithRetry -Label "Resolving the latest private release" -Operation {
-    $Tag = & gh release view --repo $Repository --json tagName --jq ".tagName"
-    if ($LASTEXITCODE -ne 0) { throw "GitHub release lookup failed; run gh auth login" }
-    $Tag
+  $Version = Invoke-WithRetry -Label "Resolving the latest public release" -Operation {
+    $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" `
+      -Headers @{ "User-Agent" = "Feno-Bridge-Installer"; "Accept" = "application/vnd.github+json" } `
+      -ErrorAction Stop
+    $Release.tag_name
   }
 }
 if ($Version -and $Version.StartsWith("v")) { $Version = $Version.Substring(1) }
@@ -52,6 +50,7 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 $Arch = "x64"
 
 $Asset = "feno-bridge-$Version-win-$Arch.exe"
+$DownloadBase = "https://github.com/$Repository/releases/download/v$Version"
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) "codex-web-gpt-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $Temp | Out-Null
 try {
@@ -62,13 +61,11 @@ try {
   $Checksums = Join-Path $Temp "checksums.txt"
   $null = Invoke-WithRetry -Label "Downloading $Asset" -Operation {
     Remove-Item $Installer -Force -ErrorAction SilentlyContinue
-    & gh release download "v$Version" --repo $Repository --pattern $Asset --output $Installer
-    if ($LASTEXITCODE -ne 0) { throw "GitHub installer download failed" }
+    Invoke-WebRequest -Uri "$DownloadBase/$Asset" -OutFile $Installer -UseBasicParsing -ErrorAction Stop
   }
   $null = Invoke-WithRetry -Label "Downloading checksums.txt" -Operation {
     Remove-Item $Checksums -Force -ErrorAction SilentlyContinue
-    & gh release download "v$Version" --repo $Repository --pattern "checksums.txt" --output $Checksums
-    if ($LASTEXITCODE -ne 0) { throw "GitHub checksum download failed" }
+    Invoke-WebRequest -Uri "$DownloadBase/checksums.txt" -OutFile $Checksums -UseBasicParsing -ErrorAction Stop
   }
   $ExpectedLine = Get-Content $Checksums | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" } | Select-Object -First 1
   if (-not $ExpectedLine) { throw "checksums.txt has no entry for $Asset" }

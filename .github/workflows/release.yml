@@ -126,6 +126,15 @@ jobs:
             mv "$file" "$name"
           done < <(find . -mindepth 2 -type f -print0 | sort -z)
           find . -mindepth 1 -type d -empty -delete
+      - name: Add stable Windows installer link
+        run: |
+          version="$(jq -r .version package.json)"
+          source="release-assets/feno-bridge-${version}-win-x64.exe"
+          target="release-assets/feno-bridge-setup.exe"
+          test -f "$source"
+          test ! -e "$target"
+          cp "$source" "$target"
+          cmp -s "$source" "$target"
       - name: Create checksums
         run: |
           cd release-assets

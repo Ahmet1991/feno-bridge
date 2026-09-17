@@ -68,20 +68,22 @@ Codex 会保留原生任务、上下文生命周期、界面和工具 harness。
 
 ## 快速开始
 
-安装或更新桌面启动器。若要更新或修复现有安装，请先退出启动器，然后再次运行同一条命令；它会
-替换应用程序和内置运行时，同时保留 ChatGPT 配置文件和启动器配置。
+从公开的 Feno Bridge Release 安装桌面启动器。已安装的应用会在启动时检查更新，也可以在应用中
+点击 **检查更新**。更新包会经过 SHA-256 校验，并保留 ChatGPT 配置文件和启动器配置。应用内更新与 Windows 直接安装无需 GitHub 账号或 CLI。
 
 **macOS 或 Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.sh | sh
 ```
 
-**Windows PowerShell**
+**Windows x64：**[下载最新安装程序](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe)，或使用 PowerShell：
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.ps1 | iex
 ```
+
+v5.0.8 附带的安装脚本仍需 GitHub CLI；Windows 直接安装程序和应用内更新不需要。下一版会包含无需登录的安装脚本。
 
 然后在应用中完成三项检查：
 

@@ -1,5 +1,18 @@
 # Release validation
 
+## Publishing updates
+
+On a clean `main` checkout, run `YAYINLA.bat` on Windows. It advances the patch version, verifies
+the code and Windows package, then pushes one `vX.Y.Z` tag. The tag starts the GitHub Actions
+Release workflow, which is the only publisher: it builds Windows, macOS, and Linux assets, copies
+the versioned Windows installer to the stable `feno-bridge-setup.exe` name, checksums every asset,
+and makes the release public. Do not create or upload a second release from the local machine.
+
+Packaged Feno Bridge installations query the latest public release on startup or when users press
+**Check updates**. Once the workflow finishes, supported installations can download and verify the
+new package without GitHub credentials. The local `Setup` file is a build output; share the public
+release link with new users.
+
 CI proves that the runtime builds, the launcher starts, and native packages pass their smoke
 contract on macOS, Windows, and Linux. It does not prove an authenticated ChatGPT session, a live
 MCP connector, or a complete Codex turn. A release candidate is not ready until those account-bound

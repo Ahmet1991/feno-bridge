@@ -1,4 +1,4 @@
-> **Feno Bridge Windows kurulumu:** [Setup klasörü](Setup/README.md) · [En güncel kurulum dosyası](https://github.com/Ahmet1991/codex-chatgpt-web/releases/latest/download/feno-bridge-setup.exe)
+> **Feno Bridge Windows kurulumu:** [Setup bilgileri](Setup/README.md) · [En güncel kurulum dosyası](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe)
 
 <h1 align="center">ChatGPT Web for Codex</h1>
 
@@ -73,21 +73,25 @@ policies.
 
 ## Quick start
 
-Install or update the desktop launcher. To update or repair an existing installation, quit the
-launcher and run the same command again; it replaces the application and embedded runtime while
-preserving the ChatGPT profile and launcher configuration.
+Install the desktop launcher from the public Feno Bridge release. Existing packaged installations
+check for updates at startup and offer **Check updates** in the app. The updater verifies the
+downloaded package's SHA-256 checksum before installing it and preserves the ChatGPT profile and
+launcher configuration. The in-app updater and direct Windows installer need no GitHub account or CLI.
 
 **macOS or Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.sh | sh
 ```
 
-**Windows PowerShell**
+**Windows x64:** [Download the latest installer](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe), or use PowerShell:
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.ps1 | iex
 ```
+
+The installer scripts bundled with v5.0.8 still require GitHub CLI. The direct Windows installer
+and in-app updater do not. Credential-free installer scripts are included in the next release.
 
 Then complete the three checks in the app:
 
