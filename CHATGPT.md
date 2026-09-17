@@ -9,9 +9,37 @@ Bu dosya Feno Bridge sürümüyle birlikte dağıtılır. Yalnızca ilgili sorun
 
 ## Windows masaüstünde Computer Use
 
-Kullanıcı yerel Windows masaüstünü veya yerel bir uygulamayı görmeni ya da kontrol etmeni isterse, mevcut `computer-use` skill'ini oku. Araçlar ertelenmişse `tool_search` ile `node_repl` aracını ara. Bu ortamda yerel Windows denetimi `node_repl` içinde `@oai/sky` üzerinden sağlanabilir: `sky.list_apps()` veya `sky.list_windows()` ile gerçekten erişilebilir pencereleri doğrula, sonra dönen pencereyi hedefle.
+Kullanıcı yerel Windows masaüstünü, Dosya Gezgini'ni veya başka bir yerel uygulamayı görmeni ya da kontrol etmeni isterse önce o oturumda sunulan `computer-use:computer-use` skill'ini oku. Skill'in ilgili işlem için istediği guidance, API ve confirmation belgelerini de işlemden önce oku. Eklenti sürümü ve kurulum yolu makineler arasında değişebileceği için kullanıcıya özel mutlak bir eklenti yolunu varsayma.
 
-`mcp__cua_repl__js` aracının “Native computer APIs are disabled” demesi yalnızca o aracın yerel masaüstü yolu hakkında bilgi verir; `@oai/sky` yolunun da kapalı olduğunu kanıtlamaz. Tersine, başka bir makinede `node_repl`, `@oai/sky` veya Computer Use eklentisi yoksa bunların var olduğunu varsayma. Önce araçları doğrula, yoksa hangi parça eksikse açıkça bildir. Tarayıcı görevlerinde tarayıcı aracını kullan.
+`node_repl` ertelenmiş araçsa mevcut araç keşif mekanizmasıyla bul. `tool_search` sunuluyorsa `node_repl` ara; aracın gerçek adı ve kullanılabilirliğini dönen araç listesinden doğrula. Var olmayan araç çağrıları uydurma.
+
+Taze bir `node_repl` JavaScript oturumunda native Windows yolunu şöyle başlat:
+
+```js
+if (!globalThis.sky) {
+  const { sky } = await import("@oai/sky");
+  globalThis.sky = sky;
+}
+```
+
+Ardından erişimi gerçekten sınamak için aynı oturumda mevcut pencereleri veya uygulamaları listele:
+
+```js
+globalThis.windows = await sky.list_windows();
+nodeRepl.write(JSON.stringify(globalThis.windows, null, 2));
+```
+
+Gerektiğinde `sky.list_apps()` da kullanılabilir. Hedef pencereyi yalnızca güncel `list_windows()` / `list_apps()` sonucunda gerçekten dönen nesneler arasından seç. Birden fazla aday varsa mevcut başlık ve uygulama bilgisiyle tek hedef belirle. Önceki oturumdan pencere kimliği, sabit liste sırası veya erişilebilirlik indeksi kopyalama.
+
+İşlem döngüsü gözlem → işlem → doğrulama şeklinde ilerlemeli: hedef pencerenin güncel durumunu oku, görüntü veya erişilebilirlik ağacını incele, güncel gözleme göre işlem yap, sonra durumu yeniden okuyup sonucu doğrula. Pencere kapanmışsa gerektiğinde pencere listesini yenileyerek kapanmayı doğrula.
+
+`mcp__cua_repl` tarafındaki boş `apps: []` sonucu veya `Native computer APIs are disabled` mesajı, `node_repl` + `@oai/sky` yolunun da kapalı olduğunu kanıtlamaz. Yerel Windows için bu native rota sınanmadan kullanıcıya masaüstüne erişilemediğini söyleme.
+
+`node_repl` bulunamıyorsa, `@oai/sky` yüklenemiyorsa veya native çağrı hata veriyorsa hangi bileşenin eksik ya da başarısız olduğunu açıkça raporla. Başka makinelerde aynı kurulumun bulunduğunu varsayma. Gerçek izin reddi, kilitli masaüstü, kullanıcı tarafından durdurma veya geçerli confirmation gereksinimine uy; bu engelleri başka araçla aşmaya çalışma.
+
+Tarayıcı görevlerinde uygun tarayıcı araçlarını kullan; yerel Windows uygulamalarında native yolu kullan. Kullanıcı aynı konuşmada işlemi zaten istemişse, yalnızca yöntemi hatırlattığı veya yeni mesaj gönderdiği için mevcut yetkilendirmeyi yok sayma. Yeni risk, kapsam değişikliği veya geçerli bir confirmation zorunluluğu varsa ona göre davran; kaydedilmemiş veriyi atma gibi ayrı bir sonucu basit pencere kapatma isteğinden otomatik çıkarma.
+
+Raporlamayı gerçek araç çıktısına dayandır. Gerçek bir ret/hata olmadan “güvenlik filtresi engelledi” deme ve yalnızca denenmiş bir işlemi tamamlanmış gibi anlatma.
 
 ## Feno güncellemeleri
 
