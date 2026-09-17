@@ -182,6 +182,7 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
       source: assetPath,
       target: windowsApplicationPath(executablePath),
       fallbackTarget: executablePath,
+      readyPath: path.join(path.dirname(logPath), "launcher-ready.json"),
     };
   }
   if (platform === "linux") {
@@ -335,6 +336,8 @@ function createUpdateController({
 
         const workerPath = path.join(tempRoot, "update-worker.cjs");
         fs.copyFileSync(path.join(__dirname, "update-worker.cjs"), workerPath);
+        fs.copyFileSync(path.join(__dirname, "update-ready.cjs"), path.join(tempRoot, "update-ready.cjs"));
+        fs.copyFileSync(path.join(__dirname, "update-progress.cjs"), path.join(tempRoot, "update-progress.cjs"));
         const job = buildJob({
           version: available.version,
           platform,

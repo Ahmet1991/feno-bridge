@@ -1,6 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
+const { waitForReadyMarker } = require("./update-ready.cjs");
+const { startWindowsUpdateProgress, showWindowsUpdateFailure } = require("./update-progress.cjs");
 
 function appendLog(job, message) {
   try {
@@ -28,6 +30,7 @@ async function waitForParent(pid, timeoutMs = 120_000) {
 
 function launch(bin, args = []) {
   const child = spawn(bin, args, { detached: true, stdio: "ignore", windowsHide: true });
+  child.on("error", () => {});
   child.unref();
 }
 
@@ -60,13 +63,17 @@ function updateMac(job) {
   launch("/usr/bin/open", [job.target]);
 }
 
-function updateWindows(job) {
+async function updateWindows(job, onInstalled = () => {}) {
   requireFile(job.source, "Windows installer");
+  const startedAt = Date.now();
   const result = spawnSync(job.source, ["/S"], { encoding: "utf8", timeout: 15 * 60_000, windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Windows installer exited with code ${result.status}`);
   requireFile(job.target, "Installed Windows launcher");
+  appendLog(job, `installer finished; waiting for Feno Bridge v${job.version} to open`);
+  onInstalled();
   launch(job.target);
+  await waitForReadyMarker(job.readyPath, job.version, startedAt);
 }
 
 function shellQuote(value) {
@@ -132,17 +139,30 @@ async function main() {
   appendLog(job, `waiting for launcher PID ${job.parentPid} before installing v${job.version}`);
   await waitForParent(job.parentPid);
   appendLog(job, `installing v${job.version} on ${job.platform}`);
+  const progress = job.platform === "win32"
+    ? startWindowsUpdateProgress(job.tempRoot, {
+      onError: (error) => appendLog(job, `update status window unavailable: ${error.message}`),
+    })
+    : null;
   try {
     if (job.platform === "darwin") updateMac(job);
-    else if (job.platform === "win32") updateWindows(job);
+    else if (job.platform === "win32") await updateWindows(job, () => progress?.setPhase("opening"));
     else if (job.platform === "linux") updateLinux(job);
     else throw new Error(`Unsupported update platform: ${job.platform}`);
     appendLog(job, `v${job.version} installed and relaunched`);
+    progress?.stop();
     try { fs.rmSync(job.tempRoot, { recursive: true, force: true }); } catch {}
   } catch (error) {
     appendLog(job, `update failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+    progress?.stop();
     relaunchExisting(job);
+    if (job.platform === "win32") showWindowsUpdateFailure(job.tempRoot, {
+      logPath: job.logPath,
+      onError: (statusError) => appendLog(job, `update failure window unavailable: ${statusError.message}`),
+    });
     throw error;
+  } finally {
+    progress?.stop();
   }
 }
 

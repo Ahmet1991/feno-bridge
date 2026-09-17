@@ -176,6 +176,13 @@ code {
   pointer-events: none;
 }
 
+.titlebar-version {
+  margin-left: 8px;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
 .app-root:not([data-platform="darwin"]) .titlebar-left {
   left: 8px;
 }

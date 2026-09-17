@@ -543,6 +543,7 @@ function LauncherShell({
         draggable={surface !== "browser"}
         sidebarOpen={sidebarOpen}
         toggleSidebar={toggleSidebar}
+        version={snapshot.version}
       />
 
       {compactSidebar && sidebarOpen ? (
@@ -749,12 +750,14 @@ function TitleBar({
   draggable,
   sidebarOpen,
   toggleSidebar,
+  version,
 }: {
   copy: Copy;
   devProfile: boolean;
   draggable: boolean;
   sidebarOpen: boolean;
   toggleSidebar: () => void;
+  version: string;
 }) {
   return (
     <header className={`app-titlebar${draggable ? " draggable" : ""}`}>
@@ -765,6 +768,7 @@ function TitleBar({
           onClick={toggleSidebar}
         />
         {devProfile ? <span className="titlebar-dev-profile">{copy.devBadge}</span> : null}
+        <span className="titlebar-version">{copy.product} · v{version}</span>
       </div>
     </header>
   );

@@ -30,6 +30,7 @@ const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
+const { writeReadyMarker } = require("./update-ready.cjs");
 const {
   createStateStore,
   nextSessionRefreshReminderAt,
@@ -207,8 +208,8 @@ const NATIVE_COPY = Object.freeze({
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
     updateNow: "Update now",
     updateTitle: "Update Feno Bridge",
-    updateMessage: "Feno Bridge will close and reopen to install the update.",
-    updateDetail: "Active Codex tasks may be interrupted. Start the update when they are idle.",
+    updateMessage: "Feno Bridge will close while the update installs. Reopening may take several minutes.",
+    updateDetail: "On Windows, an update status window will stay open. Do not start another installer while it is running. Active Codex tasks may be interrupted.",
   }),
   tr: Object.freeze({
     openLauncher: "Feno Bridge'i aç",
@@ -221,8 +222,8 @@ const NATIVE_COPY = Object.freeze({
     removeDetail: "Uygulamadaki ChatGPT oturum açma profili korunacak. Codex'in bir kez yeniden başlatılması gerekir.",
     updateNow: "Şimdi güncelle",
     updateTitle: "Feno Bridge'i güncelle",
-    updateMessage: "Güncellemeyi kurmak için Feno Bridge kapanıp yeniden açılacak.",
-    updateDetail: "Etkin Codex görevleri kesilebilir. Güncellemeyi görevler boşta iken başlatın.",
+    updateMessage: "Güncelleme sırasında Feno Bridge kapanacak. Yeniden açılması birkaç dakika sürebilir.",
+    updateDetail: "Windows'ta ayrı bir güncelleme durum penceresi açık kalacak. Bu sırada başka kurulum başlatmayın. Etkin Codex görevleri kesilebilir.",
   }),
 });
 
@@ -367,6 +368,13 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
     if (mainWindow === window) {
       mainWindow = null;
       mainWindowReadyToShow = false;
+    }
+  });
+  window.on("show", () => {
+    try {
+      writeReadyMarker(path.join(app.getPath("logs"), "launcher-ready.json"), app.getVersion());
+    } catch (error) {
+      logger.warn("launcher.ready_marker_failed", { message: error instanceof Error ? error.message : String(error) });
     }
   });
   for (const event of ["enter-full-screen", "leave-full-screen", "maximize", "unmaximize"]) {

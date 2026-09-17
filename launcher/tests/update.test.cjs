@@ -27,6 +27,19 @@ test("Windows update migrates the legacy install directory to Feno Bridge", () =
   assert.equal(windowsApplicationPath(current, "C:\\Users\\tester\\AppData\\Local"), current);
 });
 
+test("Windows update job watches the installed launcher's ready signal", () => {
+  const logPath = path.join(os.tmpdir(), "feno-update-test", "update-worker.log");
+  const job = buildJob({
+    version: "5.0.8",
+    platform: "win32",
+    executablePath: "C:\\Programs\\Feno Bridge\\Feno Bridge.exe",
+    assetPath: "C:\\Temp\\feno-bridge-5.0.8-win-x64.exe",
+    tempRoot: "C:\\Temp\\feno-update",
+    logPath,
+  });
+  assert.equal(job.readyPath, path.join(path.dirname(logPath), "launcher-ready.json"));
+});
+
 test("Linux auto-update fails closed without the stable installer wrapper", () => {
   const previousAppImage = process.env.CODEX_WEB_GPT_APPIMAGE;
   const previousWrapper = process.env.CODEX_WEB_GPT_LAUNCHER_EXECUTABLE;
