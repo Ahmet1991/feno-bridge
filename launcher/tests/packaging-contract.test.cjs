@@ -54,7 +54,8 @@ test("release installers resolve checksummed native launcher assets", () => {
   for (const installer of [shellInstaller, windowsInstaller]) {
     assert.match(installer, /checksums\.txt/);
     assert.match(installer, /SHA-?256/i);
-    assert.match(installer, /gh release download/);
+    assert.match(installer, /releases\/download/);
+    assert.doesNotMatch(installer, /gh release download|gh auth login/);
     assert.match(installer, /Ahmet1991\/feno-bridge/);
   }
   assert.match(shellInstaller, /PLATFORM="mac"/);
