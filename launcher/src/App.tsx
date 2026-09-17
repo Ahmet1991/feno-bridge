@@ -629,7 +629,8 @@ function LauncherShell({
                   icon="update"
                   label={updateBusy ? copy.updating : snapshot.update.status === "available"
                     ? `${copy.updateAvailable} v${updateVersion}`
-                    : snapshot.update.status === "checking" ? copy.checkingUpdates : copy.checkUpdates}
+                    : snapshot.update.status === "checking" ? copy.checkingUpdates
+                    : snapshot.update.status === "up-to-date" ? copy.upToDate : copy.checkUpdates}
                   onClick={() => void (snapshot.update.status === "available" ? installUpdate() : checkUpdate())}
                   tone={snapshot.update.status === "available" ? "update" : undefined}
                 />

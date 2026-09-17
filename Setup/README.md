@@ -6,4 +6,6 @@ Bu bağlantı değişmez. Yeni sürümler yayımlandıkça aynı bağlantı en s
 
 Feno Bridge kuruluysa yeni sürüm çıktığında uygulama içindeki **Check updates / Güncellemeleri denetle** düğmesini kullan. Uygulama güncel paketi indirip doğrulayarak kurar; ayarların ve ChatGPT oturumun korunur.
 
+Yeni Codex konuşmalarında Feno'ya özgü bilinen çözümler için [CHATGPT.md](../CHATGPT.md) kaynak alınır. Feno açıldığında o sürümün rehberi Codex skill klasörüne eşitlenir; yeni bir Codex konuşması başlatıldığında ilgili Feno ve Computer Use isteklerinde kullanılabilir. Eksik Computer Use eklentisini bu rehber kendi başına kurmaz.
+
 Depo ve sürümler herkese açıktır; GitHub hesabı gerekmez. Kurulum dosyası büyük olduğundan Git kaynak ağacında tutulmaz, GitHub Release dosyası olarak yayımlanır.

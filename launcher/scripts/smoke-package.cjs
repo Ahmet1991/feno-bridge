@@ -104,6 +104,12 @@ try {
     || marker.platform !== process.platform) {
     throw new Error(`Unexpected packaged launcher marker: ${JSON.stringify(marker)}`);
   }
+  const guidanceSource = path.join(launcherRoot, "..", "CHATGPT.md");
+  const installedGuidance = path.join(env.CODEX_HOME, "skills", "feno-bridge-guide", "SKILL.md");
+  if (!fs.existsSync(installedGuidance)
+    || !fs.readFileSync(installedGuidance).equals(fs.readFileSync(guidanceSource))) {
+    throw new Error("Packaged launcher did not install its current Feno Bridge guide");
+  }
   const installedRuntime = path.join(
     coreHome,
     "versions",

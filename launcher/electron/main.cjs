@@ -18,6 +18,7 @@ const {
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
+const { syncBundledGuidance } = require("./guidance.cjs");
 const {
   createLogger,
   exportSanitizedLogs,
@@ -985,6 +986,19 @@ async function start() {
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),
   });
+  if (app.isPackaged && !IS_DEV_PROFILE) {
+    try {
+      const result = syncBundledGuidance({
+        sourcePath: path.join(process.resourcesPath, "guidance", "SKILL.md"),
+        codexHome: LAUNCHER_PROFILE.codexHome,
+      });
+      logger.info("launcher.guidance_sync", { status: result.status });
+    } catch (error) {
+      logger.warn("launcher.guidance_sync_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   const startHidden = process.argv.includes("--hidden") && stateStore.read().onboardingComplete;
   nativeTheme.themeSource = "system";
   mainWindow = createWindow({

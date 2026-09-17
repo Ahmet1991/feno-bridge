@@ -916,7 +916,7 @@ class RuntimeSupervisor {
     const deadline = Date.now() + timeoutMs;
     let lastDetail = "tunnel status has not been observed";
     let lastPublishedDetail;
-    while (Date.now() < deadline) {
+    do {
       const health = await this.readTunnelHealth(config);
       if (health.pid) {
         this.tunnel = {
@@ -950,8 +950,12 @@ class RuntimeSupervisor {
           message: `Waiting for tunnel readiness: ${lastDetail}`,
         });
       }
-      await sleep(TUNNEL_HEALTH_POLL_INTERVAL_MS);
-    }
+      if (Date.now() >= deadline) break;
+      await sleep(Math.min(
+        TUNNEL_HEALTH_POLL_INTERVAL_MS,
+        Math.max(1, deadline - Date.now()),
+      ));
+    } while (Date.now() < deadline);
     throw new Error(
       `Tunnel runtime did not become healthy and ready within ${timeoutMs}ms: ${lastDetail}`,
     );

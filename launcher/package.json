@@ -63,6 +63,10 @@
       {
         "from": "build/runtime",
         "to": "runtime"
+      },
+      {
+        "from": "../CHATGPT.md",
+        "to": "guidance/SKILL.md"
       }
     ],
     "mac": {
