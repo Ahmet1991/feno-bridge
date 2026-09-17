@@ -8,7 +8,7 @@ const ROOT = join(import.meta.dir, "..");
 test("local Windows release chooses the next patch version", async () => {
   const { nextPatchVersion, releaseRuntimeIsMutableBuildPath, RELEASE_REPOSITORY, SOURCE_REPOSITORY } = await import("../scripts/release-windows");
   expect(SOURCE_REPOSITORY).toBe("Ahmet1991/feno-bridge");
-  expect(RELEASE_REPOSITORY).toBe("Ahmet1991/codex-chatgpt-web");
+  expect(RELEASE_REPOSITORY).toBe("Ahmet1991/feno-bridge");
   expect(releaseRuntimeIsMutableBuildPath(join(ROOT, "launcher", "build", "runtime", "runtime", "bun.exe"))).toBe(true);
   expect(releaseRuntimeIsMutableBuildPath(join(tmpdir(), "feno-release-bun.exe"))).toBe(false);
   expect(nextPatchVersion("5.0.5")).toBe("5.0.6");

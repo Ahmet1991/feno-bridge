@@ -6,7 +6,7 @@ const { Readable } = require("node:stream");
 const { pipeline } = require("node:stream/promises");
 const { spawn, spawnSync } = require("node:child_process");
 
-const RELEASE_REPOSITORY = "Ahmet1991/codex-chatgpt-web";
+const RELEASE_REPOSITORY = "Ahmet1991/feno-bridge";
 const RELEASE_API_URL = `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`;
 const RELEASE_HEADERS = {
   Accept: "application/vnd.github+json",

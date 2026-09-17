@@ -4,7 +4,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 export const SOURCE_REPOSITORY = "Ahmet1991/feno-bridge";
-export const RELEASE_REPOSITORY = "Ahmet1991/codex-chatgpt-web";
+export const RELEASE_REPOSITORY = "Ahmet1991/feno-bridge";
 const ROOT = resolve(import.meta.dir, "..");
 const STABLE_INSTALLER_NAME = "feno-bridge-setup.exe";
 const VERSION_FILES = [
@@ -253,7 +253,7 @@ async function main(): Promise<void> {
         "release", "create", tag, installer, stableInstaller, checksums,
         "--repo", RELEASE_REPOSITORY,
         "--title", `Feno Bridge ${tag}`,
-        "--notes", "Public update package for Feno Bridge. Source code remains in the private source repository.",
+        "--notes", "Windows update package for Feno Bridge.",
         "--latest",
       ]);
     }

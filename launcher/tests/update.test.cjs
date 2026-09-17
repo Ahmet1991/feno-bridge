@@ -68,22 +68,22 @@ test("checksums and release URLs bind the exact expected asset", () => {
   assert.throws(() => expectedChecksum(`${hash}  other.zip\n`, "launcher.zip"), /no entry/);
   assert.equal(
     validateReleaseAssetUrl(
-      "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+      "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/launcher.zip",
       "1.2.0",
       "launcher.zip",
     ),
-    "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+    "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/launcher.zip",
   );
   assert.throws(
     () => validateReleaseAssetUrl("https://example.com/launcher.zip", "1.2.0", "launcher.zip"),
     /unexpected release asset URL/,
   );
   assert.deepEqual(
-    releaseAssetParts("https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip"),
+    releaseAssetParts("https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/launcher.zip"),
     { tag: "v1.2.0", asset: "launcher.zip" },
   );
   assert.throws(
-    () => releaseAssetParts("https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/launcher.zip"),
+    () => releaseAssetParts("https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip"),
     /Unexpected private release URL/,
   );
 });
@@ -99,7 +99,7 @@ test("public updater checks the dedicated release repository without GitHub CLI"
     };
   });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "https://api.github.com/repos/Ahmet1991/codex-chatgpt-web/releases/latest");
+  assert.equal(calls[0].url, "https://api.github.com/repos/Ahmet1991/feno-bridge/releases/latest");
   assert.match(calls[0].options.headers["User-Agent"], /Feno-Bridge/);
   assert.equal(release.tag_name, "v1.2.0");
 });
@@ -123,11 +123,11 @@ test("manual update check can discover a release published after startup", async
           assets: [
             {
               name: "feno-bridge-1.2.0-win-x64.exe",
-              browser_download_url: "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/feno-bridge-1.2.0-win-x64.exe",
+              browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/feno-bridge-1.2.0-win-x64.exe",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/checksums.txt",
             },
           ],
         };
@@ -169,11 +169,11 @@ test("startup check runs once and exposes only a newer complete release", async 
           assets: [
             {
               name: "feno-bridge-1.2.0-linux-x64.AppImage",
-              browser_download_url: "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/feno-bridge-1.2.0-linux-x64.AppImage",
+              browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/feno-bridge-1.2.0-linux-x64.AppImage",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/checksums.txt",
             },
           ],
         };
@@ -216,11 +216,11 @@ test("verified update is handed to one detached worker", async () => {
           assets: [
             {
               name: "feno-bridge-1.2.0-linux-x64.AppImage",
-              browser_download_url: "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/feno-bridge-1.2.0-linux-x64.AppImage",
+              browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/feno-bridge-1.2.0-linux-x64.AppImage",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/Ahmet1991/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/Ahmet1991/feno-bridge/releases/download/v1.2.0/checksums.txt",
             },
           ],
         }),
