@@ -7,6 +7,7 @@ import { VERSION } from "../../version";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
+import { observeMcpToolCalls } from "./mcp-observation";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -936,5 +937,5 @@ export async function runChatGptMcpServer(options: {
     );
   }
 
-  await server.connect(new StdioServerTransport());
+  await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES));
 }

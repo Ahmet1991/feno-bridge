@@ -33,6 +33,10 @@ function conservativeTextTokens(text: string, modelId: string): number {
 export function estimateChatGptWebInputTokens(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
+  options: {
+    experimentalSkillAttachments?: boolean;
+    experimentalMultipartParts?: ChatGptWebMultipartPartCount;
+  } = {},
 ): number {
   const manual = isChatGptWebZeroRiskBackendModel(parsed.modelId);
   const mode = manual
@@ -45,6 +49,8 @@ export function estimateChatGptWebInputTokens(
     mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
     {
       ...(manual ? { manualControl: true as const } : {}),
+      experimentalSkillAttachments: options.experimentalSkillAttachments,
+      experimentalMultipartParts: options.experimentalMultipartParts,
       captureLunaCheckpoint: parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID
         && !parsed._compactionRequest
         && Boolean(identity.threadId && identity.turnId),
@@ -61,6 +67,7 @@ export function estimateChatGptWebInputTokens(
 export function resolveBiggerContextMultipartParts(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
+  experimentalSkillAttachments = false,
 ): ChatGptWebMultipartPartCount | undefined {
   if (isChatGptWebZeroRiskBackendModel(parsed.modelId)) {
     throw new Error("Bigger Context is unavailable for ChatGPT Zero Risk");
@@ -75,7 +82,7 @@ export function resolveBiggerContextMultipartParts(
     mode.effort,
     capabilities,
   ).autoCompactTokenLimit;
-  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities);
+  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, { experimentalSkillAttachments });
   return biggerContextPartCount(inputTokens, onePartLimit, parsed._compactionRequest === true);
 }
 
@@ -117,8 +124,15 @@ export function estimateChatGptWebUsage(
   parsed: CodexParsedRequest,
   evidence: ChatGptWebRoundEvidence,
   capabilities: ChatGptWebCapabilities,
+  experimentalBiggerContext = false,
+  experimentalSkillAttachments = false,
 ): CodexUsage {
-  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities);
+  const inputTokens = estimateChatGptWebInputTokens(parsed, capabilities, {
+    experimentalSkillAttachments,
+    experimentalMultipartParts: experimentalBiggerContext
+      ? resolveBiggerContextMultipartParts(parsed, capabilities, experimentalSkillAttachments)
+      : undefined,
+  });
   const outputTokens = conservativeTextTokens(roundEvidenceText(evidence), parsed.modelId);
   return {
     inputTokens,

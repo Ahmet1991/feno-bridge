@@ -3093,6 +3093,40 @@ test("persistent Stopped thinking is a terminal cancelled turn", () => {
   });
 });
 
+test("stopped-thinking detection recognizes Turkish ChatGPT UI without matching answer content", () => {
+  const { createWindow } = require("@mixmark-io/domino") as {
+    createWindow(html: string): { document: Document; NodeFilter: typeof NodeFilter };
+  };
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const source = worker.split("const stoppedThinkingVisible = (() => {")[1]?.split("})();")[0];
+  if (!source) throw new Error("Stopped-thinking predicate is missing");
+  const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(
+    `function detect(root, options, document, NodeFilter, renderedInDom, overlapsRenderedAnswer, overlapsCommentary) { ${source} }`,
+  );
+  const detect = new Function(`${javascript}; return detect;`)();
+  const stopped = (html: string): boolean => {
+    const window = createWindow(`<article id="current">${html}</article>`);
+    const root = window.document.getElementById("current")!;
+    const overlaps = (selector: string) => (candidate: HTMLElement) => Array.from(root.querySelectorAll(selector))
+      .some(content => content.contains(candidate) || candidate.contains(content));
+    return detect(
+      root,
+      { stoppedThinkingLabels: ["Stopped thinking", "Düşünme durdu"] },
+      window.document,
+      window.NodeFilter,
+      (element: HTMLElement) => element.style.display !== "none"
+        && element.style.visibility !== "hidden"
+        && element.style.opacity !== "0",
+      overlaps(".answer"),
+      overlaps(".commentary"),
+    );
+  };
+
+  expect(stopped('<div data-streaming-response-status><button>Düşünme durdu</button></div>')).toBeTrue();
+  expect(stopped('<button aria-label="Düşünme durdu">Durum</button>')).toBeTrue();
+  expect(stopped('<div class="answer"><p>Düşünme durdu</p></div>')).toBeFalse();
+});
+
 test("visible DOM trace keeps a complete action phrase instead of a nested count", () => {
   expect(new ChatGptVisibleTraceTracker(0).observe([
     { kind: "status", text: "Searched\n5\nsites" },

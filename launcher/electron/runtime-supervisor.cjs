@@ -251,6 +251,9 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
       throw new Error(`Runtime configuration has an invalid ${key}`);
     }
   }
+  if (config.extraHighAvailable !== undefined && typeof config.extraHighAvailable !== "boolean") {
+    throw new Error("Runtime configuration has an invalid extraHighAvailable");
+  }
   if (config.experimentalBiggerContext !== undefined
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
@@ -258,6 +261,9 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
   if (config.stallTimeoutSec !== undefined
     && (!Number.isFinite(config.stallTimeoutSec) || config.stallTimeoutSec <= 0)) {
     throw new Error("Runtime configuration has an invalid stallTimeoutSec");
+  }
+  if (config.extraHighAvailable === true && !config.solAvailable) {
+    throw new Error("Runtime configuration cannot enable Extra High without Sol");
   }
   if (config.proAvailable && !config.solAvailable) {
     throw new Error("Runtime configuration cannot enable Pro without Sol");

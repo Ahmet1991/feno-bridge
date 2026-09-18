@@ -1080,6 +1080,41 @@ class RuntimeHost {
     return { ...result, mode, enabled: enabled === true };
   }
 
+  async setSkillAttachments(enabled) {
+    const current = this.runtimeConfigSnapshot();
+    if (!current.configured) {
+      throw new Error("Initialize the runtime before changing Skills as files");
+    }
+    if (current.config?.browserInteractionMode === "manual") {
+      throw new Error("Skills as files is unavailable in Zero Risk mode");
+    }
+    const mode = current.mode;
+    const skillFlag = enabled === true ? "--skill-attachments" : "--inline-skills";
+    const args = [
+      ...(this.launcherProfile === "development" ? ["dev", "setup"] : ["setup"]),
+      mode === "full" ? "--full" : "--browser-only",
+      "--browser-host-descriptor",
+      this.browserDescriptorPath,
+      ...this.browserInteractionArgs(),
+      "--acknowledge-unofficial",
+      skillFlag,
+      ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
+    ];
+    if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
+    if (mode === "full") args.push("--app-name", this.setupConnectorName());
+    const options = {
+      message: enabled ? "Enabling Skills as files" : "Disabling Skills as files",
+      successMessage: enabled
+        ? `Skills as files enabled${this.launcherProfile === "production" ? "; restart Codex" : ""}`
+        : `Inline skills restored${this.launcherProfile === "production" ? "; restart Codex" : ""}`,
+      timeoutMs: CORE_SETUP_TIMEOUT_MS,
+    };
+    const result = this.launcherProfile === "development"
+      ? await this.runDevSetup("skill-attachments", args, options)
+      : await this.runSetup("skill-attachments", args, options);
+    return { ...result, mode, enabled: enabled === true };
+  }
+
   async setZeroRiskPro(enabled) {
     const current = this.runtimeConfigSnapshot();
     if (!current.configured) {

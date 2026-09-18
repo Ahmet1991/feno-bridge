@@ -32,8 +32,8 @@ function parsed(modelId: string, reasoning = "medium"): CodexParsedRequest {
 }
 
 describe("fixed ChatGPT Web model routes", () => {
-  const plus = { solAvailable: true, proAvailable: false };
-  const pro = { solAvailable: true, proAvailable: true };
+  const plus = { solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true };
 
   test("uses unique stable slugs and one explicit adapter effort per model", () => {
     expect(new Set(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug)).size).toBe(CHATGPT_WEB_MODEL_ROUTES.length);
@@ -53,8 +53,18 @@ describe("fixed ChatGPT Web model routes", () => {
       "chatgpt-web/medium",
       "chatgpt-web/high",
     ]);
-    expect(availableChatGptWebModelRoutes({ solAvailable: true, proAvailable: true }))
+    expect(availableChatGptWebModelRoutes({ solAvailable: true, extraHighAvailable: true, proAvailable: true }))
       .toEqual(CHATGPT_WEB_MODEL_ROUTES);
+    expect(availableChatGptWebModelRoutes({
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: false,
+    }).map(route => route.slug)).toEqual([
+      "chatgpt-web/light",
+      "chatgpt-web/medium",
+      "chatgpt-web/high",
+      "chatgpt-web/extra-high",
+    ]);
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
       .toThrow("Extra High is not available for this account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", plus))
