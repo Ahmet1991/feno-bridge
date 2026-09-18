@@ -153,7 +153,7 @@ function recordStartupReadiness(status, detail = "") {
     at: Date.now(),
     ...(detail ? { detail } : {}),
   };
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) writeLauncherReadyMarker();
+  writeLauncherReadyMarker();
 }
 
 function stopCatalogVerificationMonitor() {

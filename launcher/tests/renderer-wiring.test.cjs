@@ -70,6 +70,15 @@ test("a foreground launch request survives hidden startup until the launcher win
   );
 });
 
+test("functional startup readiness is published even while the launcher window is hidden", () => {
+  const readinessRecorder = electronMain.slice(
+    electronMain.indexOf("function recordStartupReadiness"),
+    electronMain.indexOf("function stopCatalogVerificationMonitor"),
+  );
+  assert.match(readinessRecorder, /writeLauncherReadyMarker\(\);/);
+  assert.doesNotMatch(readinessRecorder, /mainWindow\.isVisible\(\)/);
+});
+
 test("normal shutdown persists the ChatGPT session before closing browser views", () => {
   assert.match(
     electronMain,

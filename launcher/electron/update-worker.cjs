@@ -211,8 +211,9 @@ async function main() {
   } catch (error) {
     appendLog(job, `update failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     progress?.stop();
-    if (!error?.rollbackFailed) relaunchExisting(job);
-    else appendLog(job, `automatic relaunch skipped because rollback failed; recovery backup: ${error.backupPath || "unknown"}`);
+    if (!error?.rollbackFailed && !error?.rollbackSkipped) relaunchExisting(job);
+    else if (error?.rollbackFailed) appendLog(job, `automatic relaunch skipped because rollback failed; recovery backup: ${error.backupPath || "unknown"}`);
+    else appendLog(job, `automatic relaunch skipped after the updated application started; recovery backup: ${error.backupPath || "unknown"}`);
     if (job.platform === "win32") showWindowsUpdateFailure(job.tempRoot, {
       logPath: job.logPath,
       onError: (statusError) => appendLog(job, `update failure window unavailable: ${statusError.message}`),

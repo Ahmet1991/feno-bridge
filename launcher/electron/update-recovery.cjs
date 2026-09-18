@@ -48,6 +48,7 @@ async function runWindowsUpdateTransaction(job, {
   }
 
   const startedAt = Date.now();
+  let launchedUpdatedApplication = false;
   try {
     await runInstaller();
     if (!fs.statSync(job.target, { throwIfNoEntry: false })?.isFile()) {
@@ -56,10 +57,20 @@ async function runWindowsUpdateTransaction(job, {
     appendLog(`installer finished; waiting for Feno Bridge v${job.version} functional startup`);
     onInstalled();
     launch(job.target);
+    launchedUpdatedApplication = true;
     const readiness = await waitForReadiness(job.readyPath, job.version, startedAt);
     fs.rmSync(backupDir, { recursive: true, force: true });
     return readiness;
   } catch (error) {
+    if (launchedUpdatedApplication) {
+      const message = error instanceof Error ? error.message : String(error);
+      const retained = new Error(
+        `${message}; automatic rollback was skipped because the updated application had already been launched; backup retained at ${backupDir}`,
+      );
+      retained.rollbackSkipped = true;
+      retained.backupPath = backupDir;
+      throw retained;
+    }
     try {
       restoreApplicationDirectory({ backupDir, previousDir, targetDir });
       fs.rmSync(backupDir, { recursive: true, force: true });

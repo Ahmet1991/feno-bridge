@@ -59,25 +59,34 @@ test("Windows installer failure restores the previous application without touchi
   }
 });
 
-test("Windows startup failure restores the previous application after the new binary was launched", async () => {
+test("Windows startup failure preserves the launched update and retains the backup", async () => {
   const fx = fixture();
   const launched = [];
   try {
-    await assert.rejects(
-      runWindowsUpdateTransaction(fx.job, {
+    let failure = null;
+    try {
+      await runWindowsUpdateTransaction(fx.job, {
         runInstaller: () => {
           fs.writeFileSync(fx.target, "new launcher");
           fs.writeFileSync(path.join(fx.installDir, "app.asar"), "new app");
         },
         launch: (target) => launched.push(target),
         waitForReadiness: async () => { throw new Error("injected startup failure"); },
-      }),
-      /injected startup failure/,
-    );
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof Error);
+    assert.match(failure.message, /injected startup failure/);
+    assert.equal(failure.rollbackSkipped, true);
     assert.deepEqual(launched, [fx.target]);
-    assert.equal(fs.readFileSync(fx.target, "utf8"), "old launcher");
-    assert.equal(fs.readFileSync(path.join(fx.installDir, "app.asar"), "utf8"), "old app");
+    assert.equal(fs.readFileSync(fx.target, "utf8"), "new launcher");
+    assert.equal(fs.readFileSync(path.join(fx.installDir, "app.asar"), "utf8"), "new app");
     assert.equal(fs.readFileSync(fx.profile, "utf8"), "user settings");
+    const backupDir = path.join(fx.job.tempRoot, "previous-install");
+    assert.equal(failure.backupPath, backupDir);
+    assert.equal(fs.readFileSync(path.join(backupDir, "Feno Bridge.exe"), "utf8"), "old launcher");
+    assert.equal(fs.readFileSync(path.join(backupDir, "app.asar"), "utf8"), "old app");
   } finally {
     fs.rmSync(fx.root, { recursive: true, force: true });
   }
