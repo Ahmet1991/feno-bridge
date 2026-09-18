@@ -3434,8 +3434,10 @@ export class ChatGptBrowserWorker {
     );
     try {
       await runPersonalizationPreflight();
-    } catch {
+    } catch (error) {
       throwIfPromptAttachmentAborted(abortSignal);
+      if (error instanceof ChatGptPromptAttachmentIntegrityError
+        || error instanceof ChatGptPersistentBrowserStateError) throw error;
       await capture("personalization-preflight-retry");
       try {
         await page.reload({
