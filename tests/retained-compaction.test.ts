@@ -1271,10 +1271,23 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     expect(contextText).toContain("Original task");
     expect(contextText).toContain("Continue with the next step");
     if (experimentalBiggerContext) {
-      expect(prepared.multipart!.parts).toHaveLength(3);
+      expect(prepared.multipart!.parts.length).toBeGreaterThanOrEqual(3);
       expect(prepared.trimmedCompactionMessages).toBeUndefined();
-      const lastRecord = prepared.multipart!.parts.flatMap(part => JSON.parse(part).records).at(-1);
-      expect(lastRecord.message.content).toBe(compact.context.messages.at(-1)!.content);
+      const records = prepared.multipart!.parts.flatMap(part => JSON.parse(part).records) as Array<{
+        kind: string;
+        message_index?: number;
+        chunk?: { index: number; total: number };
+        message?: { content?: unknown };
+      }>;
+      const lastRecord = records.at(-1)!;
+      const lastMessageIndex = lastRecord.message_index;
+      const reconstructedContent = records
+        .filter(record => record.kind === "message" && record.message_index === lastMessageIndex)
+        .sort((left, right) => (left.chunk?.index ?? 1) - (right.chunk?.index ?? 1))
+        .map(record => record.message?.content)
+        .filter((content): content is string => typeof content === "string")
+        .join("");
+      expect(reconstructedContent).toBe(compact.context.messages.at(-1)!.content as string);
     }
     prepared.release();
     return "Fallback checkpoint from canonical Codex context";
