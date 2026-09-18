@@ -28,7 +28,7 @@ import {
 } from "./capacity";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { chatGptReadOnlyContextWarning } from "./prompt";
+import { CHATGPT_BIGGER_CONTEXT_PARTS, chatGptReadOnlyContextWarning } from "./prompt";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import {
@@ -496,6 +496,7 @@ export function createChatGptWebAdapter(
           captureLunaCheckpoint,
           experimentalSkillAttachments,
           maxMessageChars,
+          ...(experimentalBiggerContext ? { multipartParts: CHATGPT_BIGGER_CONTEXT_PARTS } : {}),
           ...(manualControl ? { manualControl: true as const } : {}),
         },
       );
