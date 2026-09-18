@@ -1,15 +1,17 @@
+> **Feno Bridge Windows 설치:** [설치 안내](Setup/README.md) · [최신 설치 파일](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe)
+
 <p align="center">
   <img src="assets/readme/hero.svg" width="960" alt="웹 모델로 전환해도, Codex는 그대로. 내 ChatGPT 플랜. 내 작업 흐름. 모델의 가능성을 최대한.">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.14/feno-bridge-5.0.14-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.14/feno-bridge-5.0.14-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.14/feno-bridge-5.0.14-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.15/feno-bridge-5.0.15-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.15/feno-bridge-5.0.15-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.15/feno-bridge-5.0.15-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.14/feno-bridge-5.0.14-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">모든 릴리스</a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.0.15/feno-bridge-5.0.15-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">모든 릴리스</a>
 </p>
 
 <p align="center">
@@ -21,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">시작하기</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">업데이트</a> · <a href="docs/architecture.md">아키텍처</a> · <a href="TROUBLESHOOTING.md">문제 해결</a>
+  <a href="#get-started">시작하기</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases">업데이트</a> · <a href="docs/architecture.md">아키텍처</a> · <a href="TROUBLESHOOTING.md">문제 해결</a>
 </p>
 
 Codex의 네이티브 모델 선택기에서 Pro를 포함해 계정에 제공되는 ChatGPT Web 모델을 사용하세요. ChatGPT Web의 별도 사용 한도를 사용하므로 Work나 Codex의 사용량은 차감되지 않습니다. 기존 인터페이스, 작업, 이미지, 스트리밍은 그대로 유지됩니다.
@@ -49,13 +51,13 @@ Full harness 모드는 MCP를 통해 ChatGPT를 현재 작업의 파일, 터미�
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.sh | sh
 ```
 
-**Windows PowerShell**
+**Windows x64:** [최신 설치 프로그램 다운로드](https://github.com/Ahmet1991/feno-bridge/releases/latest/download/feno-bridge-setup.exe), 또는 PowerShell 사용:
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/Ahmet1991/feno-bridge/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 </details>

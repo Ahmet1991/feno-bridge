@@ -783,7 +783,11 @@ test("launcher adopts a healthy native managed tunnel without spawning a foregro
     connects += 1;
     return { code: 0, output: "{}" };
   };
-  supervisor.waitForTunnelMcpTransport = async () => { mcpChecks += 1; };
+  const waitForTunnelMcpTransport = supervisor.waitForTunnelMcpTransport.bind(supervisor);
+  supervisor.waitForTunnelMcpTransport = async (...args) => {
+    mcpChecks += 1;
+    return await waitForTunnelMcpTransport(...args);
+  };
   const healthFile = path.join(root, "health.url");
   fs.writeFileSync(healthFile, health.baseUrl);
   supervisor.runTunnelCommand = async () => ({ code: 0,
