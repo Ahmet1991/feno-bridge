@@ -21,7 +21,7 @@ import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
-import { httpStatusFromTerminalError } from "./lib/errors";
+import { describeCauseChain, httpStatusFromTerminalError } from "./lib/errors";
 import { createHash } from "node:crypto";
 import { augmentNativeModelCatalog } from "./model-catalog";
 import {
@@ -606,6 +606,18 @@ export async function responseRequest(
         queue.push(event);
       });
     } catch (error) {
+      // Every error an adapter throws funnels through here and is reduced to its own message. The
+      // `cause` each wrap site attaches dies at this line, so a turn that fails deep in the browser
+      // stack surfaces as one sentence with no record anywhere of what actually went wrong.
+      //
+      // Written to stderr, which the launcher captures into launcher.jsonl under its usual
+      // redaction, rather than into the event: the operator needs the chain and the model does not.
+      // The traceId ties it to the browser.turn_started / browser.turn_ended records already there.
+      if (error instanceof Error && error.cause !== undefined) {
+        console.error(
+          `[bridge] turn failed (traceId=${traceId ?? "unknown"}): ${describeCauseChain(error)}`,
+        );
+      }
       const event: AdapterEvent = { type: "error", message: error instanceof Error ? error.message : String(error) };
       options.onAdapterEvent?.(event);
       queue.push(event);

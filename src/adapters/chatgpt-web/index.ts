@@ -20,6 +20,7 @@ import {
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
+import { describeCauseChain } from "../../lib/errors";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import {
@@ -303,19 +304,6 @@ function emitReadOnlyContextWarning(
 
 function replayEvents(events: AdapterEvent[], emit: (event: AdapterEvent) => void): void {
   for (const event of events) emit(event);
-}
-
-/** `name: message` for an error and everything it was caused by, nearest cause first. */
-export function describeCauseChain(error: Error): string {
-  const described: string[] = [];
-  let current: unknown = error;
-  // Bounded because `cause` is attacker-adjacent data in the general case: a cycle or a chain
-  // thousands deep must not turn a diagnostic into a hang.
-  for (let depth = 0; current instanceof Error && depth < 8; depth += 1) {
-    described.push(`${current.name}: ${current.message}`);
-    current = current.cause;
-  }
-  return described.join(" <- ");
 }
 
 function submittedTurnFailure(session: ChatGptTurnSession, error: unknown): Error {
