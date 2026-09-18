@@ -180,7 +180,7 @@ export class ChatGptThreadEnvironmentStore {
       const currentContextClaimsCwd = hasCurrentContext && currentChatGptEnvironmentDeclaresCwd(parsed);
       const lineage = extractChatGptThreadSpawnLineage(parsed);
       const currentCompaction = currentContextClaimsCwd && isChatGptCompactionContinuation(parsed);
-      const historicalMessages = currentContextClaimsCwd && !currentCompaction && lineage
+      const historicalMessages = !currentCompaction && lineage
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
       if (currentContextClaimsCwd && !currentCompaction && !historicalMessages) throw error;
       // A cwd-less diff makes no environment claim, so there is nothing here to reconcile.
