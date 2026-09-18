@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
-import { atomicWriteFile, getConfigPath, loadConfig, saveConfig } from "./config";
+import { getConfigPath, loadConfig, saveConfig } from "./config";
 import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
@@ -13,6 +13,7 @@ import {
   routeUrl,
   sha256,
   snapshotFile,
+  writeFileSnapshot,
   writeIntegrationState,
 } from "./codex-integration-shared";
 import type {
@@ -136,13 +137,14 @@ export function setCodexSubagentProtocol(
   // The runtime catalog and Codex feature surface are two halves of one protocol selection. If
   // either write fails, restore every participant so the next launcher/Codex restart cannot load a
   // split V1/V2 state.
+  const codexConfigPath = getCodexConfigPath();
   const snapshots = [
-    getConfigPath(),
-    getCodexConfigPath(),
-    getCodexModelsCachePath(),
-    getCodexJournalPath(),
-    getCodexJournalRecoveryPath(),
-  ].map(path => snapshotFile(path));
+    snapshotFile(getConfigPath()),
+    snapshotFile(codexConfigPath, { followSymlink: true }),
+    snapshotFile(getCodexModelsCachePath()),
+    snapshotFile(getCodexJournalPath()),
+    snapshotFile(getCodexJournalRecoveryPath()),
+  ];
   try {
     const journal = installCodexIntegration(nextConfig);
     saveConfig(nextConfig);
@@ -170,8 +172,9 @@ export function preflightCodexIntegration(
   options: InstallCodexIntegrationOptions = {},
 ): void {
   const configPath = getCodexConfigPath();
-  const configExists = existsSync(configPath);
-  const currentText = configExists ? readFileSync(configPath, "utf8") : "";
+  const configSnapshot = snapshotFile(configPath, { followSymlink: true });
+  const configExists = configSnapshot.exists;
+  const currentText = configSnapshot.data?.toString("utf8") ?? "";
   const existing = readJournal();
   const installedUrl = routeUrl(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
@@ -230,8 +233,9 @@ export function installCodexIntegration(
 ): CodexIntegrationJournal {
   const configPath = getCodexConfigPath();
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
-  const configExists = existsSync(configPath);
-  const currentText = configExists ? readFileSync(configPath, "utf8") : "";
+  const configSnapshot = snapshotFile(configPath, { followSymlink: true });
+  const configExists = configSnapshot.exists;
+  const currentText = configSnapshot.data?.toString("utf8") ?? "";
   const existing = readJournal();
   const installedUrl = routeUrl(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
@@ -452,13 +456,13 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
   } else {
     restored = restoreManagedRoute(current, journal);
   }
-  const configSnapshot = snapshotFile(journal.configPath);
+  const configSnapshot = snapshotFile(journal.configPath, { followSymlink: true });
   const catalogSnapshot = journal.version === 2 ? snapshotFile(journal.catalogPath) : undefined;
   const modelsCacheSnapshot = snapshotFile(getCodexModelsCachePath());
   const journalSnapshot = snapshotFile(getCodexJournalPath());
   const recoverySnapshot = snapshotFile(getCodexJournalRecoveryPath());
   try {
-    atomicWriteFile(journal.configPath, restored);
+    writeFileSnapshot(configSnapshot, restored);
     if (catalogSnapshot?.exists) rmSync(catalogSnapshot.path);
     rmSync(modelsCacheSnapshot.path, { force: true });
     rmSync(getCodexJournalPath(), { force: true });
