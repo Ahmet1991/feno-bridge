@@ -493,6 +493,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     filter() { return this; },
     last() { return this; },
     getByText() { return this; },
+    getByTestId() { return this; },
     isVisible: async () => false,
   };
   const assistantLocator = { id: "assistant-turn" };
@@ -2283,6 +2284,7 @@ function dialogPage(text: string, buttonText = "Got it"): { page: Page; pressed:
     page: {
       locator: () => createDialog(),
       getByText: (hasText: string | RegExp) => createDialog().filter({ hasText }),
+      getByTestId: () => ({ last() { return this; }, isVisible: async () => false }),
     } as unknown as Page,
     pressed,
   };
@@ -2543,6 +2545,20 @@ test("terminal model errors are scoped to the new assistant turn instead of glob
   const workerSource = readFileSync(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url), "utf8");
   expect(workerSource).toContain("throwIfChatGptTerminalErrorAlert(responseTurn.locator)");
   expect(workerSource).not.toContain("throwIfChatGptTerminalErrorAlert(page)");
+});
+
+test("a previous response error cannot reject a newly accepted user submission", async () => {
+  const fixture = dialogPage("Something went wrong. Please see help.openai.com.");
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    currentSubmissionEvidence: async () => "user_turn",
+  }) as {
+    waitForSubmissionAccepted(page: Page, baseline: unknown): Promise<string>;
+  };
+
+  await expect(worker.waitForSubmissionAccepted(fixture.page, {
+    responseTurns: { last: () => fixture.page },
+  })).resolves.toBe("user_turn");
+  expect(fixture.pressed).toEqual([]);
 });
 
 test("submission acceptance stops when its stage is aborted", async () => {
@@ -3090,6 +3106,21 @@ test("persistent Stopped thinking is a terminal cancelled turn", () => {
     errorType: "client_closed_request",
     code: "client_cancelled",
     retryable: false,
+  });
+});
+
+test("the response-scoped regenerate error action is a retryable terminal failure", async () => {
+  const hidden = { last() { return this; }, isVisible: async () => false };
+  const regenerate = { last() { return this; }, isVisible: async () => true };
+  const scope = {
+    getByText: () => hidden,
+    getByTestId: (testId: string) => testId === "regenerate-thread-error-button" ? regenerate : hidden,
+  } as unknown as Parameters<typeof throwIfChatGptTerminalErrorAlert>[0];
+
+  await expect(throwIfChatGptTerminalErrorAlert(scope)).rejects.toMatchObject({
+    status: 502,
+    code: "upstream_server_error",
+    retryable: true,
   });
 });
 

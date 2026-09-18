@@ -1041,6 +1041,8 @@ test("failed launcher update restores every mutable setup file before restarting
   const profileDir = path.join(coreHome, "tunnel", "profiles");
   const profilePath = path.join(profileDir, "custom.yaml");
   const codexConfigPath = path.join(codexHome, "config.toml");
+  const sharedDirectory = path.join(root, "shared");
+  const sharedConfigPath = path.join(sharedDirectory, "config.toml");
   const codexModelsCachePath = path.join(codexHome, "models_cache.json");
   const oldConfig = {
     mode: "full",
@@ -1060,7 +1062,22 @@ test("failed launcher update restores every mutable setup file before restarting
   fs.writeFileSync(recoveryJournalPath, "old recovery journal\n", { mode: 0o600 });
   fs.writeFileSync(keyPath, "old key\n", { mode: 0o600 });
   fs.writeFileSync(profilePath, "old profile\n", { mode: 0o600 });
-  fs.writeFileSync(codexConfigPath, "old codex config\n", { mode: 0o600 });
+  const symlinkCheckpoint = process.platform !== "win32";
+  let linkTarget;
+  let linkInode;
+  let directoryMode;
+  let fileMode;
+  if (symlinkCheckpoint) {
+    fs.mkdirSync(sharedDirectory, { mode: 0o750 });
+    fs.writeFileSync(sharedConfigPath, "old codex config\n", { mode: 0o640 });
+    fs.symlinkSync(sharedConfigPath, codexConfigPath);
+    linkTarget = fs.readlinkSync(codexConfigPath);
+    linkInode = fs.lstatSync(codexConfigPath).ino;
+    directoryMode = fs.statSync(sharedDirectory).mode & 0o777;
+    fileMode = fs.statSync(sharedConfigPath).mode & 0o777;
+  } else {
+    fs.writeFileSync(codexConfigPath, "old codex config\n", { mode: 0o600 });
+  }
   fs.writeFileSync(codexModelsCachePath, "old codex models cache\n", { mode: 0o600 });
 
   let startAttempts = 0;
@@ -1111,6 +1128,13 @@ test("failed launcher update restores every mutable setup file before restarting
     assert.equal(fs.readFileSync(keyPath, "utf8"), "old key\n");
     assert.equal(fs.readFileSync(profilePath, "utf8"), "old profile\n");
     assert.equal(fs.readFileSync(codexConfigPath, "utf8"), "old codex config\n");
+    if (symlinkCheckpoint) {
+      assert.equal(fs.lstatSync(codexConfigPath).isSymbolicLink(), true);
+      assert.equal(fs.lstatSync(codexConfigPath).ino, linkInode);
+      assert.equal(fs.readlinkSync(codexConfigPath), linkTarget);
+      assert.equal(fs.statSync(sharedDirectory).mode & 0o777, directoryMode);
+      assert.equal(fs.statSync(sharedConfigPath).mode & 0o777, fileMode);
+    }
     assert.equal(fs.readFileSync(codexModelsCachePath, "utf8"), "old codex models cache\n");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

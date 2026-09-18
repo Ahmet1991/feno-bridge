@@ -7,10 +7,12 @@ import {
   compileChatGptWebPrompt,
   formatChatGptWebMultipartCommit,
   formatChatGptWebMultipartStage,
+  withoutRetiredTurnHandles,
 } from "../src/adapters/chatgpt-web/prompt";
 import { chatGptPromptContextText } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { biggerContextPartCount } from "../src/adapters/chatgpt-web/usage";
+import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import type { CodexParsedRequest } from "../src/types";
 
 function request(reasoning: "low" | "medium" | "high" | "xhigh" | "max"): CodexParsedRequest {
@@ -68,6 +70,23 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|safety|security layer|permission gate/i);
   expect(compiled.text).not.toContain("CODEX_INTERNAL_CONTEXT_COMPACT");
   expect(compiled.text).not.toContain("internally compacts this response");
+});
+
+test("retired turn handles are scrubbed only from exact native handles inside JSON string values", () => {
+  const exact = `turn_${"a".repeat(32)}`;
+  const longer = `turn_${"b".repeat(33)}`;
+  const encoded = JSON.stringify({
+    [exact]: "property names are data",
+    exact,
+    longer,
+    nested: [`before ${exact} after`, 42],
+  });
+  const scrubbed = JSON.parse(withoutRetiredTurnHandles(encoded)) as Record<string, unknown>;
+
+  expect(scrubbed[exact]).toBe("property names are data");
+  expect(scrubbed.exact).toBe("[retired turn handle]");
+  expect(scrubbed.longer).toBe(longer);
+  expect(scrubbed.nested).toEqual(["before [retired turn handle] after", 42]);
 });
 
 test("Pro preserves the same native Codex delegation contract as Extra High", () => {
@@ -258,6 +277,31 @@ test("Web compaction trims only the oldest history until the browser request fit
   expect(untrimmed.text).toContain("oldest-static");
   expect(untrimmed.text).toContain("newer-static");
   expect(untrimmed.trimmedCompactionMessages).toBeUndefined();
+});
+
+test("Web compaction preserves the newest cumulative checkpoint and reports omitted history", () => {
+  const compact = request("high");
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = [];
+  const checkpoint = `${SUMMARY_PREFIX}\ncheckpoint-${"c".repeat(55_000)}`;
+  compact.context.messages = [
+    { role: "user", content: checkpoint, timestamp: 1 },
+    { role: "developer", content: `discard-me-${"d".repeat(70_000)}`, timestamp: 2 },
+    { role: "assistant", content: [{ type: "text", text: "recent verified progress" }], timestamp: 3 },
+    { role: "user", content: "checkpoint-now", timestamp: 4 },
+  ];
+
+  const compiled = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+  );
+
+  expect(compiled.trimmedCompactionMessages).toBe(1);
+  expect(compiled.text).toContain("checkpoint-");
+  expect(compiled.text).toContain("recent verified progress");
+  expect(compiled.text).not.toContain("discard-me-");
+  expect(compiled.text).toContain("1 earlier history items were omitted to fit this compaction request");
+  expect(chatGptPromptJsonBytes(compiled.text)).toBeLessThanOrEqual(CHATGPT_COMPACTION_PROMPT_JSON_BYTE_BUDGET);
 });
 
 test("Bigger Context compaction preserves history above the retired inline byte budget", () => {

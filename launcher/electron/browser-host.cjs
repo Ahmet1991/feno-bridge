@@ -886,14 +886,20 @@ class BrowserHost {
 
   bindManualTurnContents(tab) {
     const contents = tab.view.webContents;
-    const invalidateRetainedConversation = () => {
-      if (tab.status !== "ready" || !tab.conversationKey) return;
+    const invalidateRetainedConversation = (url, inPlace) => {
+      if (inPlace && url.split("#", 1)[0] === tab.url?.split("#", 1)[0]) return;
+      if (!tab.conversationKey
+        || (!tab.manualConversationReused && tab.manualState === "awaiting-user")) return;
+      tab.conversationKey = null;
+      if (tab.manualConversationReused && tab.status === "running") {
+        tab.status = "error";
+        tab.message = "ChatGPT page changed during a resumed Zero Risk turn. Start a new Codex turn to resend the full context.";
+        this.signalManualTerminal(tab, "failed");
+      }
       this.logger.info("browser.manual_retained_conversation_invalidated", {
         tabId: tab.id,
         traceId: tab.traceId,
       });
-      tab.conversationKey = null;
-      tab.manualConversationReused = false;
     };
     contents.setWindowOpenHandler(({ url }) => {
       let parsed;
@@ -908,9 +914,9 @@ class BrowserHost {
       }
       return { action: "deny" };
     });
-    contents.on("did-start-navigation", (_event, url, _inPlace, mainFrame) => {
+    contents.on("did-start-navigation", (_event, url, inPlace, mainFrame) => {
       if (!mainFrame) return;
-      invalidateRetainedConversation();
+      invalidateRetainedConversation(url, inPlace);
       tab.url = url;
       tab.loading = true;
       this.publishState?.(this.snapshot());
@@ -934,7 +940,7 @@ class BrowserHost {
     });
     contents.on("did-navigate-in-page", (_event, url, mainFrame) => {
       if (mainFrame) {
-        invalidateRetainedConversation();
+        invalidateRetainedConversation(url, true);
         tab.url = url;
       }
       this.publishState?.(this.snapshot());

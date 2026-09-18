@@ -191,6 +191,13 @@ test("MCP connection remains unavailable until the model catalog is verified", (
   assert.match(appSource, /!manualInteraction && !configuringInactiveMode && !snapshot\.state\.codexCatalogVerified/);
 });
 
+test("model catalog verification surfaces privacy-safe failure telemetry before a successful catalog arrives", () => {
+  assert.match(electronMain, /health\?\.last_model_catalog_result/);
+  assert.match(electronMain, /codex\.model_catalog_failed/);
+  assert.match(electronMain, /catalogFailure[\s\S]*?\{status\}[\s\S]*?\{reason\}/);
+  assert.match(electronMain, /\["config", "request", "transport", "upstream", "catalog"\]\.includes/);
+});
+
 test("MCP navigation remains locked while an operation is active", () => {
   assert.match(appSource, /<McpSurface[\s\S]*?operation=\{operation\}/);
   assert.match(appSource, /const busy = localBusy \|\| operation\?\.status === "running"/);

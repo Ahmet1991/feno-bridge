@@ -14,6 +14,7 @@ import {
   currentChatGptEnvironmentWorkspaceRoots,
   hasCurrentChatGptEnvironmentContext,
   hasRawChatGptEnvironmentContextDeclaringCwd,
+  unattributedChatGptEnvironmentMessages,
   isChatGptCompactionContinuation,
   MissingTrustedCodexEnvironmentError,
   type ChatGptSandboxPolicy,
@@ -177,12 +178,13 @@ export class ChatGptThreadEnvironmentStore {
       // turn at local midnight. Treating that as a current claim suppressed the fallback below
       // and failed live turns outright while this store already held the right cwd.
       const currentContextClaimsCwd = hasCurrentContext && currentChatGptEnvironmentDeclaresCwd(parsed);
-      if (currentContextClaimsCwd && !isChatGptCompactionContinuation(parsed)) throw error;
-      // A cwd-less diff makes no environment claim, so there is nothing here to reconcile.
-      const currentClaim = currentContextClaimsCwd
-        ? extractChatGptContinuationEnvironmentClaim(parsed)
-        : undefined;
       const lineage = extractChatGptThreadSpawnLineage(parsed);
+      const currentCompaction = currentContextClaimsCwd && isChatGptCompactionContinuation(parsed);
+      const historicalMessages = currentContextClaimsCwd && !currentCompaction && lineage
+        ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
+      if (currentContextClaimsCwd && !currentCompaction && !historicalMessages) throw error;
+      // A cwd-less diff makes no environment claim, so there is nothing here to reconcile.
+      const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : undefined;
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
       // source turn_context. Either must be the latest native record, never an arbitrary ancestor.
@@ -195,6 +197,7 @@ export class ChatGptThreadEnvironmentStore {
           lineage: rolloutIdentity,
           turnId: identity.turnId,
           ...(compactionSourceTurnId ? { compactionSourceTurnId } : {}),
+          ...(historicalMessages ? { historicalEnvironmentMessages: historicalMessages } : {}),
           tools: parsed.context.tools,
         });
         if (rolloutEnvironment) {

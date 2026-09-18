@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
 import { LauncherBrowserHelperClient } from "../src/adapters/chatgpt-web/launcher-helper-client";
 import type { BrowserTurn, ResolvedBrowserConfig } from "../src/adapters/chatgpt-web/browser-worker";
+import { selectedSkillFile } from "../src/adapters/chatgpt-web/skill-attachments";
 import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
 
 const roots: string[] = [];
@@ -200,6 +201,66 @@ test("launcher helper protocol preserves multipart context and the compaction fl
         trimmedCompactionMessages: 4,
     },
   });
+});
+
+test("launcher helper forwards selected skill files and rejects helpers that cannot carry them", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused.json",
+    chromeExecutablePath: "/durable/chrome",
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    child: unknown;
+    helperFeatures: Set<string>;
+    ensureChild(): Promise<void>;
+    send(message: Record<string, unknown>): Promise<void>;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  internal.ensureChild = async () => {};
+  const sent: Record<string, unknown>[] = [];
+  internal.send = async message => {
+    sent.push(message);
+    if (message.type === "run") queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+      type: "event", id: message.id, event: "prepared_selected", reused: false,
+    })));
+    if (message.type === "prepared_selected_ack") queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+      type: "result", id: message.id, text: "done",
+    })));
+    if (message.type === "abort") queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+      type: "error", id: message.id, message: "aborted",
+    })));
+  };
+  const skillFile = selectedSkillFile({
+    role: "user", origin: "codex_skill", timestamp: 0,
+    content: "<skill>\n<name>ipc</name>\n<path>/skills/ipc/SKILL.md</path>\ncheck IPC\n</skill>",
+  });
+  const turn = {
+    traceId: "skill-ipc-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+    prepare: async () => ({ text: "inspect", images: [], skillFiles: [skillFile], release() {} }),
+    onTextDelta() {},
+  } satisfies BrowserTurn;
+
+  internal.helperFeatures = new Set(["skill-attachments"]);
+  await expect(client.run(turn)).resolves.toBe("done");
+  expect(sent[1]).toMatchObject({
+    type: "prepared_selected_ack",
+    prepared: { skillFiles: [skillFile] },
+  });
+
+  sent.length = 0;
+  internal.helperFeatures = new Set();
+  await expect(client.run({ ...turn, traceId: "skill-ipc-old-helper" }))
+    .rejects.toThrow("does not support skill attachments");
+  expect(sent.map(message => message.type)).toEqual(["run", "abort"]);
 });
 
 test("an abort dispatched during run submission cannot overtake the run frame", async () => {

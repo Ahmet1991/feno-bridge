@@ -142,7 +142,7 @@ export function setCodexSubagentProtocol(
     getCodexModelsCachePath(),
     getCodexJournalPath(),
     getCodexJournalRecoveryPath(),
-  ].map(snapshotFile);
+  ].map(path => snapshotFile(path));
   try {
     const journal = installCodexIntegration(nextConfig);
     saveConfig(nextConfig);

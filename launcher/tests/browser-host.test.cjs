@@ -2840,7 +2840,7 @@ test("a retained manual chat copies only its incremental resume prompt", () => {
   clearTimeout(fixture.turnTabs.get(second.tabId).manualDeadlineTimer);
 });
 
-test("navigating a retained manual chat invalidates it before the next resume", () => {
+test("same-document navigation preserves a retained manual chat while a real page change invalidates it", () => {
   const { fixture, clipboardWrites } = manualTurnFixture();
   const conversationKey = "a".repeat(64);
   const first = fixture.beginManualTurn(
@@ -2860,6 +2860,11 @@ test("navigating a retained manual chat invalidates it before the next resume", 
   retained.view = { webContents: contents };
   fixture.bindManualTurnContents(retained);
 
+  retained.url = "https://chatgpt.com/c/retained";
+  contents.emit("did-start-navigation", {}, `${retained.url}#answer`, true, true);
+  contents.emit("did-navigate-in-page", {}, `${retained.url}#answer`, true);
+  assert.equal(retained.conversationKey, conversationKey);
+
   contents.emit("did-start-navigation", {}, "https://chatgpt.com/", false, true);
 
   const second = fixture.beginManualTurn(
@@ -2876,6 +2881,44 @@ test("navigating a retained manual chat invalidates it before the next resume", 
     "full history after the retained chat was closed",
   ]);
   for (const tab of fixture.turnTabs.values()) clearTimeout(tab.manualDeadlineTimer);
+});
+
+test("a real page change during a resumed manual turn fails instead of continuing with only its delta", async () => {
+  const { fixture } = manualTurnFixture();
+  const conversationKey = "a".repeat(64);
+  const first = fixture.beginManualTurn(
+    "manual_trace_initial_resume_navigation",
+    process.pid,
+    "full initial context",
+    conversationKey,
+  );
+  fixture.confirmManualSent(first.tabId);
+  fixture.markManualTurnStarted("manual_trace_initial_resume_navigation", process.pid);
+  fixture.endManualTurn("manual_trace_initial_resume_navigation", process.pid, "completed", true);
+
+  const second = fixture.beginManualTurn(
+    "manual_trace_resumed_navigation",
+    process.pid,
+    "full history that should not be replayed",
+    conversationKey,
+    "delta only",
+  );
+  fixture.confirmManualSent(second.tabId);
+  fixture.markManualTurnStarted("manual_trace_resumed_navigation", process.pid);
+  const resumed = fixture.turnTabs.get(second.tabId);
+  resumed.url = "https://chatgpt.com/c/retained";
+  const contents = new EventEmitter();
+  contents.setWindowOpenHandler = () => {};
+  resumed.view = { webContents: contents };
+  fixture.bindManualTurnContents(resumed);
+
+  const terminal = fixture.waitManualTerminal("manual_trace_resumed_navigation", process.pid, 1_000);
+  contents.emit("did-start-navigation", {}, resumed.url, false, true);
+
+  assert.equal(resumed.status, "error");
+  assert.equal((await terminal).status, "failed");
+  assert.match(resumed.message, /full context/);
+  fixture.endManualTurn("manual_trace_resumed_navigation", process.pid, "failed");
 });
 
 test("manual start rejects a different prompt after Sent instead of replaying a trace", () => {

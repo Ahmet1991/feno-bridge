@@ -157,6 +157,7 @@ function stopCatalogVerificationMonitor() {
 
 function startCatalogVerificationMonitor({ logger, stateStore }) {
   stopCatalogVerificationMonitor();
+  let reportedFailure = null;
   const check = async () => {
     const current = stateStore.read();
     if (current.coreSetupComplete !== true || current.codexCatalogVerified === true) {
@@ -169,7 +170,39 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
       const config = runtimeSupervisor.readConfig();
       const health = await runtimeSupervisor.proxyHealthPayload(config);
       if (!Number.isInteger(health?.successful_model_catalog_requests)
-        || health.successful_model_catalog_requests < 1) return;
+        || health.successful_model_catalog_requests < 1) {
+        const result = health?.last_model_catalog_result;
+        if (!result
+          || !Number.isInteger(result.status)
+          || result.status < 400
+          || result.status > 599
+          || !Number.isInteger(result.request)
+          || result.request < 1
+          || lastOperation?.status === "running") return;
+        const identity = `${health.pid}:${result.request}:${result.at}`;
+        if (identity === reportedFailure) return;
+        reportedFailure = identity;
+        const reason = typeof result.failure?.code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(result.failure.code)
+          ? result.failure.code
+          : ["config", "request", "transport", "upstream", "catalog"].includes(result.failure?.stage)
+            ? result.failure.stage
+            : "catalog";
+        const state = stateStore.update({ codexRestartRequired: false });
+        send("launcher:state-changed", state);
+        logger.warn("codex.model_catalog_failed", {
+          status: result.status,
+          reason,
+          request: result.request,
+        });
+        publishOperation({
+          name: "catalog-verification",
+          status: "failed",
+          message: nativeCopyFor(current.language).catalogFailure
+            .replace("{status}", String(result.status))
+            .replace("{reason}", reason),
+        });
+        return;
+      }
       const state = stateStore.update({
         codexCatalogVerified: true,
         codexRestartRequired: false,
@@ -234,6 +267,7 @@ const NATIVE_COPY = Object.freeze({
     removeTitle: "Remove Feno Bridge",
     removeMessage: "Remove the ChatGPT Web models from Codex and restore the previous model route?",
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
+    catalogFailure: "Codex reached Feno Bridge, but loading its model catalog failed (HTTP {status}; {reason}). Check Activity for details and export a privacy-safe log if it persists.",
     updateNow: "Update now",
     updateTitle: "Update Feno Bridge",
     updateMessage: "Feno Bridge will close while the update installs. Reopening may take several minutes.",
@@ -248,6 +282,7 @@ const NATIVE_COPY = Object.freeze({
     removeTitle: "Feno Bridge'i kaldır",
     removeMessage: "ChatGPT Web modelleri Codex'ten kaldırılsın ve önceki model rotası geri yüklensin mi?",
     removeDetail: "Uygulamadaki ChatGPT oturum açma profili korunacak. Codex'in bir kez yeniden başlatılması gerekir.",
+    catalogFailure: "Codex, Feno Bridge'e ulaştı ancak model kataloğu yüklenemedi (HTTP {status}; {reason}). Ayrıntılar için Etkinlik bölümüne bakın; sorun sürerse gizliliğe uygun tanılamayı dışa aktarın.",
     updateNow: "Şimdi güncelle",
     updateTitle: "Feno Bridge'i güncelle",
     updateMessage: "Güncelleme sırasında Feno Bridge kapanacak. Yeniden açılması birkaç dakika sürebilir.",
