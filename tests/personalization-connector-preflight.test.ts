@@ -91,7 +91,7 @@ for (const labels of personalizationLabels) test(`an ${labels.unpersonalized} Te
       events.push("menu-visible");
     },
     getByRole: (_role: string, options: { name: string | RegExp }) => (
-      asksFor(options.name, "Personalized") ? choice : visibleLocator(() => 0)
+      matchesName(options.name, "Personalized") ? choice : visibleLocator(() => 0)
     ),
     locator: (selector: string) => {
       expect(selector).toBe('[role="menuitemradio"], [role="radio"]');
@@ -184,7 +184,7 @@ test("a localized Unpersonalized Temporary Chat toggles the structural state and
       return choices;
     },
     getByRole: (_role: string, options: { name: string | RegExp }) => (
-      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+      matchesName(options.name, "Personalized") ? personalizedChoice : absent
     ),
   };
   const control = {
@@ -294,7 +294,7 @@ test("a localized preflight waits for its semantic control to hydrate without as
       return choices;
     },
     getByRole: (_role: string, options: { name: string | RegExp }) => (
-      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+      matchesName(options.name, "Personalized") ? personalizedChoice : absent
     ),
   };
   const page = {
@@ -394,7 +394,7 @@ test("an abort during localized connector proof leaves the bridge-required Perso
   const menu = {
     locator: () => choices,
     getByRole: (_role: string, options: { name: string | RegExp }) => (
-      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+      matchesName(options.name, "Personalized") ? personalizedChoice : absent
     ),
     waitFor: async ({ state, signal }: { state: string; signal?: AbortSignal }) => {
       expect(signal?.aborted).toBeFalse();
@@ -648,7 +648,7 @@ test("an absolute deadline leaves the bridge-required Personalized state enabled
   const menu = {
     locator: () => choices,
     getByRole: (_role: string, options: { name: string | RegExp }) => (
-      asksFor(options.name, "Personalized") ? personalizedChoice : absent
+      matchesName(options.name, "Personalized") ? personalizedChoice : absent
     ),
     waitFor: async ({ state }: { state: string }) => {
       expect(menuOpen).toBe(state === "visible");
@@ -736,7 +736,7 @@ test("a Turkish-labeled Unpersonalized Temporary Chat is resolved and switched b
   const menu = {
     waitFor: async () => { expect(menuOpen).toBeTrue(); },
     getByRole: (_role: string, options: { name: string | RegExp }) => (
-      asksFor(options.name, "Kişiselleştirilmiş") ? choice : absent
+      matchesName(options.name, "Kişiselleştirilmiş") ? choice : absent
     ),
     locator: () => ({
       filter: ({ hasText }: { hasText: RegExp }) => {

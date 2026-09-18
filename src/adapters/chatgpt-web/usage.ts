@@ -93,7 +93,7 @@ export function resolveBiggerContextMultipartParts(
   const initialParts = biggerContextPartCount(
     inputTokens,
     autoCompactTokenLimit,
-    parsed._compactionRequest === true,
+    false,
   );
 
   const fits = (compiled: CompiledChatGptWebPrompt): boolean => {
