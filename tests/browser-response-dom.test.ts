@@ -15,6 +15,7 @@ type Snapshot = {
   traceBlocks: { kind: string; text: string }[];
 };
 
+// Execute the production page callback, with only missing Domino browser APIs supplied.
 async function snapshot(html: string): Promise<Snapshot> {
   const { createWindow } = require("@mixmark-io/domino");
   const window = createWindow(html);
@@ -67,6 +68,7 @@ async function snapshot(html: string): Promise<Snapshot> {
 }
 
 test("captured DIL smoke response reaches Markdown delivery and stable completion", async () => {
+  // Also cover a changed CSS module hash and nested Markdown without duplicate delivery.
   for (const html of [
     smokeHtml,
     smokeHtml.replaceAll("fv0XaG_", "changed_"),

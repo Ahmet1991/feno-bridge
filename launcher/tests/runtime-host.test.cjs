@@ -74,15 +74,14 @@ test("core setup preserves an existing full-harness installation", async () => {
     "--replace-codex-route",
     "--acknowledge-unofficial",
     "--restart-service",
-    "--app-name",
-    "Codex Native2",
   ]);
 });
 
 test("core setup replaces the known legacy connector identity with the direct-turn identity", async () => {
   const fixture = hostFor({ mode: "full", appName: "Codex Native" });
   await fixture.host.setupCore();
-  assert.deepEqual(fixture.invocation().args.slice(-2), ["--app-name", "Codex Native2"]);
+  assert.equal(fixture.invocation().args.includes("--app-name"), false);
+  assert.equal(fixture.host.setupConnectorName(), CURRENT_CONNECTOR_NAME);
 });
 
 test("core setup starts in browser-only mode when no installation exists", async () => {
@@ -147,10 +146,8 @@ test("switching back from Zero Risk preserves the saved automatic connector iden
   }, "manual");
   await fixture.host.setBrowserInteractionMode("automatic");
   const args = fixture.invocation().args;
-  assert.deepEqual(args.slice(args.indexOf("--app-name"), args.indexOf("--app-name") + 2), [
-    "--app-name",
-    "Codex Native2",
-  ]);
+  assert.equal(args.includes("--app-name"), false);
+  assert.equal(fixture.host.setupConnectorName(), CURRENT_CONNECTOR_NAME);
   assert.equal(args.includes("Codex Zero Risk"), false);
 });
 
@@ -191,8 +188,6 @@ test("Bigger Context uses the setup transaction and refreshes the production Cod
       "--acknowledge-unofficial",
       "--restart-service",
       "--bigger-context",
-      "--app-name",
-      "Codex Native2",
     ],
   });
 });
@@ -250,8 +245,6 @@ test("Zero Risk Pro transaction installs or removes only its explicit model prof
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--zero-risk-browser-interaction",
-      "--app-name",
-      "Codex Native2",
       "--acknowledge-unofficial",
       "--standard-context",
       "--zero-risk-pro",
@@ -320,8 +313,6 @@ test("DEV MCP setup reuses only DEV-home credentials and targets its distinct co
         "--browser-host-descriptor",
         "/dev/runtime/launcher-browser.json",
         "--automatic-browser-interaction",
-        "--app-name",
-        "Codex Native2 DEV",
         "--acknowledge-unofficial",
       ],
     });
@@ -394,7 +385,7 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     appName: "Codex Native2",
     releaseVersion: "1.1.1",
     solAvailable: true,
-    proAvailable: false,
+    extraHighAvailable: false, proAvailable: false,
   });
   fixture.host.bridgeStatus = async () => ({ installed: true, active: true, errors: [] });
 
@@ -409,8 +400,6 @@ test("launcher update transaction upgrades its owned full runtime with saved con
     "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
-    "--app-name",
-    "Codex Native2",
   ]);
   assert.deepEqual(result, {
     updated: true,
@@ -442,8 +431,6 @@ test("launcher migrates the legacy connector identity even when the release vers
     "--refresh-account-capabilities",
     "--acknowledge-unofficial",
     "--restart-service",
-    "--app-name",
-    "Codex Native2",
   ]);
   assert.equal(result.updated, true);
   assert.equal(result.connectorMigrated, true);
@@ -519,8 +506,6 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
       "--browser-host-descriptor",
       "/runtime/launcher-browser.json",
       "--automatic-browser-interaction",
-      "--app-name",
-      "Codex Native2",
       "--replace-codex-route",
       "--acknowledge-unofficial",
       "--restart-service",
@@ -532,7 +517,7 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
   }
 });
 
-test("new MCP setup uses the explicit default connector name", async () => {
+test("new MCP setup uses the fixed connector without a CLI name override", async () => {
   const fixture = hostFor(null);
   await fixture.host.setupMcp({
     replace: true,
@@ -540,15 +525,15 @@ test("new MCP setup uses the explicit default connector name", async () => {
     runtimeKey: "new-private-runtime-key",
   });
 
-  assert.deepEqual(fixture.invocation().args.slice(0, 7), [
+  assert.deepEqual(fixture.invocation().args.slice(0, 5), [
     "setup",
     "--full",
     "--browser-host-descriptor",
     "/runtime/launcher-browser.json",
     "--automatic-browser-interaction",
-    "--app-name",
-    "Codex Native2",
   ]);
+  assert.equal(fixture.invocation().args.includes("--app-name"), false);
+  assert.equal(fixture.host.setupConnectorName(), CURRENT_CONNECTOR_NAME);
 });
 
 test("MCP credential replacement remains explicit and requires a complete new pair", async () => {
@@ -1294,4 +1279,18 @@ test("passkey sign-in is rejected outside macOS even if IPC is invoked directly"
   const fixture = hostFor(null).host;
   fixture.platform = "win32";
   assert.throws(() => fixture.passkeyChromeExecutable(), /supported only on macOS/);
+});
+
+test("skill file experiment uses the setup transaction in production and DEV, and rejects manual mode", async () => {
+  const production = hostFor({ mode: "full", browserInteractionMode: "automatic" });
+  assert.equal((await production.host.setSkillAttachments(true)).enabled, true);
+  assert.equal(production.invocation().args.includes("--skill-attachments"), true);
+  assert.equal(production.invocation().args.includes("--restart-service"), true);
+  const dev = devHostFor({ mode: "full", browserInteractionMode: "automatic" });
+  assert.equal((await dev.host.setSkillAttachments(false)).enabled, false);
+  assert.equal(dev.invocation().args.includes("--inline-skills"), true);
+  assert.equal(dev.invocation().args.includes("--replace-codex-route"), false);
+  const manual = hostFor({ mode: "full", browserInteractionMode: "manual" }, "manual");
+  await assert.rejects(() => manual.host.setSkillAttachments(true), /Zero Risk/);
+  assert.equal(manual.invocation(), undefined);
 });

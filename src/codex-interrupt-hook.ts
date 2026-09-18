@@ -147,6 +147,8 @@ function locateCodexInterruptHook(text: string, installed: InstalledCodexInterru
     throw new Error("Codex interrupt lifecycle hook journal fragment is invalid");
   }
   const stateOffset = stateHeader.index + stateHeader[0].length - stateHeader[1].length;
+  // The native TOML writer can insert unrelated tables between the hook and its trust state.
+  // Locate the two owned definitions separately, retaining exact command/field matching.
   const ranges = [ownedPrefix.slice(0, stateOffset), ownedPrefix.slice(stateOffset)].map(fragment => {
     const pattern = new RegExp(hookTextPattern(fragment), "g");
     const match = pattern.exec(text);
@@ -175,6 +177,8 @@ function locateCodexInterruptHook(text: string, installed: InstalledCodexInterru
     const { hooks } = value as { hooks: { Interrupt: unknown[]; state: Record<string, unknown> } };
     return JSON.stringify(canonicalJson([hooks.Interrupt[groupIndex], hooks.state[installed.stateKey]]));
   };
+  // Check the complete document: an interleaved or later table must not extend either owned
+  // definition, and a matching fragment inside a multiline string must not establish ownership.
   let parsed: unknown;
   try {
     parsed = Bun.TOML.parse(text.replace(/\r\n?/g, "\n"));
@@ -208,6 +212,8 @@ export function restoreCodexInterruptHook(
   installed: InstalledCodexInterruptHook,
   options: { allowAbsent?: boolean } = {},
 ): string {
+  // Explicit Setup can reinstall a fully removed hook. A stale journal alone does not mean
+  // there is still a definition to remove; partial edits must retain the strict checks below.
   if (options.allowAbsent && managedMarkerCount(text) === 0 && !text.includes(MANAGED_INTERRUPT_HOOK_END)) {
     const { hooks } = Bun.TOML.parse(text) as { hooks?: unknown };
     if (hooks === undefined) return text;

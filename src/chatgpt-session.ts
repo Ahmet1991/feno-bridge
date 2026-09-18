@@ -67,6 +67,11 @@ async function visibleEffortSurface(
   page: Page,
   control: Locator,
 ): Promise<Omit<ChatGptEffortActivation, "method"> | undefined> {
+  // The exit animation keeps a closed menu's slider visible after Escape. Read the
+  // owner state first: selecting that outgoing range races its removal from the DOM.
+  const expanded = await control.getAttribute("aria-expanded").catch(() => null);
+  const state = await control.getAttribute("data-state").catch(() => null);
+  if (expanded === "false" || state === "closed") return undefined;
   const menu = await chatGptEffortMenuForControl(page, control);
   const surface = chatGptEffortSlider(page);
   if (await menu.isVisible().catch(() => false) || await surface.sliderContainer.isVisible().catch(() => false)) {
@@ -174,7 +179,7 @@ export async function assertTemporaryChatPage(page: Page): Promise<void> {
 export async function detectChatGptAccountCapabilities(
   page: Page,
   options: { selectorTimeoutMs?: number; stableAbsenceMs?: number } = {},
-): Promise<ChatGptWebAccountCapabilities> {
+): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
   const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
   const composer = composers.last();
   const composerForm = composer.locator("xpath=ancestor::form[1]");

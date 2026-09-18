@@ -10,7 +10,6 @@ import {
   getConfigPath,
   loadConfigForSetup,
   resolveInteractionConnectorIdentities,
-  resolveDevSetupConnectorName,
   saveConfig,
   tunnelConfigForInteractionMode,
 } from "./config";
@@ -51,7 +50,6 @@ export interface SetupOptions {
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
   refreshAccountCapabilities?: boolean;
-  appName?: string;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
@@ -243,14 +241,17 @@ async function waitForProxy(config: AppConfig, timeoutMs = 10_000): Promise<void
   throw new Error(`Responses proxy did not become ready: ${lastError}`);
 }
 
-function baseConfig(existing: AppConfig | undefined, options: SetupOptions): AppConfig {
+function baseConfig(
+  existing: AppConfig | undefined,
+  options: SetupOptions,
+  profile: "production" | "development" = "production",
+): AppConfig {
   const config = existing ? structuredClone(existing) : defaultConfig(options.mode);
   config.mode = options.mode;
   if (options.browserInteractionMode) config.browserInteractionMode = options.browserInteractionMode;
   Object.assign(config, resolveInteractionConnectorIdentities(
-    existing,
     config.browserInteractionMode,
-    options.appName,
+    profile,
   ));
   if (options.subagentProtocol) config.subagentProtocol = options.subagentProtocol;
   config.releaseVersion = VERSION;
@@ -288,11 +289,11 @@ function baseConfig(existing: AppConfig | undefined, options: SetupOptions): App
     if (options.forceLogin) {
       throw new Error("Zero Risk uses the launcher's existing ChatGPT session; --login is unavailable");
     }
-    if (options.experimentalBiggerContext === true) {
-      throw new Error("Zero Risk does not support Bigger Context");
-    }
     if (options.experimentalSkillAttachments === true) {
       throw new Error("Zero Risk does not support Skills as files");
+    }
+    if (options.experimentalBiggerContext === true) {
+      throw new Error("Zero Risk does not support Bigger Context");
     }
     if (config.mode !== "full") {
       throw new Error("Zero Risk requires --full so Codex Zero Risk can signal start, tools, and completion");
@@ -652,10 +653,7 @@ export async function setupDevProfile(options: SetupOptions): Promise<DevProfile
   if (!options.browserHostDescriptorPath) {
     throw new Error("DEV profile setup requires the isolated launcher browser descriptor");
   }
-  const config = baseConfig(existing, {
-    ...options,
-    appName: resolveDevSetupConnectorName(existing?.automaticAppName, options.appName),
-  });
+  const config = baseConfig(existing, options, DEV_LAUNCHER_PROFILE);
   if (config.browserHost !== "launcher") {
     throw new Error("DEV profile setup requires the desktop launcher browser host");
   }

@@ -9,7 +9,8 @@ export function observeMcpToolCalls(
   let sequence = 0;
   const pending = new Map<string | number, { call: number; tool: string; started: number } | null>();
   const emit = (event: Record<string, unknown>) => {
-    try { write({ pid: process.pid, ...event }); } catch { /* Observation must not affect transport semantics. */ }
+    // Logging is observational: a broken sink cannot change the invocation or its result.
+    try { write({ pid: process.pid, ...event }); } catch { /* Preserve transport semantics. */ }
   };
   const receive = transport.onmessage;
   transport.onmessage = (message, extra) => {
@@ -17,6 +18,7 @@ export function observeMcpToolCalls(
       const name = message.params?.name;
       const tool = typeof name === "string" && knownTools.has(name) ? name : "unknown";
       if (pending.has(message.id)) {
+        // An ambiguous protocol ID cannot safely correlate either reply.
         pending.set(message.id, null);
         emit({ event: "uncorrelated_call", reason: "duplicate_id", tool });
       } else if (pending.size >= 1_024) {
@@ -38,12 +40,10 @@ export function observeMcpToolCalls(
       if (call) {
         const result = "result" in message ? message.result : undefined;
         emit({
-          event: "reply_sent",
-          call: call.call,
-          tool: call.tool,
+          event: "reply_sent", call: call.call, tool: call.tool,
           elapsed_ms: Math.round(performance.now() - call.started),
           outcome: "error" in message ? "protocol_error" : "result",
-          ...(result !== undefined ? { is_error: result?.isError === true } : {}),
+          ...("result" in message ? { is_error: result?.isError === true } : {}),
         });
       }
     } catch (error) {

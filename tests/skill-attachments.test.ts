@@ -5,37 +5,19 @@ import { compileChatGptWebPrompt } from "../src/adapters/chatgpt-web/prompt";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptPromptFilePayloads } from "../src/adapters/chatgpt-web/browser-worker";
 import { retainedConversationResumeRequest } from "../src/adapters/chatgpt-web/conversation-key";
-import {
-  estimateCompiledChatGptWebInputTokens,
-  estimateCompiledChatGptWebMessageTokens,
-} from "../src/adapters/chatgpt-web/input-tokens";
+import { estimateCompiledChatGptWebInputTokens, estimateCompiledChatGptWebMessageTokens } from "../src/adapters/chatgpt-web/input-tokens";
 import { skillFileTokens } from "../src/adapters/chatgpt-web/skill-attachments";
 
-const capabilities = {
-  localToolsEnabled: true,
-  solAvailable: true,
-  extraHighAvailable: true,
-  proAvailable: true,
-};
+const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
 const token = "turn_12345678901234567890123456789012";
 const text = (name = "testing", body = "Read references/checks.md. Verify café 日本語.") =>
   `<skill>\n<name>${name}</name>\n<path>/workspace/skills/${name}/SKILL.md</path>\n${body}\n</skill>`;
 const input = (content: string, kinds = ["skills.selected_skill_instructions"]) => ({
-  role: "user",
-  content: [{ type: "input_text", text: content }],
+  role: "user", content: [{ type: "input_text", text: content }],
   internal_chat_message_metadata_passthrough: { content_item_kinds: kinds },
 });
-const parse = (items: unknown[]) => parseRequest({
-  model: CHATGPT_WEB_MODEL_ID,
-  input: items,
-  reasoning: { effort: "high" },
-});
-const compile = (items: unknown[], enabled = true) => compileChatGptWebPrompt(
-  parse(items),
-  capabilities,
-  token,
-  { experimentalSkillAttachments: enabled },
-);
+const parse = (items: unknown[]) => parseRequest({ model: CHATGPT_WEB_MODEL_ID, input: items, reasoning: { effort: "high" } });
+const compile = (items: unknown[], enabled = true) => compileChatGptWebPrompt(parse(items), capabilities, token, { experimentalSkillAttachments: enabled });
 
 test("only native selected-skill provenance enables attachment transport; default stays inline", () => {
   const skill = text();
@@ -79,35 +61,21 @@ test("files preserve resource authority and distinguish same-named versions with
 });
 
 test("retained turns reuse prior attachments; fresh chats rebuild them and new skills still upload", () => {
-  const history = [
-    input(text()),
-    { role: "assistant", content: [{ type: "output_text", text: "Done" }] },
-    input("Continue", ["user.text"]),
-  ];
+  const history = [input(text()), { role: "assistant", content: [{ type: "output_text", text: "Done" }] }, input("Continue", ["user.text"])];
   const parsed = parse(history);
   const resumed = retainedConversationResumeRequest(parsed)!;
-  expect(compileChatGptWebPrompt(resumed, capabilities, token, {
-    experimentalSkillAttachments: true,
-  }).skillFiles).toBeUndefined();
+  expect(compileChatGptWebPrompt(resumed, capabilities, token, { experimentalSkillAttachments: true }).skillFiles).toBeUndefined();
   expect(compile(history).skillFiles).toHaveLength(1);
   const next = retainedConversationResumeRequest(parse([...history, input(text("next"))]))!;
-  const compiled = compileChatGptWebPrompt(next, capabilities, token, {
-    experimentalSkillAttachments: true,
-  });
+  const compiled = compileChatGptWebPrompt(next, capabilities, token, { experimentalSkillAttachments: true });
   expect(compiled.skillFiles).toHaveLength(1);
   expect(compiled.skillFiles![0]!.name).toStartWith("next--");
 });
 
 test("skill content counts toward input and final-message budgets, including multipart", () => {
-  const parsed = parse([
-    input(text("testing", "check this carefully\n".repeat(1000))),
-    input("Do it", ["user.text"]),
-  ]);
+  const parsed = parse([input(text("testing", "check this carefully\n".repeat(1000))), input("Do it", ["user.text"])]);
   for (const parts of [undefined, 3] as const) {
-    const compiled = compileChatGptWebPrompt(parsed, capabilities, token, {
-      experimentalSkillAttachments: true,
-      experimentalMultipartParts: parts,
-    });
+    const compiled = compileChatGptWebPrompt(parsed, capabilities, token, { experimentalSkillAttachments: true, experimentalMultipartParts: parts });
     const withoutFiles = { ...compiled, skillFiles: undefined };
     const fileTokens = skillFileTokens(compiled.skillFiles, parsed.modelId);
     expect(fileTokens).toBeGreaterThan(1000);
@@ -124,19 +92,15 @@ test("skill content counts toward input and final-message budgets, including mul
 test("over-limit, malformed and manual requests fail explicitly without silently losing skill content", () => {
   const ten = Array.from({ length: 10 }, (_, i) => input(text(`skill-${i}`)));
   expect(chatGptPromptFilePayloads(compile(ten))).toHaveLength(10);
-  expect(() => chatGptPromptFilePayloads(compile([...ten, input(text("eleventh"))])))
-    .toThrow("10 attachments");
-  const image = {
-    role: "user",
-    content: [{ type: "input_image", image_url: "data:image/png;base64,iVBORw==" }],
-  };
+  expect(() => chatGptPromptFilePayloads(compile([...ten, input(text("eleventh"))]))).toThrow("10 attachments");
+  const image = { role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,iVBORw==" }] };
   expect(() => chatGptPromptFilePayloads(compile([...ten, image]))).toThrow("10 attachments");
   expect(() => compile([input("Not a skill envelope")])).toThrow("invalid Codex envelope");
   expect(() => compileChatGptWebPrompt(parse([input(text())]), capabilities, token, {
-    experimentalSkillAttachments: true,
-    manualControl: true,
+    experimentalSkillAttachments: true, manualControl: true,
   })).toThrow("Zero Risk");
 });
+
 
 test("usage accounts for skills accumulated over many turns without applying a per-message upload cap", () => {
   const parsed = parse(Array.from({ length: 11 }, (_, i) => input(text(`skill-${i}`))));

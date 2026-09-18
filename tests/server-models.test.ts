@@ -105,6 +105,7 @@ test("Zero Risk returns one generic Web row without using scanned capabilities",
   const config = defaultConfig("full");
   config.browserInteractionMode = "manual";
   config.solAvailable = true;
+  config.extraHighAvailable = true;
   config.proAvailable = true;
   const response = await modelsRequest(
     new Request("http://127.0.0.1:17841/v1/models", {

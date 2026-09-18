@@ -14,19 +14,14 @@ export function selectedSkillFile(message: CodexUserMessage): ChatGptSkillFile {
   if (Array.isArray(content) && content.some(part => part.type !== "text")) {
     throw new Error("Selected skill instructions must contain only text");
   }
-  const text = typeof content === "string"
-    ? content
-    : content.map(part => (part as { text: string }).text).join("\n");
+  const text = typeof content === "string" ? content : content.map(part => (part as { text: string }).text).join("\n");
   const name = /^<skill>\s*<name>([^<>\r\n]+)<\/name>/.exec(text)?.[1]?.trim();
   if (!name || !text.trimEnd().endsWith("</skill>")) {
-    throw new Error(
-      "Selected skill instructions have an invalid Codex envelope; disable Skills as files to send them inline",
-    );
+    throw new Error("Selected skill instructions have an invalid Codex envelope; disable Skills as files to send them inline");
   }
-  const stem = name.normalize("NFKC")
-    .replace(/[^\p{L}\p{N}_-]+/gu, "-")
-    .slice(0, 64)
-    .replace(/^-+|-+$/g, "") || "skill";
+  // The digest makes changed versions and equal names from different packages distinct.
+  // Keep the original envelope, including its path/resource authority, inside the file.
+  const stem = name.normalize("NFKC").replace(/[^\p{L}\p{N}_-]+/gu, "-").slice(0, 64).replace(/^-+|-+$/g, "") || "skill";
   const digest = createHash("sha256").update(text).digest("hex").slice(0, 16);
   return { name: `${stem}--${digest}.txt`, text };
 }
@@ -41,19 +36,12 @@ export function validateSkillFiles(value: unknown): asserts value is ChatGptSkil
   if (!Array.isArray(value) || value.length > 10) throw new Error("Invalid skill attachment list");
   const names = new Set<string>();
   for (const file of value) {
-    if (!file
-      || typeof file.name !== "string"
-      || typeof file.text !== "string"
+    if (!file || typeof file.name !== "string" || typeof file.text !== "string"
       || !/^[\p{L}\p{N}_-]{1,64}--[a-f0-9]{16}\.txt$/u.test(file.name)
-      || file.text.length === 0
-      || Buffer.byteLength(file.text, "utf8") > 20_000_000
-      || names.has(file.name)) {
-      throw new Error("Invalid or duplicate skill attachment");
-    }
+      || file.text.length === 0 || Buffer.byteLength(file.text, "utf8") > 20_000_000
+      || names.has(file.name)) throw new Error("Invalid or duplicate skill attachment");
     const digest = createHash("sha256").update(file.text).digest("hex").slice(0, 16);
-    if (!file.name.endsWith(`--${digest}.txt`)) {
-      throw new Error("Skill attachment content does not match its name");
-    }
+    if (!file.name.endsWith(`--${digest}.txt`)) throw new Error("Skill attachment content does not match its name");
     names.add(file.name);
   }
 }

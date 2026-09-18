@@ -254,6 +254,9 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
   if (config.extraHighAvailable !== undefined && typeof config.extraHighAvailable !== "boolean") {
     throw new Error("Runtime configuration has an invalid extraHighAvailable");
   }
+  if (config.extraHighAvailable === true && !config.solAvailable) {
+    throw new Error("Runtime configuration cannot enable Extra High without Sol");
+  }
   if (config.experimentalBiggerContext !== undefined
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
@@ -800,6 +803,8 @@ class RuntimeSupervisor {
     } catch (error) {
       throw new Error(`Local tunnel health discovery returned invalid JSON: ${errorMessage(error)}`);
     }
+    // Unscoped `list` is local-only. Its exact alias record points to the live health URL file;
+    // `status` waits for an unrelated remote API before returning this same local information.
     const aliases = Array.isArray(parsed?.aliases)
       ? parsed.aliases.filter(entry => entry?.alias === tunnel.alias)
       : [];
@@ -894,6 +899,8 @@ class RuntimeSupervisor {
       if (this.tunnelHealthBaseUrl && this.tunnelHealthBaseUrl !== previousEndpoint) {
         return await this.readLocalTunnelHealth();
       }
+      // Inventory can prove that the alias stopped, but its ready flag does not prove MCP health.
+      // Unknown observations must not hide failures or trigger a restart without failure evidence.
       return { ...local, detail: `${local.detail}; local inventory: ${inventory.detail}` };
     } catch (error) {
       return {
@@ -977,6 +984,7 @@ class RuntimeSupervisor {
   async startTunnel(config, operationName = "runtime-start", { forceRestart = false } = {}) {
     if (config.mode !== "full") return;
     this.assertTunnelClientReady(config);
+    // Every acquisition binds diagnostics to this runtime, including adoption of an existing alias.
     this.tunnelHealthBaseUrl = null;
     try {
       const existing = await this.waitForKnownTunnelStatus(config);
@@ -1855,7 +1863,7 @@ class RuntimeSupervisor {
     };
   }
 
-  async cancelBrowserTurn(traceId) {
+  async cancelBrowserTurn(traceId, reason) {
     if (!/^[A-Za-z0-9_-]{6,128}$/.test(traceId || "")) throw new Error("Browser turn trace id is invalid");
     const config = this.readConfig();
     const daemon = this.daemon;
@@ -1863,7 +1871,7 @@ class RuntimeSupervisor {
       throw new Error("Launcher-owned runtime is unavailable for browser-turn cancellation");
     }
     const result = await this.control(config, "cancel-turn", {
-      body: { traceId },
+      body: { traceId, ...(reason === undefined ? {} : { reason }) },
       timeoutMs: 15_000,
     });
     if (result.status !== "ok"

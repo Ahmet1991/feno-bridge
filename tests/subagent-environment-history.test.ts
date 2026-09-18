@@ -83,6 +83,7 @@ test("V2 parent instructions bind the current environment without changing nativ
   expect(parsed.context.messages.at(-1)?.role).toBe("agentMessage");
   expect(parsed._rawBody).toEqual(raw);
 
+  // A reply from a nested child or a peer is context, not a superseding parent instruction.
   const reply = { ...task, id: "amsg_reply", author: "/root/reviewer/worker", content: [{ type: "input_text", text: "Done." }] };
   for (const author of [reply.author, "/root/peer"]) {
     const continued = parseRequest({ ...raw, input: [environmentItem, task, { ...reply, author }] });

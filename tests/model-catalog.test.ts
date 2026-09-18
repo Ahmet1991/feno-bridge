@@ -157,8 +157,8 @@ describe("native /models augmentation", () => {
   test("owns only its namespace, is idempotent, and omits Pro-only modes when unavailable", () => {
     const config = defaultConfig("browser-only");
     config.subagentProtocol = "native";
-    config.extraHighAvailable = false;
     config.proAvailable = false;
+    config.extraHighAvailable = true;
     const polluted = source();
     (polluted.models as unknown[]).push(
       { slug: "chatgpt-web/gpt-5.6-sol", display_name: "legacy generic route" },
@@ -168,11 +168,9 @@ describe("native /models augmentation", () => {
     const second = augmentNativeModelCatalog(first, config);
     const models = second.models as Array<Record<string, unknown>>;
     const web = models.filter(model => String(model.slug).startsWith("chatgpt-web/"));
-    expect(web.map(model => model.slug)).toEqual(
-      CHATGPT_WEB_MODEL_ROUTES
-        .filter(route => !route.requiresPro && !route.requiresExtraHigh)
-        .map(route => route.slug),
-    );
+    expect(web.map(model => model.slug)).toEqual([
+      "chatgpt-web/light", "chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high",
+    ]);
     expect(web.every(model => model.tool_mode === null)).toBe(true);
     expect(web.every(model => model.multi_agent_version === "v2")).toBe(true);
     expect(web.every(model => (model.supported_reasoning_levels as unknown[]).length === 1)).toBe(true);
@@ -182,6 +180,7 @@ describe("native /models augmentation", () => {
       autoCompactTokenLimit: model.auto_compact_token_limit,
     }))).toEqual([
       { contextWindow: 41_000, effectiveContextWindowPercent: 78, autoCompactTokenLimit: 32_000 },
+      { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
       { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
       { contextWindow: 90_000, effectiveContextWindowPercent: 89, autoCompactTokenLimit: 80_000 },
     ]);

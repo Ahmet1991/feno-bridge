@@ -204,6 +204,8 @@ export function unattributedChatGptEnvironmentMessages(
   for (const value of input) {
     const item = record(value);
     if (item?.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) continue;
+    // Explicit current provenance must keep the normal current-update rejection. A native item
+    // without provenance is historical only if the canonical rollout proves that exact message.
     const owner = itemTurnId(item);
     if (owner !== undefined && owner !== currentTurnId) continue;
     if (owner !== undefined || item.role !== "user"
@@ -263,7 +265,7 @@ export function priorChatGptAbortedTurnIds(parsed: CodexParsedRequest): string[]
 }
 
 /**
- * Return the latest real user instruction owned by the current native Codex turn.
+ * Return the latest human or direct-parent instruction owned by the current native Codex turn.
  *
  * Provider rounds replay the same instruction and steering appends a newer one. Remote
  * compaction uses this revision to identify and stop the superseded browser response; once Codex
@@ -348,6 +350,8 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
     const item = record(value);
     if (item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId
       || typeof item.id !== "string" || !item.id) return [];
+    // Native compaction groups plugins, instructions and environment into sibling content parts.
+    // Read the environment part without treating the surrounding preamble as part of its XML.
     const parts = typeof item.content === "string" ? [item.content]
       : Array.isArray(item.content) ? item.content.map(part => record(part)?.text) : [];
     return parts.flatMap(value => {
@@ -817,7 +821,7 @@ export function extractCodexTurnIdentityFromBody(value: unknown): ChatGptTurnIde
 /**
  * Return the canonical parent link carried by a native Codex thread-spawn request.
  * This is deliberately stricter than generic metadata parsing: only a real child turn with an
- * agent path, explicit turn purpose, sandbox policy, and absolute workspace evidence can inherit
+ * agent name, explicit turn purpose, sandbox policy, and absolute workspace evidence can inherit
  * filesystem authority from a previously verified parent thread.
  */
 export function extractChatGptThreadSpawnLineage(

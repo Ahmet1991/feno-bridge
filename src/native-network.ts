@@ -35,10 +35,7 @@ export async function fetchNativeCodex(request: Request): Promise<Response> {
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
   const response = await fetch(`${descriptor.control.endpoint}/v1/network/resolve-proxy`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${descriptor.control.token}`,
-      "content-type": "application/json",
-    },
+    headers: { authorization: `Bearer ${descriptor.control.token}`, "content-type": "application/json" },
     body: JSON.stringify({ url: request.url }),
     signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
     redirect: "error",

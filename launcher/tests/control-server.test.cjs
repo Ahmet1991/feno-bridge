@@ -374,6 +374,7 @@ test("manual-to-automatic transaction exposes capability inspection and preserve
       this.turnTabs.delete(tab.id);
     },
     markOwnedSurface: async () => { ownershipMarks += 1; },
+    writeDescriptor: () => {},
     snapshot: () => ({ activeTabId: "home" }),
   });
   const server = await new BrowserControlServer({

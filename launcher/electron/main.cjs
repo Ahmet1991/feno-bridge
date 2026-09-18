@@ -1,3 +1,4 @@
+const languages = require("./languages.json");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -62,6 +63,10 @@ const ALLOWED_EXTERNAL_URLS = new Set([GITHUB_URL, X_URL, CONNECTORS_URL, TUNNEL
 const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "index.html")).href;
 const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
 
+const launchEnvironment = {
+  CODEX_CHATGPT_WEB_HOME: process.env.CODEX_CHATGPT_WEB_HOME,
+  CODEX_HOME: process.env.CODEX_HOME,
+};
 process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
 process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
 app.setName(LAUNCHER_PROFILE.displayName);
@@ -85,6 +90,7 @@ installProcessDiagnosticGuards({
 let mainWindow = null;
 let mainWindowReadyToShow = false;
 let mainWindowShowRequested = false;
+let startupFailed = false;
 let browserHost = null;
 let runtimeHost = null;
 let browserControl = null;
@@ -267,11 +273,91 @@ const NATIVE_COPY = Object.freeze({
     removeTitle: "Remove Feno Bridge",
     removeMessage: "Remove the ChatGPT Web models from Codex and restore the previous model route?",
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
+    retry: "Retry",
+    startupTitle: "Feno Bridge could not start",
+    startupDetail: "Retry starts Feno Bridge again without changing your saved settings or ChatGPT profile.",
+    startupCleanupFailed: "Startup cleanup failed",
     catalogFailure: "Codex reached Feno Bridge, but loading its model catalog failed (HTTP {status}; {reason}). Check Activity for details and export a privacy-safe log if it persists.",
     updateNow: "Update now",
     updateTitle: "Update Feno Bridge",
     updateMessage: "Feno Bridge will close while the update installs. Reopening may take several minutes.",
     updateDetail: "On Windows, an update status window will stay open. Do not start another installer while it is running. Active Codex tasks may be interrupted.",
+  }),
+  "zh-CN": Object.freeze({
+    openLauncher: "打开 Feno Bridge",
+    quit: "退出",
+    exportDiagnostics: "导出隐私安全诊断",
+    cancel: "取消",
+    remove: "移除",
+    removeTitle: "移除 Feno Bridge",
+    removeMessage: "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？",
+    removeDetail: "Feno Bridge 中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。",
+    retry: "重试",
+    startupTitle: "Feno Bridge 无法启动",
+    startupDetail: "重试会重新启动 Feno Bridge，不会更改已保存的设置或 ChatGPT 登录配置。",
+    startupCleanupFailed: "启动清理失败",
+    catalogFailure: "Codex 已连接到 Feno Bridge，但模型列表加载失败（HTTP {status}；{reason}）。请查看“活动”了解详情；若问题持续，请导出安全日志。",
+    updateNow: "立即更新",
+    updateTitle: "更新 Feno Bridge",
+    updateMessage: "安装更新时 Feno Bridge 将关闭，重新打开可能需要几分钟。",
+    updateDetail: "在 Windows 上会保持一个单独的更新状态窗口。运行期间不要启动其他安装程序。活动中的 Codex 任务可能会中断。",
+  }),
+  "zh-TW": Object.freeze({
+    openLauncher: "開啟 Feno Bridge",
+    quit: "結束",
+    exportDiagnostics: "匯出隱私安全診斷",
+    cancel: "取消",
+    remove: "移除",
+    removeTitle: "移除 Feno Bridge",
+    removeMessage: "從 Codex 中移除 ChatGPT Web 模型並還原先前的模型路由？",
+    removeDetail: "Feno Bridge 中的 ChatGPT 登入設定檔會保留。Codex 需要重新啟動一次。",
+    retry: "重試",
+    startupTitle: "Feno Bridge 無法啟動",
+    startupDetail: "重試會重新啟動 Feno Bridge，不會變更已儲存的設定或 ChatGPT 登入設定檔。",
+    startupCleanupFailed: "啟動清理失敗",
+    catalogFailure: "Codex 已連線到 Feno Bridge，但模型清單載入失敗（HTTP {status}；{reason}）。請查看「活動」了解詳情；若問題持續，請匯出安全日誌。",
+    updateNow: "立即更新",
+    updateTitle: "更新 Feno Bridge",
+    updateMessage: "安裝更新時 Feno Bridge 將關閉，重新開啟可能需要幾分鐘。",
+    updateDetail: "Windows 會保留獨立的更新狀態視窗。執行期間請勿啟動其他安裝程式。進行中的 Codex 工作可能會中斷。",
+  }),
+  ja: Object.freeze({
+    openLauncher: "Feno Bridge を開く",
+    quit: "終了",
+    exportDiagnostics: "プライバシー保護済みの診断情報をエクスポート",
+    cancel: "キャンセル",
+    remove: "削除",
+    removeTitle: "Feno Bridge を削除",
+    removeMessage: "Codex から ChatGPT Web モデルを削除し、以前のモデルルートを復元しますか？",
+    removeDetail: "Feno Bridge の ChatGPT ログインプロファイルは保持されます。Codex を一度再起動する必要があります。",
+    retry: "再試行",
+    startupTitle: "Feno Bridge を起動できませんでした",
+    startupDetail: "保存済みの設定と ChatGPT プロファイルを変更せずに Feno Bridge を再起動します。",
+    startupCleanupFailed: "起動後のクリーンアップに失敗しました",
+    catalogFailure: "Codex は Feno Bridge に接続しましたが、モデル一覧を読み込めませんでした（HTTP {status}、{reason}）。「アクティビティ」で詳細を確認し、問題が続く場合は安全なログをエクスポートしてください。",
+    updateNow: "今すぐ更新",
+    updateTitle: "Feno Bridge を更新",
+    updateMessage: "更新のインストール中は Feno Bridge が終了します。再起動には数分かかる場合があります。",
+    updateDetail: "Windows では更新状況ウィンドウが開いたままになります。実行中に別のインストーラーを起動しないでください。実行中の Codex タスクが中断される場合があります。",
+  }),
+  ko: Object.freeze({
+    openLauncher: "Feno Bridge 열기",
+    quit: "종료",
+    exportDiagnostics: "개인정보가 보호된 진단 정보 내보내기",
+    cancel: "취소",
+    remove: "제거",
+    removeTitle: "Feno Bridge 제거",
+    removeMessage: "Codex에서 ChatGPT Web 모델을 제거하고 이전 모델 경로를 복원할까요?",
+    removeDetail: "Feno Bridge의 ChatGPT 로그인 프로필은 유지됩니다. Codex를 한 번 다시 시작해야 합니다.",
+    retry: "다시 시도",
+    startupTitle: "Feno Bridge를 시작할 수 없습니다",
+    startupDetail: "저장된 설정이나 ChatGPT 프로필을 변경하지 않고 Feno Bridge를 다시 시작합니다.",
+    startupCleanupFailed: "시작 정리에 실패했습니다",
+    catalogFailure: "Codex가 Feno Bridge에 연결했지만 모델 목록을 불러오지 못했습니다(HTTP {status}; {reason}). 활동에서 세부 정보를 확인하고 문제가 계속되면 안전한 로그를 내보내 주세요.",
+    updateNow: "지금 업데이트",
+    updateTitle: "Feno Bridge 업데이트",
+    updateMessage: "업데이트를 설치하는 동안 Feno Bridge가 종료됩니다. 다시 여는 데 몇 분이 걸릴 수 있습니다.",
+    updateDetail: "Windows에서는 별도의 업데이트 상태 창이 열린 상태로 유지됩니다. 실행 중에는 다른 설치 프로그램을 시작하지 마세요. 실행 중인 Codex 작업이 중단될 수 있습니다.",
   }),
   tr: Object.freeze({
     openLauncher: "Feno Bridge'i aç",
@@ -282,6 +368,10 @@ const NATIVE_COPY = Object.freeze({
     removeTitle: "Feno Bridge'i kaldır",
     removeMessage: "ChatGPT Web modelleri Codex'ten kaldırılsın ve önceki model rotası geri yüklensin mi?",
     removeDetail: "Uygulamadaki ChatGPT oturum açma profili korunacak. Codex'in bir kez yeniden başlatılması gerekir.",
+    retry: "Yeniden dene",
+    startupTitle: "Feno Bridge başlatılamadı",
+    startupDetail: "Yeniden deneme, kayıtlı ayarlarınızı veya ChatGPT profilinizi değiştirmeden Feno Bridge'i yeniden başlatır.",
+    startupCleanupFailed: "Başlangıç temizliği başarısız oldu",
     catalogFailure: "Codex, Feno Bridge'e ulaştı ancak model kataloğu yüklenemedi (HTTP {status}; {reason}). Ayrıntılar için Etkinlik bölümüne bakın; sorun sürerse gizliliğe uygun tanılamayı dışa aktarın.",
     updateNow: "Şimdi güncelle",
     updateTitle: "Feno Bridge'i güncelle",
@@ -324,7 +414,7 @@ function showMainWindow() {
   // has produced anything to show. Preserve that foreground request until the real window reaches
   // `ready-to-show`; otherwise the already-running `--hidden` instance silently consumes it.
   mainWindowShowRequested = true;
-  if (!mainWindowReadyToShow || !mainWindow || mainWindow.isDestroyed()) return;
+  if ((!mainWindowReadyToShow && !startupFailed) || !mainWindow || mainWindow.isDestroyed()) return;
   mainWindowShowRequested = false;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
@@ -465,8 +555,8 @@ async function loadRenderer(window) {
 }
 
 function validateLanguage(value) {
-  if (value !== "en" && value !== "tr") {
-    throw new Error("Language must be en or tr");
+  if (typeof value !== "string" || !Object.hasOwn(languages, value)) {
+    throw new Error(`Language must be one of: ${Object.keys(languages).join(", ")}`);
   }
   return value;
 }
@@ -736,6 +826,7 @@ function registerIpc({ logger, stateStore }) {
     if (setupState.browserInteractionMode === "automatic") {
       const browser = await browserHost.probeAuthentication();
       if (!browser.authenticated) {
+        if (browser.status === "error") throw new Error(browser.message);
         throw new Error(
           IS_DEV_PROFILE
             ? "Sign in to the isolated DEV ChatGPT profile before configuring the harness"
@@ -1002,6 +1093,7 @@ async function start() {
     return;
   }
   app.on("second-instance", () => showMainWindow());
+  app.on("activate", () => showMainWindow());
 
   await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
   let installedRuntimeRoot = null;
@@ -1124,7 +1216,7 @@ async function start() {
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
     cdpPort,
     control: browserControl.descriptor(),
-    cancelTurn: IS_DEV_PROFILE ? undefined : traceId => runtimeSupervisor.cancelBrowserTurn(traceId),
+    cancelTurn: IS_DEV_PROFILE ? undefined : (traceId, reason) => runtimeSupervisor.cancelBrowserTurn(traceId, reason),
     getConnectorName: () => runtimeHost.browserConnectorName(),
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
@@ -1379,7 +1471,6 @@ async function start() {
     recordStartupReadiness("repair-required", message);
   });
 
-  app.on("activate", () => showMainWindow());
   app.on("before-quit", (event) => {
     if (exitCommitted) return;
     event.preventDefault();
@@ -1389,13 +1480,48 @@ async function start() {
   process.once("SIGTERM", () => { void requestQuit(); });
 }
 
-void start().catch((error) => {
+void start().catch(async (error) => {
+  startupFailed = true;
   const message = error instanceof Error ? error.message : String(error);
   try {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);
   } catch {}
   try {
-    dialog.showErrorBox("Feno Bridge could not start", message);
-  } catch {}
-  app.exit(1);
+    // Browser bootstrap can fail before the renderer is loaded. Keep the error reachable
+    // through the existing instance, and release browser resources before a user retry.
+    const cleanupErrors = [];
+    try { browserHost?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
+    try { await browserControl?.close(); } catch (caught) { cleanupErrors.push(String(caught)); }
+    if (process.argv.includes("--launcher-smoke-test")) return;
+    await app.whenReady();
+    quitting = true;
+    showMainWindow();
+    const copy = nativeCopyFor(createStateStore(path.join(app.getPath("userData"), "launcher-state.json")).read().language);
+    const options = {
+      type: "error",
+      title: copy.startupTitle,
+      message,
+      detail: [copy.startupDetail,
+        ...cleanupErrors.map(detail => `${copy.startupCleanupFailed}: ${detail}`)].join("\n"),
+      buttons: [copy.retry, copy.quit],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    };
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+    if (result.response === 0) {
+      // Internal child commands use the resolved profile. A fresh launcher must instead
+      // resolve the original launch environment, especially for the isolated DEV profile.
+      for (const [key, value] of Object.entries(launchEnvironment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      app.relaunch({ args: process.argv.slice(1).filter(argument => argument !== "--hidden") });
+    }
+  } finally {
+    // A failed dialog or relaunch must not leave a headless single-instance owner behind.
+    app.exit(1);
+  }
 });

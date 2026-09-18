@@ -389,7 +389,7 @@ class BrowserHost {
     this.homeNavigationTimeout = null;
     this.lastTurnSweepAt = Date.now();
     this.powerSaveBlockerId = null;
-    this.turnLeaseSweep = setInterval(() => this.reapExpiredTurnTabs(), TURN_HEARTBEAT_SWEEP_MS);
+    this.turnLeaseSweep = setInterval(() => { void this.reapExpiredTurnTabs(); }, TURN_HEARTBEAT_SWEEP_MS);
     this.turnLeaseSweep.unref?.();
     this.resumeListener = () => this.refreshTurnLeases("system_resume");
     if (powerMonitor && typeof powerMonitor.on === "function") {
@@ -478,7 +478,11 @@ class BrowserHost {
     this.assertTurnTabsCanResetForInteractionModeChange();
     this.interactionModeOverride = mode;
     this.manualOperation = INTERACTION_MODE_CHANGE_OPERATION;
+    let succeeded = false;
     try {
+      // Setup inspects the primary surface before committing runtime changes. Publish
+      // its native target in the same mode as that inspection, including Zero Risk's exclusion.
+      this.writeDescriptor();
       let browserCommitted = false;
       const commitBrowserChange = async () => {
         if (browserCommitted) throw new Error("Browser interaction mode change was committed more than once");
@@ -492,10 +496,13 @@ class BrowserHost {
       if (!browserCommitted) {
         throw new Error("Runtime setup returned before committing the browser interaction mode");
       }
+      succeeded = true;
       return result;
     } finally {
       this.manualOperation = null;
       this.interactionModeOverride = null;
+      // main persists the target mode after success; a failed setup keeps the old mode.
+      if (!succeeded) this.writeDescriptor();
     }
   }
 
@@ -886,17 +893,20 @@ class BrowserHost {
 
   bindManualTurnContents(tab) {
     const contents = tab.view.webContents;
-    const invalidateRetainedConversation = (url, inPlace) => {
+    const invalidateConversation = (url, inPlace) => {
+      // History state updates and anchor scrolling keep the same document/context.
       if (inPlace && url.split("#", 1)[0] === tab.url?.split("#", 1)[0]) return;
+      // Initial login/navigation still carries full context. A later document change
+      // cannot prove that an incremental continuation belongs to the same conversation.
       if (!tab.conversationKey
         || (!tab.manualConversationReused && tab.manualState === "awaiting-user")) return;
-      tab.conversationKey = null;
+      tab.conversationKey = undefined;
       if (tab.manualConversationReused && tab.status === "running") {
         tab.status = "error";
         tab.message = "ChatGPT page changed during a resumed Zero Risk turn. Start a new Codex turn to resend the full context.";
         this.signalManualTerminal(tab, "failed");
       }
-      this.logger.info("browser.manual_retained_conversation_invalidated", {
+      this.logger.info("browser.manual_conversation_invalidated", {
         tabId: tab.id,
         traceId: tab.traceId,
       });
@@ -916,7 +926,7 @@ class BrowserHost {
     });
     contents.on("did-start-navigation", (_event, url, inPlace, mainFrame) => {
       if (!mainFrame) return;
-      invalidateRetainedConversation(url, inPlace);
+      invalidateConversation(url, inPlace);
       tab.url = url;
       tab.loading = true;
       this.publishState?.(this.snapshot());
@@ -940,7 +950,7 @@ class BrowserHost {
     });
     contents.on("did-navigate-in-page", (_event, url, mainFrame) => {
       if (mainFrame) {
-        invalidateRetainedConversation(url, true);
+        invalidateConversation(url, true);
         tab.url = url;
       }
       this.publishState?.(this.snapshot());
@@ -1352,6 +1362,7 @@ class BrowserHost {
   }
 
   reapExpiredTurnTabs(now = Date.now()) {
+    const cancellations = [];
     const lastSweepAt = this.lastTurnSweepAt;
     this.lastTurnSweepAt = now;
     if (sweepGapIndicatesSuspension(lastSweepAt, now, TURN_HEARTBEAT_SWEEP_MS)) {
@@ -1392,15 +1403,45 @@ class BrowserHost {
       const heartbeatExpired = tab.bootstrapReady === true
         && now - (tab.lastHeartbeatAt ?? 0) >= TURN_HEARTBEAT_TIMEOUT_MS;
       if (!bootstrapExpired && !heartbeatExpired) continue;
+      if (tab.expiryCancellation) {
+        cancellations.push(tab.expiryCancellation);
+        continue;
+      }
       const evidence = bootstrapExpired ? "browser_surface_bootstrap_timeout" : "helper_heartbeat_expired";
-      this.logger.warn("browser.orphan_turn_reaped", {
+      const expiredOwner = {
         tabId: tab.id,
         traceId: tab.traceId,
         helperPid: tab.helperPid,
         evidence,
+      };
+      this.logger.warn("browser.orphan_turn_expired", expiredOwner);
+      if (!this.cancelTurn) {
+        this.removeTurnTab(tab, true);
+        this.logger.warn("browser.orphan_turn_reaped", expiredOwner);
+        continue;
+      }
+      // Release runtime ownership before destroying its document, just as for an explicit close.
+      // Coalesce overlapping sweeps; a failed control request leaves the lease available for cleanup.
+      const { traceId, helperPid } = tab;
+      tab.expiryCancellation = Promise.resolve().then(async () => {
+        try {
+          await this.cancelTurn(traceId, evidence);
+          if (this.turnTabs.get(tab.id) === tab && tab.traceId === traceId
+            && tab.helperPid === helperPid && tab.status === "running") {
+            this.removeTurnTab(tab, true);
+          }
+          this.logger.warn("browser.orphan_turn_reaped", expiredOwner);
+        } catch (error) {
+          this.logger.warn("browser.orphan_turn_cancel_failed", {
+            tabId: tab.id, traceId, evidence, errorType: error?.name || "Error",
+          });
+        } finally {
+          delete tab.expiryCancellation;
+        }
       });
-      this.removeTurnTab(tab, true);
+      cancellations.push(tab.expiryCancellation);
     }
+    return Promise.all(cancellations);
   }
 
   setBounds(bounds, rendererZoomFactor = 1) {
@@ -2355,6 +2396,7 @@ class BrowserHost {
     else this.syncViewVisibility();
     this.publishState?.(this.snapshot());
     this.logger.info("browser.tab_created", { tabId: tab.id, traceId, tabCount: this.turnTabs.size });
+    this.writeDescriptor();
     return { surfaceId: tab.surfaceId, tabId: tab.id, reused: false, connectorBound: false };
   }
 
@@ -2801,9 +2843,11 @@ class BrowserHost {
       };
       const initialSurface = readSurface();
       let sessionAuthenticated = false;
+      let sessionCheckError = null;
       if (new URL(initialSurface.url).origin === expectedUrl.origin) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), ${CHATGPT_AUTH_SESSION_TIMEOUT_MS});
+        let responseReceived = false;
         try {
           const response = await fetch("/api/auth/session", {
             credentials: "include",
@@ -2811,13 +2855,23 @@ class BrowserHost {
             headers: { accept: "application/json" },
             signal: controller.signal,
           });
+          responseReceived = true;
           const responseUrl = new URL(response.url);
-          const payload = response.ok
-            && responseUrl.origin === expectedUrl.origin
-            && responseUrl.pathname === "/api/auth/session"
-            && response.headers.get("content-type")?.includes("application/json")
-            ? await response.json()
-            : null;
+          let payload = null;
+          if (responseUrl.origin !== expectedUrl.origin || responseUrl.pathname !== "/api/auth/session") {
+            sessionCheckError = "ChatGPT session verification received an unexpected response. Check your connection and retry.";
+          } else if (response.status !== 401) {
+            if (!response.ok) {
+              sessionCheckError = "ChatGPT session verification failed (HTTP " + response.status + "). Check your connection and retry.";
+            } else if (!response.headers.get("content-type")?.includes("application/json")) {
+              sessionCheckError = "ChatGPT session verification received an unexpected response. Check your connection and retry.";
+            } else {
+              payload = await response.json();
+              if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+                sessionCheckError = "ChatGPT session verification received an invalid response. Retry after the page finishes loading.";
+              }
+            }
+          }
           const user = payload?.user && typeof payload.user === "object" && !Array.isArray(payload.user)
             ? payload.user
             : null;
@@ -2831,15 +2885,22 @@ class BrowserHost {
           sessionAuthenticated = sessionHasUser
             && sessionHasNoError
             && sessionExpiryIsValid;
-        } catch {}
+        } catch {
+          sessionCheckError = controller.signal.aborted
+            ? "ChatGPT session verification timed out. Check your network or proxy and retry."
+            : responseReceived
+              ? "ChatGPT session verification received an invalid response. Retry after the page finishes loading."
+              : "ChatGPT session verification failed. Check your network or proxy and retry.";
+        }
         finally { clearTimeout(timeout); }
       }
-      return { ...readSurface(), sessionAuthenticated };
+      return { ...readSurface(), sessionAuthenticated, sessionCheckError };
     })()`, true).catch(() => ({
       url: "",
       composer: false,
       temporary: false,
       sessionAuthenticated: false,
+      sessionCheckError: "ChatGPT session verification could not inspect the browser. Retry after the page finishes loading.",
       readyState: "unknown",
     }));
     let result = await probe(this.view.webContents);
@@ -2875,6 +2936,8 @@ class BrowserHost {
           : { status: "ready", message: "ChatGPT is ready" };
       this.setState({ ...availability, authenticated: true, url: result.url });
       if (!wasAuthenticated) this.logger.info("browser.authenticated", { url: result.url });
+    } else if (result.sessionCheckError) {
+      this.setState({ status: "error", message: result.sessionCheckError, authenticated: false, url: result.url || url });
     } else {
       const loaded = result.readyState === "complete";
       this.setState({
@@ -2998,9 +3061,7 @@ class BrowserHost {
       throw new Error("Browser helper returned invalid ChatGPT session evidence");
     }
     if (detectCapabilities
-      && (typeof inspected.solAvailable !== "boolean"
-        || typeof inspected.extraHighAvailable !== "boolean"
-        || typeof inspected.proAvailable !== "boolean")) {
+      && (typeof inspected.solAvailable !== "boolean" || typeof inspected.extraHighAvailable !== "boolean" || typeof inspected.proAvailable !== "boolean")) {
       throw new Error("Browser helper returned incomplete ChatGPT capability evidence");
     }
     if (detectCapabilities && (inspected.proAvailable || inspected.extraHighAvailable) && !inspected.solAvailable) {
@@ -3035,8 +3096,19 @@ class BrowserHost {
   }
 
   writeDescriptor() {
+    const surfaceTargets = {};
+    if (browserInteractionModeFor(this) === "automatic") {
+      const surfaces = [[this.surfaceId, this.view?.webContents],
+        ...[...this.turnTabs.values()].filter(tab => tab.interactionMode === "automatic")
+          .map(tab => [tab.surfaceId, tab.view.webContents])];
+      for (const [surfaceId, contents] of surfaces) {
+        if (!contents || contents.isDestroyed()) continue;
+        if (Object.hasOwn(surfaceTargets, surfaceId)) throw new Error("Browser surface ownership is duplicated");
+        surfaceTargets[surfaceId] = contents.getOrCreateDevToolsTargetId();
+      }
+    }
     const descriptor = {
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: this.profile,
       pid: process.pid,
@@ -3046,6 +3118,7 @@ class BrowserHost {
       partition: this.partition,
       idleUrl: IDLE_BROWSER_URL,
       surfaceId: this.surfaceId,
+      surfaceTargets,
       createdAt: new Date().toISOString(),
     };
     writePrivateFileAtomic(this.descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`);

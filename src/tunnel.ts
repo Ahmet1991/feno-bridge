@@ -362,13 +362,14 @@ export function parseTunnelStatus(output: string, alias: string, exitStatus = 0)
   try {
     const parsed = JSON.parse(output) as Record<string, unknown>;
     if (!Array.isArray(parsed.entries)) throw new Error("local inventory has no entries array");
-    const matches = parsed.entries.filter(entry => entry && typeof entry === "object"
-      && (entry as Record<string, unknown>).alias === alias) as Array<Record<string, unknown>>;
+    const matches = parsed.entries.filter(entry => entry?.alias === alias);
     if (matches.length > 1) throw new Error("local inventory contains duplicate aliases");
-    const state = matches.length === 0 ? "stopped" : matches[0]!.runtime_state;
-    if (!["stopped", "starting", "healthy", "ready"].includes(String(state))) {
+    const state = matches.length === 0 ? "stopped" : matches[0].runtime_state;
+    if (!["stopped", "starting", "healthy", "ready"].includes(state)) {
       throw new Error("local inventory has an unsupported runtime state");
     }
+    // tunnel-client 0.0.12 derives these states from the live process and local healthz/readyz
+    // probes. It does not need the optional remote control-plane lookup made by `status`.
     const processRunning = state !== "stopped";
     const healthy = state === "healthy" || state === "ready";
     const ready = state === "ready";
@@ -382,15 +383,9 @@ export function parseTunnelStatus(output: string, alias: string, exitStatus = 0)
         `state=${state}`,
         ...(matches.length === 0 ? ["local_inventory=absent"] : []),
       ].join("; "));
-    return { ok, processRunning, healthy, ready, state: state as string, detail };
+    return { ok, processRunning, healthy, ready, state, detail };
   } catch (error) {
-    return {
-      ok: false,
-      processRunning: false,
-      healthy: false,
-      ready: false,
-      detail: `tunnel-client returned invalid local inventory: ${safeTunnelDetail(error instanceof Error ? error.message : String(error))}`,
-    };
+    return { ok: false, processRunning: false, healthy: false, ready: false, detail: `tunnel-client returned invalid local inventory: ${safeTunnelDetail(error instanceof Error ? error.message : String(error))}` };
   }
 }
 

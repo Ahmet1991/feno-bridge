@@ -26,6 +26,31 @@ async function runCli(args: string[], env: Record<string, string | undefined>) {
   return { exitCode, stdout, stderr };
 }
 
+test("production and DEV setup reject the removed connector-name option before configuration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-fixed-connector-"));
+  try {
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+      CODEX_CHATGPT_WEB_DEV_HOME: join(root, "dev"),
+    };
+    for (const command of [["setup"], ["dev", "setup"]]) {
+      const result = await runCli([
+        ...command, "--browser-only", "--app-name", "Other Connector", "--acknowledge-unofficial",
+      ], env);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toMatch(/Unknown.*arguments: --app-name Other Connector/);
+    }
+    expect(existsSync(join(root, "app", "config.json"))).toBeFalse();
+    expect(existsSync(join(root, "dev", "config.json"))).toBeFalse();
+    const help = await runCli(["--help"], env);
+    expect(help.stdout).not.toContain("--app-name");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("setup validates the port before performing runtime work", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-"));
   try {
@@ -276,7 +301,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
     mkdirSync(join(devHome, "runtime"), { recursive: true });
     writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
     writeFileSync(descriptorPath, `${JSON.stringify({
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: "development",
       pid: process.pid,
@@ -286,6 +311,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
       partition: "persist:codex-web-gpt-dev-chatgpt",
       idleUrl: LAUNCHER_BROWSER_IDLE_URL,
       surfaceId: "d".repeat(32),
+      surfaceTargets: { ["d".repeat(32)]: "native-owned-target" },
       createdAt: new Date().toISOString(),
     })}\n`, { mode: 0o600 });
 
@@ -334,7 +360,7 @@ test("DEV setup accepts explicit browser-interaction flags and preserves manual 
     mkdirSync(join(devHome, "runtime"), { recursive: true });
     writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
     writeFileSync(descriptorPath, `${JSON.stringify({
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: "development",
       pid: process.pid,
@@ -347,6 +373,7 @@ test("DEV setup accepts explicit browser-interaction flags and preserves manual 
       partition: "persist:codex-web-gpt-dev-chatgpt",
       idleUrl: LAUNCHER_BROWSER_IDLE_URL,
       surfaceId: "m".repeat(32),
+      surfaceTargets: { ["m".repeat(32)]: "native-owned-target" },
       createdAt: new Date().toISOString(),
     })}\n`, { mode: 0o600 });
     const env = {
@@ -407,7 +434,7 @@ test("browser check uses metadata-only launcher liveness in Zero Risk", async ()
     mkdirSync(join(appHome, "runtime"), { recursive: true });
     writeFileSync(helperScript, "module.exports = {};\n", { mode: 0o700 });
     writeFileSync(descriptorPath, `${JSON.stringify({
-      version: 2,
+      version: 3,
       kind: "codex-web-gpt-launcher",
       profile: "production",
       pid: process.pid,
@@ -420,6 +447,7 @@ test("browser check uses metadata-only launcher liveness in Zero Risk", async ()
       partition: "persist:codex-web-gpt-chatgpt",
       idleUrl: LAUNCHER_BROWSER_IDLE_URL,
       surfaceId: "s".repeat(32),
+      surfaceTargets: { ["s".repeat(32)]: "native-owned-target" },
       createdAt: new Date().toISOString(),
     })}\n`, { mode: 0o600 });
     const config = {
@@ -472,7 +500,7 @@ test("terminal uninstall refuses to race a launcher-owned runtime", async () => 
     storageStatePath: join(appHome, "browser", "storage-state.json"),
     brokerSocketPath: defaultBrokerEndpoint(appHome),
     headed: true,
-    proAvailable: false,
+    extraHighAvailable: false, proAvailable: false,
     autoApproveToolCalls: false,
     controlToken: "launcher-uninstall-control-token-0123456789abcdef",
     runtimeCommand: [process.execPath],
@@ -508,7 +536,7 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
   writeFileSync(helperScript, "module.exports = {};\n");
   writeFileSync(runtimeKeyFile, "test-key\n");
   writeFileSync(descriptorPath, `${JSON.stringify({
-    version: 2,
+    version: 3,
     kind: "codex-web-gpt-launcher",
     profile: "production",
     pid: process.pid,
@@ -518,6 +546,7 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
     partition: "persist:codex-web-gpt-chatgpt",
     idleUrl: LAUNCHER_BROWSER_IDLE_URL,
     surfaceId: "a".repeat(32),
+    surfaceTargets: { ["a".repeat(32)]: "native-owned-target" },
     createdAt: new Date().toISOString(),
   })}\n`, { mode: 0o600 });
   writeFileSync(join(appHome, "config.json"), `${JSON.stringify({
@@ -534,7 +563,7 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
     storageStatePath: join(appHome, "browser", "storage-state.json"),
     brokerSocketPath: defaultBrokerEndpoint(appHome),
     headed: true,
-    proAvailable: false,
+    extraHighAvailable: false, proAvailable: false,
     autoApproveToolCalls: false,
     controlToken: "runtime-control-token-0123456789abcdef0123456789",
     runtimeCommand: [process.execPath],

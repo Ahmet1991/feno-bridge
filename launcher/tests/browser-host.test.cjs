@@ -42,6 +42,80 @@ test("Electron and Bun agree on the exact launcher idle surface", () => {
   ));
 });
 
+test("descriptor publishes native surface identities without inspecting renderers or Zero Risk tabs", () => {
+  const dir = fs.mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "browser-targets-"));
+  const queried = [];
+  const contents = id => ({
+    isDestroyed: () => false,
+    getOrCreateDevToolsTargetId: () => { queried.push(id); return id; },
+    executeJavaScript: () => { throw new Error("Descriptor must not inspect renderer content"); },
+  });
+  const automatic = { surfaceId: "a".repeat(32), interactionMode: "automatic", view: { webContents: contents("auto-target") } };
+  const manual = { surfaceId: null, interactionMode: "manual", view: { webContents: contents("manual-target") } };
+  const fixture = {
+    surfaceId: "h".repeat(32), view: { webContents: contents("home-target") },
+    turnTabs: new Map([["automatic", automatic], ["manual", manual]]),
+    getBrowserInteractionMode: () => "automatic", profile: "production", cdpPort: 40000,
+    partition: "persist:codex-web-gpt-chatgpt", control: {}, helper: {},
+    descriptorPath: require("node:path").join(dir, "descriptor.json"),
+  };
+  try {
+    BrowserHost.prototype.writeDescriptor.call(fixture);
+    const descriptor = JSON.parse(fs.readFileSync(fixture.descriptorPath, "utf8"));
+    assert.equal(descriptor.version, 3);
+    assert.deepEqual(descriptor.surfaceTargets, { [fixture.surfaceId]: "home-target", [automatic.surfaceId]: "auto-target" });
+    assert.deepEqual(queried, ["home-target", "auto-target"]);
+    fixture.getBrowserInteractionMode = () => "manual";
+    BrowserHost.prototype.writeDescriptor.call(fixture);
+    assert.deepEqual(JSON.parse(fs.readFileSync(fixture.descriptorPath, "utf8")).surfaceTargets, {});
+    assert.deepEqual(queried, ["home-target", "auto-target"]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("mode transitions publish targets before setup inspection and restore them on rollback", async () => {
+  const dir = fs.mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "browser-mode-targets-"));
+  let savedMode = "manual";
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    surfaceId: "h".repeat(32),
+    view: { webContents: { isDestroyed: () => false, getOrCreateDevToolsTargetId: () => "home-target" } },
+    turnTabs: new Map(), getBrowserInteractionMode: () => savedMode,
+    interactionModeOverride: null, manualOperation: null,
+    profile: "production", cdpPort: 40000, partition: "persist:codex-web-gpt-chatgpt",
+    control: {}, helper: {}, descriptorPath: require("node:path").join(dir, "descriptor.json"),
+    markOwnedSurface: async () => {},
+  });
+  const targets = () => JSON.parse(fs.readFileSync(fixture.descriptorPath, "utf8")).surfaceTargets;
+  const automaticTargets = { [fixture.surfaceId]: "home-target" };
+  try {
+    fixture.writeDescriptor();
+    assert.deepEqual(targets(), {});
+    await assert.rejects(fixture.withInteractionModeChange("automatic", async () => {
+      assert.deepEqual(targets(), automaticTargets);
+      throw new Error("setup failed");
+    }), /setup failed/);
+    assert.deepEqual(targets(), {});
+    await fixture.withInteractionModeChange("automatic", async commit => {
+      assert.deepEqual(targets(), automaticTargets);
+      await commit();
+    });
+    // main.cjs persists the new mode only after the transaction returns.
+    assert.deepEqual(targets(), automaticTargets);
+    savedMode = "automatic";
+    await assert.rejects(fixture.withInteractionModeChange("manual", async () => {
+      assert.deepEqual(targets(), {});
+      throw new Error("manual setup failed");
+    }), /manual setup failed/);
+    assert.deepEqual(targets(), automaticTargets);
+    await fixture.withInteractionModeChange("manual", async commit => {
+      assert.deepEqual(targets(), {});
+      await commit();
+    });
+    savedMode = "manual";
+    assert.deepEqual(targets(), {});
+    assert.equal(fixture.currentOperation(), null);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("primary browser bootstrap accepts only the exact committed idle document", async () => {
   const calls = [];
   const contents = new EventEmitter();
@@ -382,8 +456,7 @@ test("session inspection delegates navigation and capability detection to the sh
           temporary: true,
           url: "https://chatgpt.com/?temporary-chat=true",
           solAvailable: true,
-          extraHighAvailable: true,
-          proAvailable: true,
+          extraHighAvailable: true, proAvailable: true,
         },
       };
     },
@@ -396,8 +469,7 @@ test("session inspection delegates navigation and capability detection to the sh
     temporary: true,
     url: "https://chatgpt.com/?temporary-chat=true",
     solAvailable: true,
-    extraHighAvailable: true,
-    proAvailable: true,
+    extraHighAvailable: true, proAvailable: true,
   });
   assert.equal(calls.length, 2);
   assert.equal(calls[0].operation, "refresh");
@@ -760,6 +832,60 @@ test("launcher authentication requires the Temporary Chat composer and complete 
   const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
   assert.equal(result.authenticated, true);
   assert.equal(result.status, "ready");
+});
+
+test("session verification distinguishes a missing login from network and invalid-response failures", async () => {
+  const vm = require("node:vm");
+  const url = "https://chatgpt.com/?temporary-chat=true";
+  const sessionUrl = "https://chatgpt.com/api/auth/session";
+  const response = (payload, overrides = {}) => ({
+    ok: true, status: 200, url: sessionUrl,
+    headers: { get: () => "application/json" }, json: async () => payload, ...overrides,
+  });
+  const validSession = { user: { id: "fixture" }, expires: "2099-01-01T00:00:00Z" };
+  const cases = [
+    { name: "valid", fetch: async () => response(validSession), status: "ready", authenticated: true },
+    { name: "guest", fetch: async () => response({}), status: "signed-out" },
+    { name: "expired", fetch: async () => response({ ...validSession, expires: "2000-01-01T00:00:00Z" }), status: "signed-out" },
+    { name: "unauthorized", fetch: async () => response(null, { ok: false, status: 401 }), status: "signed-out" },
+    { name: "network", fetch: async () => { throw new Error("private-proxy-secret"); }, status: "error", message: /connection|network/i },
+    { name: "deadline", timeout: true, fetch: async (_url, { signal }) => {
+      await new Promise(resolve => setImmediate(resolve));
+      signal.throwIfAborted();
+      throw new Error("Expected the session deadline to abort");
+    }, status: "error", message: /timed out/i },
+    { name: "server", fetch: async () => response(null, { ok: false, status: 503 }), status: "error", message: /503/ },
+    { name: "html", fetch: async () => response(null, { headers: { get: () => "text/html" } }), status: "error" },
+    { name: "redirect", fetch: async () => response(validSession, { url: "https://example.com/api/auth/session" }), status: "error" },
+    { name: "invalid JSON", fetch: async () => response(null, { json: async () => { throw new SyntaxError("private-response"); } }), status: "error" },
+    { name: "renderer", rendererError: true, status: "error", message: /browser/i },
+  ];
+  for (const item of cases) {
+    const fixture = {
+      state: { authenticated: true }, activeTraceId: null, manualOperation: null,
+      view: { webContents: {
+        isDestroyed: () => false, getURL: () => url,
+        executeJavaScript: async script => {
+          if (item.rendererError) throw new Error("private-renderer-error");
+          return await vm.runInNewContext(script, {
+            location: { href: url }, document: { readyState: "complete", querySelectorAll: () => [{
+              isConnected: true, getBoundingClientRect: () => ({ width: 100, height: 30 }),
+            }] }, getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+            URL, AbortController, fetch: item.fetch,
+            setTimeout: callback => item.timeout ? setImmediate(callback) : null,
+            clearTimeout: handle => handle && clearImmediate(handle),
+          });
+        },
+      } },
+      setState(patch) { this.state = { ...this.state, ...patch }; },
+      snapshot() { return { ...this.state }; }, logger: { info() {} },
+    };
+    const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+    assert.equal(result.status, item.status, item.name);
+    assert.equal(result.authenticated, item.authenticated === true, item.name);
+    if (item.message) assert.match(result.message, item.message, item.name);
+    assert.doesNotMatch(JSON.stringify(result), /private-/);
+  }
 });
 
 test("authentication windows stay inside the launcher-owned browser partition", () => {
@@ -1571,9 +1697,12 @@ test("a viewport-refresh heartbeat reapplies hidden emulation before CDP reconne
   assert.equal(tab.deviceEmulationDirty, false);
 });
 
-test("an uninitialized browser surface is reaped instead of remaining as a gray orphan tab", () => {
+test("an expired browser surface cancels its runtime before releasing the tab", async () => {
   const closed = [];
   const warnings = [];
+  const cancellations = [];
+  let acknowledge;
+  const cancelled = new Promise(resolve => { acknowledge = resolve; });
   const tab = {
     id: "tab-orphan",
     traceId: "trace_orphan",
@@ -1592,6 +1721,7 @@ test("an uninitialized browser surface is reaped instead of remaining as a gray 
   };
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map([[tab.id, tab]]),
+    cancelTurn: (traceId, reason) => { cancellations.push({ traceId, reason }); return cancelled; },
     closedTurnOwners: new Map(),
     selectedTabId: tab.id,
     window: { contentView: { removeChildView: () => closed.push("view") } },
@@ -1602,18 +1732,48 @@ test("an uninitialized browser surface is reaped instead of remaining as a gray 
     logger: { warn: (event, detail) => warnings.push([event, detail]) },
   });
 
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 101);
+  const cleanup = BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 101);
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 102);
+  await Promise.resolve();
+  assert.deepEqual(cancellations, [{ traceId: tab.traceId, reason: "browser_surface_bootstrap_timeout" }]);
+  assert.equal(fixture.turnTabs.has(tab.id), true);
+  assert.deepEqual(closed, []);
+  acknowledge();
+  await cleanup;
 
   assert.equal(fixture.turnTabs.size, 0);
   assert.equal(fixture.selectedTabId, "home");
   assert.equal(fixture.closedTurnOwners.get(tab.traceId), tab.helperPid);
   assert.deepEqual(closed, ["view", "contents"]);
-  assert.deepEqual(warnings, [["browser.orphan_turn_reaped", {
+  assert.deepEqual(warnings, ["browser.orphan_turn_expired", "browser.orphan_turn_reaped"].map(event => [event, {
     tabId: tab.id,
     traceId: tab.traceId,
     helperPid: tab.helperPid,
     evidence: "browser_surface_bootstrap_timeout",
-  }]]);
+  }]));
+});
+
+test("expiry cancellation preserves a changed owner and keeps failed cleanup visible", async () => {
+  for (const outcome of ["reused", "failed"]) {
+    const removed = [], warnings = [];
+    const tab = { id: "expiry-race", traceId: "trace_expiry", helperPid: 123,
+      status: "running", bootstrapReady: true, lastHeartbeatAt: 0 };
+    const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+      turnTabs: new Map([[tab.id, tab]]),
+      cancelTurn: async () => {
+        if (outcome === "failed") throw new Error("control unavailable");
+        tab.traceId = "trace_replacement";
+      },
+      removeTurnTab: () => removed.push(tab.id),
+      logger: { warn: event => warnings.push(event) },
+    });
+    await fixture.reapExpiredTurnTabs(120_000);
+    assert.deepEqual(removed, []);
+    assert.equal(fixture.turnTabs.get(tab.id), tab);
+    assert.equal(tab.expiryCancellation, undefined);
+    assert.equal(warnings.includes("browser.orphan_turn_cancel_failed"), outcome === "failed");
+    assert.equal(warnings.includes("browser.orphan_turn_reaped"), outcome !== "failed");
+  }
 });
 
 test("removing the final turn tab keeps the descriptor-owned idle host attached offscreen", () => {
@@ -2254,6 +2414,7 @@ test("a retained conversation is not reused for a different connector identity",
       assert.deepEqual(args, ["trace_next", 222, conversationKey, "Other Connector"]);
       return created;
     },
+    writeDescriptor() {},
     syncViewVisibility() {},
     publishState() {},
     snapshot: () => ({ tabs: [] }),
@@ -2294,6 +2455,7 @@ test("an Automatic turn never reuses a retained Zero Risk conversation", async (
     turnTabs: new Map([[retained.id, retained]]),
     userCancelledTurnOwners: new Map(),
     createTurnTab: () => ({ id: "automatic-fresh", surfaceId: "surface-fresh" }),
+    writeDescriptor() {},
     syncViewVisibility() {},
     publishState() {},
     snapshot: () => ({ tabs: [] }),
@@ -2346,6 +2508,7 @@ test("a connector conversation is not reused until its connector was bound", asy
     turnTabs: new Map([[retained.id, retained]]),
     userCancelledTurnOwners: new Map(),
     createTurnTab: () => ({ id: "fresh", surfaceId: "surface-fresh" }),
+    writeDescriptor() {},
     syncViewVisibility() {},
     publishState() {},
     snapshot: () => ({ tabs: [] }),
@@ -2840,85 +3003,87 @@ test("a retained manual chat copies only its incremental resume prompt", () => {
   clearTimeout(fixture.turnTabs.get(second.tabId).manualDeadlineTimer);
 });
 
-test("same-document navigation preserves a retained manual chat while a real page change invalidates it", () => {
-  const { fixture, clipboardWrites } = manualTurnFixture();
-  const conversationKey = "a".repeat(64);
-  const first = fixture.beginManualTurn(
-    "manual_trace_initial_navigation",
-    process.pid,
-    "full initial context",
-    conversationKey,
-  );
-  fixture.confirmManualSent(first.tabId);
-  fixture.markManualTurnStarted("manual_trace_initial_navigation", process.pid);
-  fixture.endManualTurn("manual_trace_initial_navigation", process.pid, "completed", true);
-
-  const retained = fixture.turnTabs.get(first.tabId);
-  const contents = new EventEmitter();
-  contents.setWindowOpenHandler = () => {};
-  contents.getURL = () => "https://chatgpt.com/?temporary-chat=true";
-  retained.view = { webContents: contents };
-  fixture.bindManualTurnContents(retained);
-
-  retained.url = "https://chatgpt.com/c/retained";
-  contents.emit("did-start-navigation", {}, `${retained.url}#answer`, true, true);
-  contents.emit("did-navigate-in-page", {}, `${retained.url}#answer`, true);
-  assert.equal(retained.conversationKey, conversationKey);
-
-  contents.emit("did-start-navigation", {}, "https://chatgpt.com/", false, true);
-
-  const second = fixture.beginManualTurn(
-    "manual_trace_after_navigation",
-    process.pid,
-    "full history after the retained chat was closed",
-    conversationKey,
-    "only the new request",
-  );
-  assert.notEqual(second.tabId, first.tabId);
-  assert.equal(second.reused, false);
-  assert.deepEqual(clipboardWrites, [
-    "full initial context",
-    "full history after the retained chat was closed",
-  ]);
-  for (const tab of fixture.turnTabs.values()) clearTimeout(tab.manualDeadlineTimer);
+test("manual navigation preserves initial setup but retires a completed page's continuation", () => {
+  for (const inPlace of [false, true]) {
+    const { fixture, clipboardWrites } = manualTurnFixture();
+    const key = "a".repeat(64);
+    const first = fixture.beginManualTurn("manual_initial", process.pid, "original context", key);
+    const tab = fixture.turnTabs.get(first.tabId);
+    const contents = new EventEmitter();
+    contents.setWindowOpenHandler = () => {};
+    tab.view = { webContents: contents };
+    fixture.bindManualTurnContents(tab);
+    const navigate = (url, mainFrame = true) => inPlace
+      ? contents.emit("did-navigate-in-page", {}, url, mainFrame)
+      : contents.emit("did-start-navigation", {}, url, false, mainFrame);
+    navigate("https://chatgpt.com/?temporary-chat=true");
+    assert.equal(tab.conversationKey, key);
+    fixture.confirmManualSent(tab.id);
+    fixture.markManualTurnStarted("manual_initial", process.pid);
+    fixture.endManualTurn("manual_initial", process.pid, "completed", true);
+    navigate("https://example.com/frame", false);
+    assert.equal(tab.conversationKey, key);
+    navigate("https://chatgpt.com/c/another-conversation");
+    const next = fixture.beginManualTurn("manual_next", process.pid, "full history plus request", key, "delta only");
+    assert.equal(next.reused, false);
+    assert.notEqual(next.tabId, first.tabId);
+    assert.deepEqual(clipboardWrites, ["original context", "full history plus request"]);
+    fixture.cancelManualTurn("manual_next", process.pid);
+  }
 });
 
-test("a real page change during a resumed manual turn fails instead of continuing with only its delta", async () => {
-  const { fixture } = manualTurnFixture();
-  const conversationKey = "a".repeat(64);
-  const first = fixture.beginManualTurn(
-    "manual_trace_initial_resume_navigation",
-    process.pid,
-    "full initial context",
-    conversationKey,
-  );
-  fixture.confirmManualSent(first.tabId);
-  fixture.markManualTurnStarted("manual_trace_initial_resume_navigation", process.pid);
-  fixture.endManualTurn("manual_trace_initial_resume_navigation", process.pid, "completed", true);
+test("navigation cannot silently continue a resumed manual turn with only its delta", async () => {
+  for (const state of ["awaiting-user", "sent", "running"]) {
+    const { fixture } = manualTurnFixture();
+    const key = "a".repeat(64);
+    const first = fixture.beginManualTurn("manual_initial", process.pid, "original context", key);
+    fixture.confirmManualSent(first.tabId);
+    fixture.endManualTurn("manual_initial", process.pid, "completed", true);
+    const next = fixture.beginManualTurn("manual_next", process.pid, "full history plus request", key, "delta only");
+    const tab = fixture.turnTabs.get(next.tabId);
+    const contents = new EventEmitter();
+    contents.setWindowOpenHandler = () => {};
+    tab.view = { webContents: contents };
+    fixture.bindManualTurnContents(tab);
+    if (state !== "awaiting-user") fixture.confirmManualSent(tab.id);
+    if (state === "running") fixture.markManualTurnStarted("manual_next", process.pid);
+    tab.url = "https://chatgpt.com/c/retained";
+    for (const url of [tab.url, `${tab.url}#answer`]) {
+      contents.emit("did-start-navigation", {}, url, true, true);
+      contents.emit("did-navigate-in-page", {}, url, true);
+      assert.equal(tab.status, "running");
+      assert.equal(tab.manualState, state);
+      assert.equal(tab.conversationKey, key);
+    }
+    const terminal = fixture.waitManualTerminal("manual_next", process.pid, 1_000);
+    // Even reloading the same URL replaces the document; it is not a history-state update.
+    contents.emit("did-start-navigation", {}, tab.url, false, true);
+    assert.equal(tab.status, "error");
+    assert.equal((await terminal).status, "failed");
+    assert.match(tab.message, /full context/);
+    assert.throws(() => fixture.confirmManualSent(tab.id), /no longer/);
+    assert.throws(() => fixture.endManualTurn("manual_next", process.pid, "completed", true), /cannot complete/);
+    fixture.endManualTurn("manual_next", process.pid, "failed");
+    const fresh = fixture.beginManualTurn("manual_recovery", process.pid, "full history plus request", key, "delta only");
+    assert.equal(fresh.reused, false);
+    fixture.cancelManualTurn("manual_recovery", process.pid);
+  }
+});
 
-  const second = fixture.beginManualTurn(
-    "manual_trace_resumed_navigation",
-    process.pid,
-    "full history that should not be replayed",
-    conversationKey,
-    "delta only",
-  );
-  fixture.confirmManualSent(second.tabId);
-  fixture.markManualTurnStarted("manual_trace_resumed_navigation", process.pid);
-  const resumed = fixture.turnTabs.get(second.tabId);
-  resumed.url = "https://chatgpt.com/c/retained";
+test("navigation after the first manual submission prevents retaining the changed page", () => {
+  const { fixture } = manualTurnFixture();
+  const first = fixture.beginManualTurn("manual_initial", process.pid, "original context", "a".repeat(64));
+  const tab = fixture.turnTabs.get(first.tabId);
   const contents = new EventEmitter();
   contents.setWindowOpenHandler = () => {};
-  resumed.view = { webContents: contents };
-  fixture.bindManualTurnContents(resumed);
-
-  const terminal = fixture.waitManualTerminal("manual_trace_resumed_navigation", process.pid, 1_000);
-  contents.emit("did-start-navigation", {}, resumed.url, false, true);
-
-  assert.equal(resumed.status, "error");
-  assert.equal((await terminal).status, "failed");
-  assert.match(resumed.message, /full context/);
-  fixture.endManualTurn("manual_trace_resumed_navigation", process.pid, "failed");
+  tab.view = { webContents: contents };
+  fixture.bindManualTurnContents(tab);
+  fixture.confirmManualSent(tab.id);
+  contents.emit("did-navigate-in-page", {}, "https://chatgpt.com/c/created-chat", true);
+  fixture.markManualTurnStarted("manual_initial", process.pid);
+  fixture.endManualTurn("manual_initial", process.pid, "completed", true);
+  assert.equal(fixture.turnTabs.has(tab.id), false);
+  assert.equal(fixture.manualCompletionSignals.has("manual_initial"), true);
 });
 
 test("manual start rejects a different prompt after Sent instead of replaying a trace", () => {
@@ -3065,6 +3230,7 @@ test("interaction-mode changes preserve mode-bound retained tabs on failure and 
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     getBrowserInteractionMode: () => "manual",
     interactionModeOverride: null,
+    writeDescriptor: () => {},
     manualOperation: null,
     turnTabs: new Map([
       [retainedAutomatic.id, retainedAutomatic],
@@ -3113,6 +3279,7 @@ test("switching from Zero Risk to Automatic marks the already-loaded primary sur
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     getBrowserInteractionMode: () => "manual",
     interactionModeOverride: null,
+    writeDescriptor: () => {},
     manualOperation: null,
     turnTabs: new Map(),
     selectedTabId: "home",
@@ -3138,6 +3305,7 @@ test("a failed Automatic ownership proof stays inside the runtime rollback bound
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     getBrowserInteractionMode: () => "manual",
     interactionModeOverride: null,
+    writeDescriptor: () => {},
     manualOperation: null,
     turnTabs: new Map([[retained.id, retained]]),
     selectedTabId: retained.id,

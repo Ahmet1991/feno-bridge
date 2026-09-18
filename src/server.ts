@@ -8,7 +8,7 @@ import {
   cancelStructuredCompactionNativeTurn,
   cancelStructuredCompactionTrace,
 } from "./adapters/chatgpt-web/compaction-handoff";
-import { chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
+import { ChatGptWebAdapterError, chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
 import {
   CHATGPT_TURN_REVISION_CONFLICT_MESSAGE,
   extractChatGptTurnIdentity,
@@ -35,8 +35,8 @@ import {
   requireChatGptWebModelRoute,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
+import { forwardNativeCodexRequest, type NativeFetch, type NativeImageEndpoint } from "./native-passthrough";
 import { fetchNativeCodex } from "./native-network";
-import { forwardNativeCodexRequest, type NativeFetch } from "./native-passthrough";
 import {
   buildCompactV1Output,
   COMPACT_PROMPT,
@@ -50,7 +50,7 @@ import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
 
-type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified";
+type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
 
 export interface NativeCodexTurnIdentity {
   threadId: string;
@@ -380,10 +380,7 @@ interface ModelCatalogFailure {
 
 function modelCatalogFailure(stage: ModelCatalogFailure["stage"], error: unknown): ModelCatalogFailure {
   const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-  return {
-    stage,
-    ...(typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? { code } : {}),
-  };
+  return { stage, ...(typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? { code } : {}) };
 }
 
 export async function modelsRequest(
@@ -430,6 +427,22 @@ export async function nativeSearchRequest(
 ): Promise<Response> {
   try {
     return await forwardNativeCodexRequest(req, "alpha/search", fetchUpstream);
+  } catch (error) {
+    return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function nativeImagesRequest(
+  req: Request,
+  endpoint: NativeImageEndpoint,
+  fetchUpstream?: NativeFetch,
+): Promise<Response> {
+  const authorization = req.headers.get("authorization") ?? "";
+  if (!authorization.startsWith("Bearer ") || authorization.length <= "Bearer ".length) {
+    return formatErrorResponse(401, "authentication_error", "Native image requests require incoming Codex Bearer authorization");
+  }
+  try {
+    return await forwardNativeCodexRequest(req, endpoint, fetchUpstream);
   } catch (error) {
     return formatErrorResponse(502, "upstream_error", error instanceof Error ? error.message : String(error));
   }
@@ -797,10 +810,7 @@ export function startServer(
   let lastSuccessfulModelCatalogRequestAt: string | null = null;
   let modelCatalogRequests = 0;
   let lastModelCatalogResult: {
-    request: number;
-    at: string;
-    status: number;
-    failure?: ModelCatalogFailure;
+    request: number; at: string; status: number; failure?: ModelCatalogFailure;
   } | null = null;
   const httpTurns = new HttpTurnCounter();
   const activity = () => ({
@@ -845,17 +855,31 @@ export function startServer(
       if (req.method === "POST" && url.pathname === "/admin/cancel-turn") {
         if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
         let traceId: string;
+        let leaseFailure: "browser_surface_bootstrap_timeout" | "helper_heartbeat_expired" | undefined;
         try {
-          const body = await req.json() as { traceId?: unknown };
+          const body = await req.json() as { traceId?: unknown; reason?: unknown };
           traceId = typeof body?.traceId === "string" ? body.traceId : "";
           if (!/^[A-Za-z0-9_-]{6,128}$/.test(traceId)) throw new Error("traceId is invalid");
+          if (body.reason !== undefined) {
+            if (body.reason !== "browser_surface_bootstrap_timeout" && body.reason !== "helper_heartbeat_expired") {
+              throw new Error("Browser turn cancellation reason is invalid");
+            }
+            leaseFailure = body.reason;
+          }
         } catch (error) {
           return Response.json(
             { status: "error", error: error instanceof Error ? error.message : String(error) },
             { status: 400 },
           );
         }
-        const reason = chatGptBrowserTabClosedError();
+        const reason = leaseFailure
+          ? new ChatGptWebAdapterError(
+            leaseFailure === "browser_surface_bootstrap_timeout"
+              ? "The ChatGPT browser turn did not finish browser setup before its lease expired. The turn was stopped."
+              : "The ChatGPT browser helper stopped reporting progress and its lease expired. The turn was stopped.",
+            { status: 504, errorType: "server_error", code: leaseFailure, retryable: false },
+          )
+          : chatGptBrowserTabClosedError();
         // Revoke the owner first. This prevents a compaction callback that observes its retained
         // source being cancelled below from starting a fresh fallback during operator shutdown.
         const compactionCancellation = cancelStructuredCompactionTrace(traceId, reason);
@@ -972,24 +996,13 @@ export function startServer(
           const request = ++modelCatalogRequests;
           const started = Date.now();
           const recordResult = (response: Response, failure?: ModelCatalogFailure): Response => {
-            const result = {
-              request,
-              at: new Date().toISOString(),
-              status: response.status,
-              ...(failure ? { failure } : {}),
-            };
-            if (!lastModelCatalogResult || request > lastModelCatalogResult.request) {
-              lastModelCatalogResult = result;
-            }
+            const result = { request, at: new Date().toISOString(), status: response.status, ...(failure ? { failure } : {}) };
+            // An older, slower request must not replace a newer completed result.
+            if (!lastModelCatalogResult || request > lastModelCatalogResult.request) lastModelCatalogResult = result;
             if (!response.ok) {
               try {
-                console.warn(`[codex-chatgpt-web] model_catalog_failed ${JSON.stringify({
-                  ...result,
-                  elapsedMs: Date.now() - started,
-                })}`);
-              } catch {
-                // Logging must not replace the catalog result.
-              }
+                console.warn(`[codex-chatgpt-web] model_catalog_failed ${JSON.stringify({ ...result, elapsedMs: Date.now() - started })}`);
+              } catch { /* Logging must not replace the catalog result. */ }
             }
             return response;
           };
@@ -1062,6 +1075,19 @@ export function startServer(
           req.signal,
           process.platform,
           "search",
+        );
+      }
+      if (req.method === "POST"
+        && (url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits")) {
+        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        const endpoint: NativeImageEndpoint = url.pathname === "/v1/images/generations"
+          ? "images/generations"
+          : "images/edits";
+        return httpTurns.track(
+          signal => nativeImagesRequest(new Request(req, { signal }), endpoint, dependencies.fetchUpstream),
+          req.signal,
+          process.platform,
+          endpoint,
         );
       }
       return new Response("Not found", { status: 404 });

@@ -49,10 +49,8 @@ test("MCP observation failures, arbitrary IDs and unknown names never alter tran
   let received = 0;
   let closed = false;
   const transport: Transport = {
-    start: async () => {},
-    close: async () => {},
-    onmessage: () => { received += 1; },
-    onclose: () => { closed = true; },
+    start: async () => {}, close: async () => {},
+    onmessage: () => { received += 1; }, onclose: () => { closed = true; },
     send: async () => { throw originalError; },
   };
   observeMcpToolCalls(transport, new Set(["codex_exec"]), event => {

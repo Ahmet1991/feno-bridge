@@ -18,7 +18,10 @@ import {
 export { DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS } from "./input-tokens";
 
 export interface ChatGptWebCapacityCompileOptions
-  extends Omit<CompileChatGptWebPromptOptions, "multipartParts" | "experimentalMultipartParts" | "preserveCompactionHistory"> {
+  extends Omit<
+    CompileChatGptWebPromptOptions,
+    "multipartParts" | "experimentalMultipartParts" | "multipartRecordWeightCache" | "preserveCompactionHistory"
+  > {
   maxMessageChars?: number;
 }
 
@@ -209,8 +212,10 @@ export function compileChatGptWebPromptWithinPageCapacity(
     throw new Error("ChatGPT browser maxMessageChars must be a positive safe integer");
   }
   const { maxMessageChars: _ignored, ...compileOptions } = options;
+  const multipartRecordWeightCache = new Map<string, { tokens: number; chars: number }>();
   const baseOptions = {
     ...compileOptions,
+    multipartRecordWeightCache,
     preserveCompactionHistory: true,
   } satisfies CompileChatGptWebPromptOptions;
   const inline = compileChatGptWebPrompt(parsed, capabilities, turnToken, baseOptions);

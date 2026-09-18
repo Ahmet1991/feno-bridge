@@ -263,6 +263,8 @@ function verifyHistoricalEnvironmentMessages(
       if (line.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       const item = parseJsonLine(line);
       const payload = record(item.payload);
+      // Core writes task_started before this turn's environment update. Merely finding matching
+      // XML somewhere in the file would also accept a current update as historical.
       if (item.type === "event_msg" && payload?.type === "task_started" && payload.turn_id === turnId) {
         if (pending.size === 0) return;
         throw new Error("Codex rollout does not authenticate the historical environment messages");
