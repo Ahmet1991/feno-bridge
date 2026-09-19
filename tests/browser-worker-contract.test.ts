@@ -15,6 +15,7 @@ import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
 import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { ChatGptPersonalizationProofCache } from "../src/adapters/chatgpt-web/personalization-proof-cache";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -708,12 +709,14 @@ test("submission acceptance retries one transient multiple-turn observation insi
 test("connector preflight retries once after reloading a clean Temporary Chat", async () => {
   let reloaded = false;
   let reloads = 0;
+  let composerText = "";
   const timeoutError = new Error("structural control missing");
   timeoutError.name = "TimeoutError";
   const composer = {
-    fill: async () => {},
+    fill: async (value: string) => { composerText = value; },
     focus: async () => {},
-    pressSequentially: async () => {},
+    pressSequentially: async (value: string) => { composerText += value; },
+    evaluate: async () => ({ text: composerText, focused: true }),
   };
   const namedControl = (name: string | RegExp) => ({
     filter: () => namedControl(name),
@@ -741,8 +744,8 @@ test("connector preflight retries once after reloading a clean Temporary Chat", 
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     config: { appName: "Codex Native2" },
     activeComposer: async () => composer,
-    clearChatGptComposerState: async () => {},
-    connectorIsSelected: async () => true,
+    clearChatGptComposerState: async () => { composerText = ""; },
+    connectorIsSelected: async () => reloaded,
   });
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown): Promise<unknown>;
@@ -1599,7 +1602,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   }, page);
 
   expect(resolved).toBe(selectedComposer);
-  expect(activeComposerCalls).toBe(3);
+  expect(activeComposerCalls).toBe(4);
   expect(calls).toEqual([
     ["fill", ""],
     ["fill", ""],
@@ -1678,7 +1681,81 @@ test("repeated connector verification reuses its selected pill before clearing t
   }, page, async checkpoint => { checkpoints.push(checkpoint); })).resolves.toBe(selectedComposer);
 
   expect(fillCalls).toBe(0);
-  expect(checkpoints).toEqual(["personalization-already-enabled", "connector-already-selected"]);
+  expect(checkpoints).toEqual(["connector-already-selected"]);
+});
+
+test.each([false, true])("cached personalization selects the connector without re-proving and recovers within the same turn after a missing menu (missing=%s)", async missing => {
+  const cache = new ChatGptPersonalizationProofCache();
+  let selected = false;
+  let menuMissing = missing;
+  let personalizationChecks = 0;
+  let clearCount = 0;
+  const checkpoints: string[] = [];
+  const composer = {
+    fill: async () => {}, focus: async () => {}, pressSequentially: async () => {},
+    press: async (key: string) => { if (key === "Enter") selected = true; },
+  };
+  const appResult = {
+    waitFor: async () => {
+      if (menuMissing) {
+        menuMissing = false;
+        const error = new Error("connector absent");
+        error.name = "TimeoutError";
+        throw error;
+      }
+    },
+    count: async () => 1,
+    getAttribute: async () => "",
+  };
+  const page = {
+    getByRole: (...args: Parameters<typeof personalizedTemporaryChatRole>) => {
+      personalizationChecks += 1;
+      return personalizedTemporaryChatRole(...args);
+    },
+    getByText: () => ({}),
+    locator: () => ({ filter: () => appResult }),
+  };
+  cache.remember(page, "stable-session");
+  const prototype = ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown, capture: (checkpoint: string) => Promise<void>): Promise<unknown>;
+  };
+  const worker = Object.assign(Object.create(prototype), {
+    config: { appName: "Codex Native2" },
+    activeComposer: async () => composer,
+    connectorIsSelected: async () => selected,
+    selectedConnectorControl: () => ({ waitFor: async () => {} }),
+    connectorMentionRowTitles: async () => [],
+    clearChatGptComposerState: async () => { clearCount += 1; },
+    personalizationSessionKey: async () => "stable-session",
+    personalizationProofCache: cache,
+  }) as typeof prototype;
+  await expect(worker.selectConnector(page, async checkpoint => { checkpoints.push(checkpoint); })).resolves.toBe(composer);
+  expect(selected).toBeTrue();
+  expect(personalizationChecks).toBe(missing ? 2 : 0);
+  expect(clearCount).toBe(missing ? 1 : 0);
+  expect(checkpoints.includes("personalization-cache-miss")).toBe(missing);
+  expect(cache.isValid(page, "stable-session")).toBeTrue();
+});
+
+test("a closed, exactly matching effort label skips opening the model menu", async () => {
+  const effortControl = {
+    last() { return this; }, waitFor: async () => {},
+    getAttribute: async () => "false", innerText: async () => "High",
+  };
+  const composerForm = { locator: () => effortControl };
+  const composer = { locator: () => composerForm };
+  const hidden = { filter() { return this; }, last() { return this; }, isVisible: async () => false,
+    waitFor: async () => new Promise<void>(() => {}) };
+  const page = { url: () => "https://chatgpt.com/?temporary-chat=true", locator: () => hidden };
+  const prototype = ChatGptBrowserWorker.prototype as unknown as {
+    selectModelAndEffort(page: unknown, model: string, effort: string, capabilities: unknown): Promise<{
+      selection?: { label: string }; effort: string;
+    }>;
+  };
+  const selected = await prototype.selectModelAndEffort.call({ activeComposer: async () => composer }, page,
+    "gpt-5.6-sol", "high", { localToolsEnabled: true, solAvailable: true, extraHighAvailable: false, proAvailable: false });
+  expect(selected.selection?.label).toBe("High");
+  expect(selected.effort).toBe("high");
 });
 
 test("connector selection retriggers the complete mention after a fresh-page hydration miss", async () => {
@@ -2258,6 +2335,7 @@ test("a lost connector mention cannot be used as evidence to change personalizat
   await expect(selectConnector.call({
     config: { appName: CHATGPT_CONNECTOR_NAME },
     activeComposer: async () => composer,
+    connectorIsSelected: async () => false,
     clearChatGptComposerState: async () => { cleanupCalls += 1; },
   }, page, async checkpoint => { checkpoints.push(checkpoint); })).rejects.toMatchObject({
     code: "prompt_attachment_integrity", retryable: false,

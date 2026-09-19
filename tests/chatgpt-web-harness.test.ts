@@ -274,7 +274,7 @@ function toolResult(value: Record<string, unknown>): BrokerToolResult {
   };
 }
 
-test("browser page capacity keeps a prompt inline when it fits", async () => {
+test.each([false, true])("browser page capacity keeps a prompt inline when it fits (Bigger Context=%s)", async experimentalBiggerContext => {
   const socketPath = brokerTestEndpoint(`cgw-page-capacity-inline-${process.pid}-${Date.now()}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -284,7 +284,7 @@ test("browser page capacity keeps a prompt inline when it fits", async () => {
       localToolsEnabled: false,
       solAvailable: true,
       proAvailable: true,
-      experimentalBiggerContext: false,
+      experimentalBiggerContext,
       maxMessageChars: 20_000,
     } as CodexProviderConfig["chatgptWeb"],
   };
@@ -315,7 +315,7 @@ test("browser page capacity keeps a prompt inline when it fits", async () => {
   }
 });
 
-test("browser page capacity uses multipart even when Bigger Context is disabled", async () => {
+test.each([false, true])("browser page capacity uses dynamic multipart when the prompt does not fit (Bigger Context=%s)", async experimentalBiggerContext => {
   const socketPath = brokerTestEndpoint(`cgw-page-capacity-multipart-${process.pid}-${Date.now()}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -325,7 +325,7 @@ test("browser page capacity uses multipart even when Bigger Context is disabled"
       localToolsEnabled: false,
       solAvailable: true,
       proAvailable: true,
-      experimentalBiggerContext: false,
+      experimentalBiggerContext,
       maxMessageChars: 9_000,
     } as CodexProviderConfig["chatgptWeb"],
   };
