@@ -20,7 +20,7 @@ const {
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
-const { syncBundledGuidance } = require("./guidance.cjs");
+const { syncBundledGuidance, syncGlobalRouting } = require("./guidance.cjs");
 const {
   createLogger,
   exportSanitizedLogs,
@@ -1147,6 +1147,10 @@ async function start() {
         codexHome: LAUNCHER_PROFILE.codexHome,
       });
       logger.info("launcher.guidance_sync", { status: result.status });
+      if (process.platform === "win32") {
+        const routing = syncGlobalRouting({ codexHome: LAUNCHER_PROFILE.codexHome });
+        logger.info("launcher.global_routing_sync", { status: routing.status });
+      }
     } catch (error) {
       logger.warn("launcher.guidance_sync_failed", {
         message: error instanceof Error ? error.message : String(error),
