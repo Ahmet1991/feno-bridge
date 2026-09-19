@@ -315,6 +315,14 @@ function loadCommittedBrowserSurface(
   });
 }
 
+function browserOperationBlockMessage(browserHost, settingName) {
+  if (browserHost.activeTraceId) {
+    return `Finish or cancel active ChatGPT turns before changing ${settingName}`;
+  }
+  const operation = browserHost.currentOperation();
+  return operation ? `Wait for ${operation} to finish before changing ${settingName}` : null;
+}
+
 class BrowserHost {
   constructor({
     window,
@@ -3179,6 +3187,7 @@ class BrowserHost {
 
 module.exports = {
   allowedAuthUrl,
+  browserOperationBlockMessage,
   BrowserHost,
   BrowserTurnCancelledError,
   CHATGPT_VIEWPORT_CSS,

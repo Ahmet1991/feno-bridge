@@ -17,7 +17,7 @@ const {
   shell,
   Tray,
 } = require("electron");
-const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
+const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const { syncBundledGuidance } = require("./guidance.cjs");
@@ -929,9 +929,8 @@ function registerIpc({ logger, stateStore }) {
     return state;
   });
   handle("launcher:skill-attachments", async (_event, enabled) => {
-    if (browserHost.activeTraceId || browserHost.currentOperation()) {
-      throw new Error("Finish or cancel active ChatGPT turns before changing Skills as files");
-    }
+    const blocked = browserOperationBlockMessage(browserHost, "Skills as files");
+    if (blocked) throw new Error(blocked);
     const result = await runtimeHost.setSkillAttachments(enabled === true);
     const state = stateStore.update({
       experimentalSkillAttachments: result.enabled,
@@ -943,14 +942,8 @@ function registerIpc({ logger, stateStore }) {
     return state;
   });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
-    const browserOperation = browserHost.currentOperation();
-    if (browserHost.activeTraceId || browserOperation) {
-      throw new Error(
-        browserHost.activeTraceId
-          ? "Finish or cancel active ChatGPT turns before changing Zero Risk model profiles"
-          : `Finish ${browserOperation} before changing Zero Risk model profiles`,
-      );
-    }
+    const blocked = browserOperationBlockMessage(browserHost, "Zero Risk model profiles");
+    if (blocked) throw new Error(blocked);
     const result = await runtimeHost.setZeroRiskPro(enabled === true);
     const state = stateStore.update({
       zeroRiskProEnabled: result.enabled,
@@ -967,14 +960,8 @@ function registerIpc({ logger, stateStore }) {
     if (current.browserInteractionMode === mode) {
       return { state: current, credentialsRequired: false, targetMode: mode };
     }
-    const browserOperation = browserHost.currentOperation();
-    if (browserHost.activeTraceId || browserOperation) {
-      throw new Error(
-        browserHost.activeTraceId
-          ? "Finish or cancel active ChatGPT turns before changing browser interaction mode"
-          : `Finish ${browserOperation} before changing browser interaction mode`,
-      );
-    }
+    const blocked = browserOperationBlockMessage(browserHost, "browser interaction mode");
+    if (blocked) throw new Error(blocked);
     if (!runtimeHost.mcpCredentialsConfigured(mode)) {
       return { state: current, credentialsRequired: true, targetMode: mode };
     }

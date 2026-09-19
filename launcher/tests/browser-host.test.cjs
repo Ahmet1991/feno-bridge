@@ -14,6 +14,7 @@ const {
 } = require("../electron/browser-state.cjs");
 const {
   allowedAuthUrl,
+  browserOperationBlockMessage,
   BrowserHost,
   HEAVY_PHASE_WAIT_TIMEOUT_MS,
   IDLE_BROWSER_URL,
@@ -26,6 +27,21 @@ const {
   navigationErrorForLog,
   navigationOriginForLog,
 } = require("../electron/browser-host.cjs");
+
+test("settings guards distinguish active turns from named browser operations", () => {
+  assert.equal(
+    browserOperationBlockMessage({ activeTraceId: "trace-1", currentOperation: () => "ChatGPT login" }, "Skills as files"),
+    "Finish or cancel active ChatGPT turns before changing Skills as files",
+  );
+  assert.equal(
+    browserOperationBlockMessage({ activeTraceId: null, currentOperation: () => "ChatGPT login" }, "Skills as files"),
+    "Wait for ChatGPT login to finish before changing Skills as files",
+  );
+  assert.equal(
+    browserOperationBlockMessage({ activeTraceId: null, currentOperation: () => null }, "Skills as files"),
+    null,
+  );
+});
 
 test("manual prompt handoff keeps ordinary turns at thirty seconds and compaction at two minutes", () => {
   assert.equal(MANUAL_SUBMIT_TIMEOUT_MS, 30_000);

@@ -260,13 +260,18 @@ async function loginCommand(args: string[]): Promise<void> {
   stdout.write("Passkey session captured for Launcher verification.\n");
 }
 
-async function setupCommand(args: string[]): Promise<void> {
+export function parseSetupArgs(inputArgs: string[]): {
+  options: SetupOptions;
+  preflightOnly: boolean;
+  acknowledgedUnofficial: boolean;
+} {
+  const args = [...inputArgs];
   const preflightOnly = takeFlag(args, "--preflight-only");
   const browserOnly = takeFlag(args, "--browser-only");
   const full = takeFlag(args, "--full");
   if (browserOnly === full) throw new Error("Choose exactly one setup mode: --browser-only or --full");
   const portRaw = takeOption(args, "--port");
-  let acknowledged = takeFlag(args, "--acknowledge-unofficial");
+  const acknowledgedUnofficial = takeFlag(args, "--acknowledge-unofficial");
   const options: SetupOptions = {
     mode: full ? "full" : "browser-only",
     ...(portRaw ? { port: Number(portRaw) } : {}),
@@ -319,6 +324,14 @@ async function setupCommand(args: string[]): Promise<void> {
   options.restartService = takeFlag(args, "--restart-service");
   assertNoArgs(args);
 
+  return { options, preflightOnly, acknowledgedUnofficial };
+}
+
+async function setupCommand(args: string[]): Promise<void> {
+  const parsed = parseSetupArgs(args);
+  const { options, preflightOnly } = parsed;
+  let acknowledged = parsed.acknowledgedUnofficial;
+
   if (!acknowledged) {
     stdout.write(
       "This is independent, unofficial software. It automates your ChatGPT web session, can break when the UI changes, "
@@ -343,7 +356,7 @@ async function setupCommand(args: string[]): Promise<void> {
     && !reusableCredentials.runtimeKey
     && !existsSync(managedRuntimeKeyPath(interactionMode));
 
-  if (full && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
+  if (options.mode === "full" && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
     stdout.write("Full mode needs an OpenAI tunnel and a runtime key with Tunnels Read + Use.\n");
     stdout.write("Tunnels: https://platform.openai.com/settings/organization/tunnels\n");
     stdout.write("Runtime keys: https://platform.openai.com/settings/organization/api-keys\n");
@@ -601,7 +614,9 @@ async function main(): Promise<void> {
   else throw new Error(`Unknown command: ${command}\n\n${HELP}`);
 }
 
-main().catch(error => {
-  process.stderr.write(`codex-chatgpt-web: ${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  main().catch(error => {
+    process.stderr.write(`codex-chatgpt-web: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

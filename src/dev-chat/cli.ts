@@ -7,7 +7,7 @@ import {
   inspectLauncherBrowserHostLiveness,
   readLauncherBrowserHostDescriptor,
 } from "../launcher-browser-host";
-import { setupDevProfile } from "../setup";
+import { setupDevProfile, type SetupOptions } from "../setup";
 import { tunnelStatus } from "../tunnel";
 import {
   createLauncherDevAdapter,
@@ -74,6 +74,53 @@ function takeOption(args: string[], name: string): string | undefined {
   if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
   args.splice(index, 2);
   return value;
+}
+
+export function parseDevSetupArgs(inputArgs: string[], defaultDescriptorPath: string): SetupOptions {
+  const args = [...inputArgs];
+  const browserOnly = takeFlag(args, "--browser-only");
+  const full = takeFlag(args, "--full");
+  if (browserOnly === full) throw new Error("Choose exactly one DEV setup mode: --browser-only or --full");
+  const tunnelId = takeOption(args, "--tunnel-id");
+  const runtimeKeyFile = takeOption(args, "--runtime-key-file");
+  const descriptorPath = takeOption(args, "--browser-host-descriptor") ?? defaultDescriptorPath;
+  const acknowledgedUnofficial = takeFlag(args, "--acknowledge-unofficial");
+  const refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
+  const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
+  const manualBrowserInteraction = takeFlag(args, "--zero-risk-browser-interaction");
+  if (automaticBrowserInteraction && manualBrowserInteraction) {
+    throw new Error("Choose at most one browser interaction mode");
+  }
+  const skillAttachments = takeFlag(args, "--skill-attachments");
+  const inlineSkills = takeFlag(args, "--inline-skills");
+  if (skillAttachments && inlineSkills) throw new Error("Choose --skill-attachments or --inline-skills");
+  const autoApproveToolCalls = takeFlag(args, "--auto-approve-tool-calls");
+  const biggerContext = takeFlag(args, "--bigger-context");
+  const standardContext = takeFlag(args, "--standard-context");
+  if (biggerContext && standardContext) {
+    throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
+  }
+  const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
+  const zeroRiskDefault = takeFlag(args, "--zero-risk-default");
+  if (zeroRiskPro && zeroRiskDefault) {
+    throw new Error("Choose at most one Zero Risk model profile: --zero-risk-pro or --zero-risk-default");
+  }
+  if (args.length > 0) throw new Error(`Unknown DEV setup arguments: ${args.join(" ")}`);
+  return {
+    mode: full ? "full" : "browser-only",
+    browserHostDescriptorPath: descriptorPath,
+    refreshAccountCapabilities,
+    acknowledgedUnofficial,
+    ...(automaticBrowserInteraction || manualBrowserInteraction
+      ? { browserInteractionMode: manualBrowserInteraction ? "manual" : "automatic" }
+      : {}),
+    ...(biggerContext || standardContext ? { experimentalBiggerContext: biggerContext } : {}),
+    ...(skillAttachments || inlineSkills ? { experimentalSkillAttachments: skillAttachments } : {}),
+    ...(autoApproveToolCalls ? { autoApproveToolCalls: true } : {}),
+    ...(zeroRiskPro || zeroRiskDefault ? { zeroRiskProEnabled: zeroRiskPro } : {}),
+    ...(tunnelId ? { tunnelId } : {}),
+    ...(runtimeKeyFile ? { runtimeKeyFile } : {}),
+  };
 }
 
 function color(code: number, text: string): string {
@@ -337,41 +384,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
   }
   if (action === "setup") {
     activateDevProfileEnvironment(paths);
-    const browserOnly = takeFlag(args, "--browser-only");
-    const full = takeFlag(args, "--full");
-    if (browserOnly === full) throw new Error("Choose exactly one DEV setup mode: --browser-only or --full");
-    const tunnelId = takeOption(args, "--tunnel-id");
-    const runtimeKeyFile = takeOption(args, "--runtime-key-file");
-    const descriptorPath = takeOption(args, "--browser-host-descriptor") ?? paths.descriptorPath;
-    const acknowledgedUnofficial = takeFlag(args, "--acknowledge-unofficial");
-    const refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
-    const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
-    const manualBrowserInteraction = takeFlag(args, "--zero-risk-browser-interaction");
-    if (automaticBrowserInteraction && manualBrowserInteraction) {
-      throw new Error("Choose at most one browser interaction mode");
-    }
-    const skillAttachments = takeFlag(args, "--skill-attachments");
-    const inlineSkills = takeFlag(args, "--inline-skills");
-    if (skillAttachments && inlineSkills) throw new Error("Choose --skill-attachments or --inline-skills");
-    const biggerContext = takeFlag(args, "--bigger-context");
-    const standardContext = takeFlag(args, "--standard-context");
-    if (biggerContext && standardContext) {
-      throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
-    }
-    if (args.length > 0) throw new Error(`Unknown DEV setup arguments: ${args.join(" ")}`);
-    const result = await setupDevProfile({
-      mode: full ? "full" : "browser-only",
-      browserHostDescriptorPath: descriptorPath,
-      refreshAccountCapabilities,
-      acknowledgedUnofficial,
-      ...(automaticBrowserInteraction || manualBrowserInteraction
-        ? { browserInteractionMode: manualBrowserInteraction ? "manual" : "automatic" }
-        : {}),
-      ...(biggerContext || standardContext ? { experimentalBiggerContext: biggerContext } : {}),
-      ...(skillAttachments || inlineSkills ? { experimentalSkillAttachments: skillAttachments } : {}),
-      ...(tunnelId ? { tunnelId } : {}),
-      ...(runtimeKeyFile ? { runtimeKeyFile } : {}),
-    });
+    const result = await setupDevProfile(parseDevSetupArgs(args, paths.descriptorPath));
     stdout.write(
       `Isolated DEV profile configured (${result.mode}) at ${result.configPath}.\n`
       + "No Codex route, Responses listener, or system service was installed."

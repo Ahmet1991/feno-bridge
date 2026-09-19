@@ -1117,7 +1117,6 @@ class RuntimeHost {
       ...(this.launcherProfile === "production" ? ["--replace-codex-route", "--restart-service"] : []),
     ];
     if (current.config?.autoApproveToolCalls === true) args.push("--auto-approve-tool-calls");
-    if (mode === "full") args.push("--app-name", this.setupConnectorName());
     const options = {
       message: enabled ? "Enabling Skills as files" : "Disabling Skills as files",
       successMessage: enabled
