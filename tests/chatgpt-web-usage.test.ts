@@ -41,9 +41,21 @@ test("multipart selection accounts for whole-record and composer fit before subm
         .toEqual([...contents]);
     }
   }
+  // Low-token text can still exceed the reasoning model's server character ceiling.
+  // Stage the complete record instead of sending it inline or dropping its contents.
+  const sparsePro = request("x".repeat(600_000));
+  expect(resolveBiggerContextMultipartParts(sparsePro, capabilities)).toBe(2);
+  const stagedPro = compileChatGptWebPrompt(sparsePro, capabilities, undefined, { experimentalMultipartParts: 2 });
+  expect(stagedPro.multipart!.parts.flatMap(part => JSON.parse(part).records).map(record => record.message.content))
+    .toEqual([sparsePro.context.messages[0]!.content]);
+  const proMessages = compiledChatGptWebMessages(stagedPro);
+  expect(proMessages[1]!.length).toBeLessThanOrEqual(500_000);
+  expect(resolveChatGptWebMultipartStagingMode(
+    "gpt-5.6-sol", capabilities, estimateTokens(proMessages[0]!), proMessages[0]!.length,
+  ).effort).toBe("max");
 }, 60_000);
 
-test("Bigger Context compaction selects three parts before the legacy inline byte budget", () => {
+test("Bigger Context compaction starts with three parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));
   parsed._compactionRequest = true;
   const parts = resolveBiggerContextMultipartParts(parsed, capabilities);
@@ -87,7 +99,7 @@ test("multipart planning leaves room for final attachments and execution instruc
     expect(() => assertChatGptWebMultipartInputWithinLimits(
       estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId), Math.max(...tokens),
       parsed.modelId, "high", caps, Math.max(...chars), 3,
-      { stagingEffort: stage.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens: tokens[2]!, finalMessageChars: chars[2]!, finalImageTokens: estimateChatGptWebImageTokens(compiled) },
+      { stagingEffort: stage.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens: tokens.at(-1)!, finalMessageChars: chars.at(-1)!, finalImageTokens: estimateChatGptWebImageTokens(compiled) },
     )).not.toThrow();
   }
 }, 30_000);

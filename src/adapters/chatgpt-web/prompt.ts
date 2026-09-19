@@ -80,7 +80,27 @@ export function formatChatGptWebMultipartStage(
   payload: string,
   transactionId: string,
   partIndex: number,
-  totalParts: ChatGptWebMultipartPartCount = CHATGPT_BIGGER_CONTEXT_PARTS,
+  totalParts: number = CHATGPT_BIGGER_CONTEXT_PARTS,
+): ChatGptWebMultipartStage {
+  return formatMultipartStage(payload, transactionId, partIndex, totalParts, false);
+}
+
+/** For sizing an impossible (>12-part) candidate only; never submit diagnostic envelopes. */
+export function formatChatGptWebMultipartStageForDiagnostic(
+  payload: string,
+  transactionId: string,
+  partIndex: number,
+  totalParts: number,
+): ChatGptWebMultipartStage {
+  return formatMultipartStage(payload, transactionId, partIndex, totalParts, true);
+}
+
+function formatMultipartStage(
+  payload: string,
+  transactionId: string,
+  partIndex: number,
+  totalParts: number,
+  diagnostic: boolean,
 ): ChatGptWebMultipartStage {
   assertMultipartTransactionId(transactionId);
   if (
@@ -89,6 +109,7 @@ export function formatChatGptWebMultipartStage(
     || partIndex > totalParts
     || !Number.isSafeInteger(totalParts)
     || totalParts < 2
+    || (!diagnostic && totalParts > CHATGPT_WEB_MULTIPART_MAX_PARTS)
   ) {
     throw new Error("ChatGPT multipart stage index is invalid");
   }
@@ -122,10 +143,27 @@ export function formatChatGptWebMultipartCommit(
   multipart: ChatGptWebMultipartPrompt,
   transactionId: string,
 ): string {
+  return formatMultipartCommit(multipart, transactionId, false);
+}
+
+/** Calculate over-ceiling envelope sizes without making those parts valid transport. */
+export function formatChatGptWebMultipartCommitForDiagnostic(
+  multipart: ChatGptWebMultipartPrompt,
+  transactionId: string,
+): string {
+  return formatMultipartCommit(multipart, transactionId, true);
+}
+
+function formatMultipartCommit(
+  multipart: ChatGptWebMultipartPrompt,
+  transactionId: string,
+  diagnostic: boolean,
+): string {
   assertMultipartTransactionId(transactionId);
   const totalParts = multipart.parts.length;
-  if (!Number.isSafeInteger(totalParts) || totalParts < 2) {
-    throw new Error("ChatGPT multipart commit requires at least two staged parts");
+  if (!Number.isSafeInteger(totalParts) || totalParts < 2
+    || (!diagnostic && totalParts > CHATGPT_WEB_MULTIPART_MAX_PARTS)) {
+    throw new Error(`ChatGPT multipart commit requires between 2 and ${CHATGPT_WEB_MULTIPART_MAX_PARTS} staged parts`);
   }
   const manifest = multipart.parts.map((payload, index) => (
     `${index + 1}/${totalParts}:${createHash("sha256").update(payload).digest("hex")}`

@@ -7,6 +7,7 @@ import {
   extractChatGptTurnEnvironment,
   extractChatGptCompactionSourceRevision,
   extractChatGptContinuationEnvironmentClaim,
+  extractChatGptSteeringEnvironmentClaim,
   extractChatGptTurnIdentity,
   extractChatGptThreadSpawnLineage,
   extractChatGptRootThreadMetadata,
@@ -182,9 +183,11 @@ export class ChatGptThreadEnvironmentStore {
       const currentCompaction = currentContextClaimsCwd && isChatGptCompactionContinuation(parsed);
       const historicalMessages = !currentCompaction && lineage
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
-      if (currentContextClaimsCwd && !currentCompaction && !historicalMessages) throw error;
-      // A cwd-less diff makes no environment claim, so there is nothing here to reconcile.
-      const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : undefined;
+      const steeringClaim = currentContextClaimsCwd && !currentCompaction
+        ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
+      if (currentContextClaimsCwd && !currentCompaction && !historicalMessages && !steeringClaim) throw error;
+      // A cwd-less diff makes no authority claim; the cached roots still constrain its metadata.
+      const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim;
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
       // source turn_context. Either must be the latest native record, never an arbitrary ancestor.
@@ -202,7 +205,7 @@ export class ChatGptThreadEnvironmentStore {
         });
         if (rolloutEnvironment) {
           if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment)) {
-            throw new Error("Compaction continuation environment conflicts with its current Codex rollout");
+            throw new Error(`${currentCompaction ? "Compaction continuation" : "Steering"} environment conflicts with its current Codex rollout`);
           }
           this.set(rolloutIdentity.threadId, rolloutEnvironment);
           return rolloutEnvironment;
