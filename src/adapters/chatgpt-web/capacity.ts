@@ -2,6 +2,7 @@ import type { CodexParsedRequest } from "../../types";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import {
   compiledChatGptWebMessages,
+  compiledChatGptWebMessagesForCapacityDiagnostic,
   compiledChatGptWebMaxMessageChars,
   DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS,
 } from "./input-tokens";
@@ -89,7 +90,7 @@ function multipartPayloadCharLimits(
   maxMessageChars: number,
 ): number[] {
   if (!template.multipart) throw new Error("ChatGPT multipart template is missing its parts");
-  const messages = compiledChatGptWebMessages(template);
+  const messages = compiledChatGptWebMessagesForCapacityDiagnostic(template);
   return template.multipart.parts.map((payload, index) => (
     maxMessageChars - (messages[index]!.length - payload.length)
   ));
@@ -121,7 +122,8 @@ function repartitionForPageCapacity(
   );
   if (!parts) return undefined;
   const candidate = withMultipartParts(source, parts);
-  return compiledChatGptWebMaxMessageChars(candidate) <= maxMessageChars ? candidate : undefined;
+  return Math.max(...compiledChatGptWebMessagesForCapacityDiagnostic(candidate).map(message => message.length))
+    <= maxMessageChars ? candidate : undefined;
 }
 
 function multipartDiagnosticCanFit(
@@ -138,7 +140,8 @@ function multipartEmptyTemplateCanFit(
   totalParts: number,
   maxMessageChars: number,
 ): boolean {
-  return compiledChatGptWebMaxMessageChars(multipartTemplate(source, totalParts)) <= maxMessageChars;
+  return Math.max(...compiledChatGptWebMessagesForCapacityDiagnostic(multipartTemplate(source, totalParts))
+    .map(message => message.length)) <= maxMessageChars;
 }
 
 function multipartDiagnosticUpperBound(

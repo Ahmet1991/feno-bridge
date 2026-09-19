@@ -3,7 +3,9 @@ import { skillFileTokens } from "./skill-attachments";
 import { estimateTokens } from "../../lib/token-estimate";
 import {
   formatChatGptWebMultipartCommit,
+  formatChatGptWebMultipartCommitForDiagnostic,
   formatChatGptWebMultipartStage,
+  formatChatGptWebMultipartStageForDiagnostic,
   type CompiledChatGptWebPrompt,
 } from "./prompt";
 
@@ -79,4 +81,17 @@ export function estimateChatGptWebImageTokens(compiled: CompiledChatGptWebPrompt
     (total, image) => total + chatGptWebImageTokenReserve(image.detail),
     0,
   );
+}
+
+/** Diagnostic-only sizing of candidates outside the 2..12 browser send contract. */
+export function compiledChatGptWebMessagesForCapacityDiagnostic(compiled: CompiledChatGptWebPrompt): string[] {
+  if (!compiled.multipart || compiled.multipart.parts.length <= 12) return compiledChatGptWebMessages(compiled);
+  return [
+    ...compiled.multipart.parts.slice(0, -1).map((payload, index) => (
+      formatChatGptWebMultipartStageForDiagnostic(
+        payload, TOKEN_ESTIMATE_TRANSACTION, index + 1, compiled.multipart!.parts.length,
+      ).text
+    )),
+    formatChatGptWebMultipartCommitForDiagnostic(compiled.multipart, TOKEN_ESTIMATE_TRANSACTION),
+  ];
 }
