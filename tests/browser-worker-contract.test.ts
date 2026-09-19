@@ -3706,6 +3706,21 @@ test("Bigger Context preflight expands only the total context ceiling and keeps 
   )).toThrow("unavailable for Luna");
 });
 
+test("four to twelve transport parts cannot exceed three times the actual model context", () => {
+  const pro = {
+    localToolsEnabled: false, solAvailable: true,
+    extraHighAvailable: true, proAvailable: true, experimentalBiggerContext: true,
+  };
+  for (const parts of [4, 5, 6, 12]) {
+    expect(() => assertChatGptWebMultipartInputWithinLimits(
+      333_578, 95_000, "gpt-5.6-sol", "high", pro, 500_000, parts,
+    )).not.toThrow();
+    expect(() => assertChatGptWebMultipartInputWithinLimits(
+      333_579, 95_000, "gpt-5.6-sol", "high", pro, 500_000, parts,
+    )).toThrow(`${parts}-part ceiling`);
+  }
+});
+
 test("Bigger Context stages use the lowest account mode that can carry the stage", () => {
   const plus = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
   const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };

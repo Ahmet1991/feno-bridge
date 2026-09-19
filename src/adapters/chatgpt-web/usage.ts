@@ -2,6 +2,7 @@ import { skillFileTokens } from "./skill-attachments";
 import { estimateTokens } from "../../lib/token-estimate";
 import {
   CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebContextLimits,
   resolveChatGptWebMessageTokenBudget,
@@ -112,7 +113,7 @@ export function resolveBiggerContextMultipartParts(
       if (estimateTokens(text, parsed.modelId) > budget) return false;
     }
     return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId)
-      < contextWindow * messages.length;
+      < contextWindow * Math.min(messages.length, CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER);
   };
   if (initialParts === undefined && fits(inline)) return undefined;
   for (
