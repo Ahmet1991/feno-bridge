@@ -29,8 +29,14 @@ import {
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning } from "./prompt";
-import { blockClaimEvidenceFor } from "./block-claim-evidence";
-import { callObservesWindow, isPolicyStop, toolResultText, WindowRecoveryTracker } from "./window-recovery";
+import { blockClaimEvidenceFor, TurnCallLedger } from "./block-claim-evidence";
+import {
+  callObservesWindow,
+  isPolicyStop,
+  skyFunctionsIn,
+  toolResultText,
+  WindowRecoveryTracker,
+} from "./window-recovery";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import {
@@ -64,6 +70,7 @@ import {
 } from "./conversation-key";
 
 const windowRecoveryBySession = new WeakMap<ChatGptTurnSession, WindowRecoveryTracker>();
+const callLedgerBySession = new WeakMap<ChatGptTurnSession, TurnCallLedger>();
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -860,8 +867,9 @@ export function createChatGptWebAdapter(
     name: "chatgpt-web",
     async runTurn(parsed, incoming, emit) {
       // What this bridge actually dispatched, so a claim about a blocked or failed call can be
-      // answered with counts instead of with another instruction the model may ignore.
-      const toolCallLedger = { completed: 0, failed: 0 };
+      // answered with counts instead of with another instruction the model may ignore. The ledger
+      // is bound to the session below: a turn spans several rounds, and counting per round reported
+      // only the last one.
       const runChatGptWebTurn = async (): Promise<void> => {
         const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
         if (manualRequest !== manualInteraction) {
@@ -1230,6 +1238,11 @@ export function createChatGptWebAdapter(
           windowRecovery = new WindowRecoveryTracker();
           windowRecoveryBySession.set(session, windowRecovery);
         }
+        let toolCallLedger = callLedgerBySession.get(session);
+        if (!toolCallLedger) {
+          toolCallLedger = new TurnCallLedger();
+          callLedgerBySession.set(session, toolCallLedger);
+        }
         const roundKey = chatGptTurnRoundKey(parsed);
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
@@ -1360,8 +1373,7 @@ export function createChatGptWebAdapter(
                     message.toolCallId,
                     brokerResult(message, recovery?.kind === "recover" ? recovery.note : undefined),
                   );
-                  toolCallLedger.completed += 1;
-                  if (message.isError) toolCallLedger.failed += 1;
+                  toolCallLedger.record(skyFunctionsIn(callsById.get(message.toolCallId)), message.isError);
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);
                 }
@@ -1435,11 +1447,13 @@ export function createChatGptWebAdapter(
                 }
                 // The answer itself is already verified above; this only adds what the bridge
                 // observed, after that check, so the integrity comparison stays untouched.
-                const blockEvidence = blockClaimEvidenceFor(completedOutcome.answer, toolCallLedger);
+                const ledger = toolCallLedger.summary();
+                const blockEvidence = blockClaimEvidenceFor(completedOutcome.answer, ledger);
                 if (blockEvidence) {
                   console.warn(
                     `[chatgpt-web] answer claimed a blocked or failed tool call`
-                    + ` completedCalls=${toolCallLedger.completed} failedCalls=${toolCallLedger.failed}`,
+                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
+                    + ` windowCaptureNeverReached=${ledger.windowCaptureNeverReached}`,
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
                 }

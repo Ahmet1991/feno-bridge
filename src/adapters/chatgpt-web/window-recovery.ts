@@ -78,6 +78,18 @@ export function callObservesWindow(call: BrokerToolRequest | undefined): boolean
 }
 
 /**
+ * Which window API functions a dispatched call actually asked for. Used to say which step of an
+ * operation reached the bridge, so an answer claiming a blocked screenshot can be answered with the
+ * steps that did arrive rather than with another instruction.
+ */
+export function skyFunctionsIn(call: BrokerToolRequest | undefined): string[] {
+  if (!call || !JAVASCRIPT_TOOL.test(call.wireName)) return [];
+  const found = new Set<string>();
+  for (const match of callSource(call).matchAll(/\bsky\.([a-z_]+)\s*\(/g)) found.add(match[1]!);
+  return [...found];
+}
+
+/**
  * The window a call names, used to bind a later image back to this recovery. Windows are selected
  * inside a JS snippet rather than through structured arguments, so this reads the snippet. A call
  * that selects through a variable yields no target; recovery still runs, but success stays unbound.

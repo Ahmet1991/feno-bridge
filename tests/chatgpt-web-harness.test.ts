@@ -4538,3 +4538,110 @@ test("window recovery state survives continuation rounds until the bound screens
     await broker.close();
   }
 });
+
+test("the evidence line counts every round of a turn and names the capture that never arrived", async () => {
+  // Reproduces the 20 Sep turn: list_windows and get_window both succeeded in separate rounds, the
+  // screenshot call never reached the bridge, and the answer blamed a block. The shipped line said
+  // one call because the ledger was rebuilt each round.
+  const socketPath = brokerTestEndpoint(`led-${process.pid}-${++windowRecoveryFixtureSequence}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://call-ledger-${Date.now()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      turnTimeoutMs: 30_000,
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const broker = TurnBroker.forSocket(socketPath);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const claim = "Bu araç OpenAI'ın güvenlik kontrolleri tarafından engellendi.";
+  const steps = [
+    "globalThis.windows = await sky.list_windows();",
+    "globalThis.w = await sky.get_window({ id: 589952, app: 'process:C:\\GitHubDesktop.exe' });",
+  ];
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepare();
+    try {
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) throw new Error("turn token missing from call ledger prompt");
+      const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+      for (const code of steps) {
+        await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
+          method: "invoke",
+          bindingId: claimed.bindingId,
+          wireName: "js",
+          freeform: false,
+          arguments: { code, title: "Pencere adımı" },
+        }, 30_000));
+      }
+      turn.onTextDelta(claim);
+      return claim;
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const request = rawWireRequest(environmentXml);
+  request.context.tools = [
+    ...(request.context.tools ?? []),
+    { name: "js", description: "Control a native window", parameters: { type: "object" } },
+  ];
+  const adapter = createChatGptWebAdapter(provider, { broker });
+  const emittedCall = (events: AdapterEvent[]) => {
+    const start = events.find(
+      (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start",
+    );
+    const delta = events.find(
+      (event): event is Extract<AdapterEvent, { type: "tool_call_delta" }> => event.type === "tool_call_delta",
+    );
+    if (!start || !delta) throw new Error("call ledger round did not emit a tool call");
+    return { id: start.id, name: start.name, arguments: JSON.parse(delta.arguments) as Record<string, unknown> };
+  };
+  const appendResult = (
+    call: { id: string; name: string; arguments: Record<string, unknown> },
+    text: string,
+    timestamp: number,
+  ) => {
+    request.context.messages.push(
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments }],
+        timestamp,
+      },
+      { role: "toolResult", toolCallId: call.id, toolName: call.name, content: text, isError: false, timestamp: timestamp + 1 },
+    );
+    const rawInput = (request._rawBody as { input: unknown[] }).input;
+    rawInput.push(
+      { type: "function_call", call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) },
+      { type: "function_call_output", call_id: call.id, output: text },
+    );
+  };
+  try {
+    const first: AdapterEvent[] = [];
+    await adapter.runTurn!(request, { headers: new Headers() }, event => first.push(event));
+    appendResult(emittedCall(first), "Wall time: 0.2588 seconds\nOutput:\n[{\"id\":589952}]", 3);
+
+    const second: AdapterEvent[] = [];
+    await adapter.runTurn!(request, { headers: new Headers() }, event => second.push(event));
+    appendResult(emittedCall(second), "Wall time: 0.0494 seconds\nOutput:\n{\"id\":589952}", 5);
+
+    const final: AdapterEvent[] = [];
+    await adapter.runTurn!(request, { headers: new Headers() }, event => final.push(event));
+    const answer = final
+      .filter((event): event is AdapterEvent & { type: "text_delta"; text: string } => event.type === "text_delta")
+      .map(event => event.text)
+      .join("");
+    expect(answer).toContain(claim);
+    expect(answer).toContain("2 araç çağrısı tamamlandı");
+    expect(answer).toContain("get_window_state");
+    expect(answer).toContain("köprüye hiç ulaşmadı");
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await broker.close();
+  }
+});
