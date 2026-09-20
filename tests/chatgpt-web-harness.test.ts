@@ -4117,3 +4117,94 @@ describe("adapter liveness covers every path through a turn", () => {
     expect(heartbeats.at(-1)).toBeGreaterThanOrEqual(CHATGPT_WEB_ADAPTER_HEARTBEAT_MS);
   }, 40_000);
 });
+
+test("an answer claiming a blocked call carries the bridge's own dispatch count", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-block-claim-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://block-claim-${Date.now()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      localToolsEnabled: false,
+      solAvailable: true,
+      proAvailable: true,
+      maxMessageChars: 20_000,
+    } as CodexProviderConfig["chatgptWeb"],
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  // The wording ChatGPT actually produced on 20 Sep, in a turn whose every call had returned.
+  const claim = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepare();
+    try {
+      turn.onTextDelta(claim);
+      return claim;
+    } finally {
+      prepared.release();
+    }
+  };
+  try {
+    const events: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      rawWireRequest(environmentXml),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    const answer = events
+      .filter((event): event is AdapterEvent & { type: "text_delta"; text: string } => event.type === "text_delta")
+      .map(event => event.text)
+      .join("");
+    expect(answer).toContain(claim);
+    expect(answer).toContain("[Feno Bridge] Bu turda köprü üzerinden hiç araç çağrısı yapılmadı.");
+    expect(events.at(-1)).toMatchObject({ type: "done" });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+});
+
+test("an ordinary answer is emitted untouched", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-no-claim-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://no-claim-${Date.now()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      localToolsEnabled: false,
+      solAvailable: true,
+      proAvailable: true,
+      maxMessageChars: 20_000,
+    } as CodexProviderConfig["chatgptWeb"],
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const answer = "GitHub Desktop penceresi bulundu ve içeriği okundu.";
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepare();
+    try {
+      turn.onTextDelta(answer);
+      return answer;
+    } finally {
+      prepared.release();
+    }
+  };
+  try {
+    const events: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      rawWireRequest(environmentXml),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    const emitted = events
+      .filter((event): event is AdapterEvent & { type: "text_delta"; text: string } => event.type === "text_delta")
+      .map(event => event.text)
+      .join("");
+    // The harness prepends a local-tools notice; what matters is that no evidence line is added.
+    expect(emitted).toContain(answer);
+    expect(emitted).not.toContain("[Feno Bridge]");
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+});
