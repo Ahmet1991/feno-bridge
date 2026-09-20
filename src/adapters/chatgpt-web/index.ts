@@ -30,6 +30,7 @@ import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGpt
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning } from "./prompt";
 import { blockClaimEvidenceFor } from "./block-claim-evidence";
+import { callObservesWindow, isPolicyStop, toolResultText, WindowRecoveryTracker } from "./window-recovery";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import {
@@ -61,6 +62,8 @@ import {
   chatGptConversationKey,
   retainedConversationResumeRequest,
 } from "./conversation-key";
+
+const windowRecoveryBySession = new WeakMap<ChatGptTurnSession, WindowRecoveryTracker>();
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -243,14 +246,16 @@ function brokerContent(content: string | CodexContentPart[]): unknown[] {
   });
 }
 
-function brokerResult(message: CodexToolResultMessage): BrokerToolResult {
+function brokerResult(message: CodexToolResultMessage, recoveryNote?: string): BrokerToolResult {
   const content = brokerContent(message.content);
   const text = typeof message.content === "string"
     ? message.content
     : message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+  // Derived from the tool's own text only. A recovery note is appended as its own part below, so
+  // the original output stays byte-for-byte intact and a JSON result still parses.
   const structured = structuredContent(text);
   return {
-    content,
+    content: recoveryNote !== undefined ? [...content, { type: "text", text: recoveryNote }] : content,
     ...(structured !== undefined ? { structuredContent: structured } : {}),
     ...(message.isError ? { isError: true } : {}),
   };
@@ -1220,6 +1225,11 @@ export function createChatGptWebAdapter(
           nativeIdentity.threadId,
           chatGptInstructionLineage(parsed),
         );
+        let windowRecovery = windowRecoveryBySession.get(session);
+        if (!windowRecovery) {
+          windowRecovery = new WindowRecoveryTracker();
+          windowRecoveryBySession.set(session, windowRecovery);
+        }
         const roundKey = chatGptTurnRoundKey(parsed);
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
@@ -1315,8 +1325,41 @@ export function createChatGptWebAdapter(
                 if (results.length !== outstanding.length) {
                   throw new Error(`Codex returned ${results.length} of ${outstanding.length} results for a parallel ChatGPT tool batch`);
                 }
+                const callsById = new Map(outstanding.map(request => [request.callId, request]));
+                const batchHasPolicyStop = results.some(message => (
+                  callObservesWindow(callsById.get(message.toolCallId))
+                  && isPolicyStop(toolResultText(message.content))
+                ));
+                if (batchHasPolicyStop && windowRecovery.standDown()?.kind === "stand_down") {
+                  console.warn(`[chatgpt-web] Computer Use policy stop, window recovery stands down`);
+                }
                 for (const message of results) {
-                  await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
+                  // A minimized window answers with guidance rather than an error, so this reads the
+                  // result the call actually returned. It never touches isError or the ledger below.
+                  const recovery = batchHasPolicyStop
+                    ? undefined
+                    : windowRecovery.inspect(callsById.get(message.toolCallId), message);
+                  if (recovery?.kind === "recover") {
+                    console.warn(
+                      `[chatgpt-web] window observation needs recovery, sending the step back`
+                      + ` target=${recovery.target ?? "unbound"}`,
+                    );
+                  } else if (recovery?.kind === "succeeded") {
+                    console.warn(`[chatgpt-web] window recovery returned an image target=${recovery.target}`);
+                  } else if (recovery?.kind === "near_miss") {
+                    // Canary: the guidance wording lives in the @oai/sky runtime and cannot be
+                    // checked against the installed plugin, so a reworded release must be visible.
+                    const signature = createHash("sha256").update(recovery.text).digest("hex").slice(0, 12);
+                    console.warn(
+                      `[chatgpt-web] window observation matched no known guidance`
+                      + ` chars=${recovery.text.length} sha256=${signature}`,
+                    );
+                  }
+                  await broker.completeTool(
+                    turnToken,
+                    message.toolCallId,
+                    brokerResult(message, recovery?.kind === "recover" ? recovery.note : undefined),
+                  );
                   toolCallLedger.completed += 1;
                   if (message.isError) toolCallLedger.failed += 1;
                   session.runtime.externalProgress.recordToolResult();
