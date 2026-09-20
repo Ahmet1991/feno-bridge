@@ -27,7 +27,7 @@ import { defaultBrokerEndpoint } from "../src/config";
 import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { parseRequest } from "../src/responses/parser";
-import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig, CodexTool } from "../src/types";
+import type { AdapterEvent, CodexContentPart, CodexParsedRequest, CodexProviderConfig, CodexTool } from "../src/types";
 
 const tempRoot = join(tmpdir(), `codex-chatgpt-web-harness-${process.pid}-${Date.now()}`);
 mkdirSync(tempRoot, { recursive: true });
@@ -4206,5 +4206,335 @@ test("an ordinary answer is emitted untouched", async () => {
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     await TurnBroker.forSocket(socketPath).close();
+  }
+});
+
+const RECORDED_MINIMIZED_GUIDANCE =
+  "window is minimized; call activate_window, refresh with get_window, then retry get_window_state";
+const RECORDED_COMPUTER_USE_POLICY_STOP =
+  "Computer Use has been stopped for this turn because it could not determine the current browser URL on Windows"
+  + " with enough confidence to enforce policy. Stop your work and send a final message noting why Computer Use ended.";
+
+interface WindowRecoveryAdapterFixture {
+  code?: string;
+  wireName?: string;
+  arguments?: Record<string, unknown>;
+  content: string | CodexContentPart[];
+}
+
+let windowRecoveryFixtureSequence = 0;
+
+function windowRecoveryFixtureArguments(fixture: WindowRecoveryAdapterFixture): Record<string, unknown> {
+  return fixture.arguments ?? { code: fixture.code, title: "Pencerenin durumunu oku" };
+}
+
+async function deliverWindowRecoveryFixtures(
+  fixtures: WindowRecoveryAdapterFixture[],
+): Promise<BrokerToolResult[]> {
+  const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://window-recovery-${Date.now()}-${Math.random()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      turnTimeoutMs: 30_000,
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const broker = TurnBroker.forSocket(socketPath);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const delivered: BrokerToolResult[] = [];
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepare();
+    try {
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) throw new Error("turn token missing from window recovery test prompt");
+      const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+      const results = await invokeAfterBrowserBoundary(turn, () => Promise.all(fixtures.map(fixture => (
+        callTurnBroker<BrokerToolResult>(socketPath, {
+          method: "invoke",
+          bindingId: claimed.bindingId,
+          wireName: fixture.wireName ?? "js",
+          freeform: false,
+          arguments: windowRecoveryFixtureArguments(fixture),
+        }, 30_000)
+      ))));
+      delivered.push(...results);
+      turn.onTextDelta("Window recovery fixture complete");
+      return "Window recovery fixture complete";
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const initial = rawWireRequest(environmentXml);
+  initial.context.tools = [
+    ...(initial.context.tools ?? []),
+    { name: "js", description: "Control a native window", parameters: { type: "object" } },
+  ];
+  const adapter = createChatGptWebAdapter(provider, { broker });
+  try {
+    const firstEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(initial, { headers: new Headers() }, event => firstEvents.push(event));
+
+    const emitted: Array<{ id: string; name: string; arguments?: Record<string, unknown> }> = [];
+    for (const event of firstEvents) {
+      if (event.type === "tool_call_start") emitted.push({ id: event.id, name: event.name });
+      if (event.type === "tool_call_delta") emitted.at(-1)!.arguments = JSON.parse(event.arguments) as Record<string, unknown>;
+    }
+    expect(emitted).toHaveLength(fixtures.length);
+
+    const continuation = structuredClone(initial);
+    const rawInput = (continuation._rawBody as { input: unknown[] }).input;
+    for (const fixture of fixtures) {
+      const expectedArguments = windowRecoveryFixtureArguments(fixture);
+      const call = emitted.find(candidate => (
+        candidate.name === (fixture.wireName ?? "js")
+        && JSON.stringify(candidate.arguments) === JSON.stringify(expectedArguments)
+      ));
+      if (!call) throw new Error(`window recovery fixture call was not emitted: ${JSON.stringify(expectedArguments)}`);
+      continuation.context.messages.push(
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments ?? {} }],
+          timestamp: 3,
+        },
+        {
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name,
+          content: fixture.content,
+          isError: false,
+          timestamp: 4,
+        },
+      );
+      rawInput.push(
+        { type: "function_call", call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
+        {
+          type: "function_call_output",
+          call_id: call.id,
+          output: typeof fixture.content === "string"
+            ? fixture.content
+            : fixture.content.filter(part => part.type === "text").map(part => part.text).join("\n"),
+        },
+      );
+    }
+
+    const finalEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(continuation, { headers: new Headers() }, event => finalEvents.push(event));
+    expect(finalEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    return delivered;
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await broker.close();
+  }
+}
+
+test("the adapter delivers minimized-window guidance unchanged with a separate recovery note", async () => {
+  const original: CodexContentPart[] = [
+    { type: "text", text: "Wall time: 0.0881 seconds\nOutput:" },
+    { type: "text", text: RECORDED_MINIMIZED_GUIDANCE },
+  ];
+  const code = "await sky.get_window_state({ window: { id: 4589948, app: 'process:C:\\\\Feno.exe' } });";
+  const [delivered] = await deliverWindowRecoveryFixtures([{ code, content: original }]);
+
+  expect(delivered?.content.slice(0, 2)).toEqual(original);
+  expect(delivered?.content[2]).toMatchObject({ type: "text" });
+  expect((delivered?.content[2] as { text: string }).text).toContain("[Feno Bridge]");
+  expect((delivered?.content[2] as { text: string }).text).toContain("include_screenshot: true");
+  expect(delivered?.structuredContent).toBeUndefined();
+  expect(delivered?.isError).toBeUndefined();
+});
+
+test("the near-miss canary logs a fingerprint without exposing result text", async () => {
+  const reworded = "window is currently minimized - restore it before capturing state " + "x".repeat(300);
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  try {
+    await deliverWindowRecoveryFixtures([{
+      code: "await sky.get_window_state({ window: { id: 4589948, app: 'process:C:\\\\Feno.exe' } });",
+      content: [
+        { type: "text", text: "Wall time: 0.0881 seconds\nOutput:" },
+        { type: "text", text: reworded },
+      ],
+    }]);
+  } finally {
+    warning.mockRestore();
+  }
+
+  expect(warnings.some(line => /matched no known guidance chars=\d+ sha256=[a-f0-9]{12}/.test(line))).toBeTrue();
+  expect(warnings.some(line => line.includes(`chars=${reworded.length}`))).toBeTrue();
+  expect(warnings.join("\n")).not.toContain(reworded);
+});
+
+test("a policy stop anywhere in a parallel result batch suppresses window recovery", async () => {
+  const output = (text: string): CodexContentPart[] => [
+    { type: "text", text: "Wall time: 0.0881 seconds\nOutput:" },
+    { type: "text", text },
+  ];
+  const delivered = await deliverWindowRecoveryFixtures([
+    {
+      code: "await sky.get_window_state({ window: { id: 4589948, app: 'process:C:\\\\Feno.exe' } });",
+      content: output(RECORDED_MINIMIZED_GUIDANCE),
+    },
+    {
+      code: "await sky.get_window_state({ window: { id: 657538, app: 'process:C:\\\\Chrome.exe' } });",
+      content: output(RECORDED_COMPUTER_USE_POLICY_STOP),
+    },
+  ]);
+
+  expect(delivered).toHaveLength(2);
+  for (const result of delivered) {
+    expect(JSON.stringify(result.content)).not.toContain("[Feno Bridge]");
+  }
+});
+
+test("policy-stop text from an unrelated parallel result does not suppress recovery", async () => {
+  const output = (text: string): CodexContentPart[] => [
+    { type: "text", text: "Wall time: 0.0881 seconds\nOutput:" },
+    { type: "text", text },
+  ];
+  const delivered = await deliverWindowRecoveryFixtures([
+    {
+      code: "await sky.get_window_state({ window: { id: 4589948, app: 'process:C:\\\\Feno.exe' } });",
+      content: output(RECORDED_MINIMIZED_GUIDANCE),
+    },
+    {
+      wireName: "exec_command",
+      arguments: { cmd: "rg get_window_state AGENTS.md" },
+      content: output(RECORDED_COMPUTER_USE_POLICY_STOP),
+    },
+  ]);
+
+  expect(delivered).toHaveLength(2);
+  expect(JSON.stringify(delivered[0]!.content)).toContain("[Feno Bridge]");
+  expect(JSON.stringify(delivered[1]!.content)).not.toContain("[Feno Bridge]");
+});
+
+test("window recovery state survives continuation rounds until the bound screenshot arrives", async () => {
+  const socketPath = brokerTestEndpoint(`wr-life-${process.pid}-${++windowRecoveryFixtureSequence}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://window-recovery-lifecycle-${Date.now()}`,
+    chatgptWeb: {
+      brokerSocketPath: socketPath,
+      turnTimeoutMs: 30_000,
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const broker = TurnBroker.forSocket(socketPath);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const delivered: BrokerToolResult[] = [];
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  const code = "await sky.get_window_state({ window: { id: 4589948, app: 'process:C:\\\\Feno.exe' }, include_screenshot: true });";
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepare();
+    try {
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) throw new Error("turn token missing from window recovery lifecycle prompt");
+      const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
+      for (let index = 0; index < 3; index += 1) {
+        delivered.push(await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
+          method: "invoke",
+          bindingId: claimed.bindingId,
+          wireName: "js",
+          freeform: false,
+          arguments: { code, title: "Pencerenin durumunu oku" },
+        }, 30_000)));
+      }
+      turn.onTextDelta("Window recovery lifecycle complete");
+      return "Window recovery lifecycle complete";
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const request = rawWireRequest(environmentXml);
+  request.context.tools = [
+    ...(request.context.tools ?? []),
+    { name: "js", description: "Control a native window", parameters: { type: "object" } },
+  ];
+  const adapter = createChatGptWebAdapter(provider, { broker });
+  const appendResult = (
+    call: { id: string; name: string; arguments: Record<string, unknown> },
+    content: string | CodexContentPart[],
+    timestamp: number,
+  ) => {
+    request.context.messages.push(
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments }],
+        timestamp,
+      },
+      { role: "toolResult", toolCallId: call.id, toolName: call.name, content, isError: false, timestamp: timestamp + 1 },
+    );
+    const rawInput = (request._rawBody as { input: unknown[] }).input;
+    rawInput.push(
+      { type: "function_call", call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) },
+      {
+        type: "function_call_output",
+        call_id: call.id,
+        output: typeof content === "string"
+          ? content
+          : content.filter(part => part.type === "text").map(part => part.text).join("\n"),
+      },
+    );
+  };
+  const emittedCall = (events: AdapterEvent[]) => {
+    const start = events.find(
+      (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start",
+    );
+    const delta = events.find(
+      (event): event is Extract<AdapterEvent, { type: "tool_call_delta" }> => event.type === "tool_call_delta",
+    );
+    if (!start || !delta) throw new Error("window recovery lifecycle round did not emit a tool call");
+    return { id: start.id, name: start.name, arguments: JSON.parse(delta.arguments) as Record<string, unknown> };
+  };
+  const minimized: CodexContentPart[] = [
+    { type: "text", text: "Wall time: 0.0881 seconds\nOutput:" },
+    { type: "text", text: RECORDED_MINIMIZED_GUIDANCE },
+  ];
+  try {
+    const firstEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(request, { headers: new Headers() }, event => firstEvents.push(event));
+    appendResult(emittedCall(firstEvents), minimized, 3);
+
+    const secondEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(request, { headers: new Headers() }, event => secondEvents.push(event));
+    appendResult(emittedCall(secondEvents), minimized, 5);
+
+    const thirdEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(request, { headers: new Headers() }, event => thirdEvents.push(event));
+    appendResult(emittedCall(thirdEvents), [
+      { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" },
+    ], 7);
+
+    const finalEvents: AdapterEvent[] = [];
+    await adapter.runTurn!(request, { headers: new Headers() }, event => finalEvents.push(event));
+    expect(finalEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+
+    expect(delivered).toHaveLength(3);
+    expect(JSON.stringify(delivered[0]!.content)).toContain("[Feno Bridge]");
+    expect(JSON.stringify(delivered[1]!.content)).not.toContain("[Feno Bridge]");
+    expect(delivered[2]!.content).toEqual([{
+      type: "image",
+      data: "/9j/4AAQ",
+      mimeType: "image/jpeg",
+    }]);
+    expect(warnings.some(line => line.includes("window recovery returned an image target=process:C:\\\\Feno.exe#4589948")))
+      .toBeTrue();
+  } finally {
+    warning.mockRestore();
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await broker.close();
   }
 });
