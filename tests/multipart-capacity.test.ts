@@ -335,3 +335,38 @@ test("multipart capacity diagnostics bound repartition attempts above the twelve
     repartition.mockRestore();
   }
 });
+
+test("a payload many pages past inline still reconstructs byte-for-byte", () => {
+  // This size makes the compiler start at its arithmetic floor instead of walking up from two
+  // parts. The shortcut must produce a split that fits and loses nothing.
+  const original = `tool-result-${"w".repeat(200_000)}-tail`;
+  const parsed = request([
+    {
+      role: "toolResult",
+      toolCallId: "call_many_pages",
+      toolName: "exec_command",
+      content: original,
+      isError: false,
+      timestamp: 1,
+    },
+    { role: "user", content: "finish", timestamp: 2 },
+  ]);
+  const maxMessageChars = 20_000;
+  const compiled = compileChatGptWebPromptWithinPageCapacity(parsed, capabilities, undefined, { maxMessageChars });
+  expect(compiled.multipart!.parts.length).toBeGreaterThan(3);
+  for (const message of compiledChatGptWebMessages(compiled)) {
+    expect(message.length).toBeLessThanOrEqual(maxMessageChars);
+  }
+  const records = multipartRecords(compiled.multipart!.parts);
+  const messageChunks = records.filter(record => record.message_index === 0);
+  expect(messageChunks.map(record => record.chunk?.index)).toEqual(
+    Array.from({ length: messageChunks.length }, (_unused, index) => index + 1),
+  );
+  expect(reconstructChunkedMessage(records, 0)).toEqual({
+    role: "tool_result",
+    tool_call_id: "call_many_pages",
+    tool_name: "exec_command",
+    is_error: false,
+    content: original,
+  });
+});

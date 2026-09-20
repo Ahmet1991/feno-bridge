@@ -232,6 +232,23 @@ export function compileChatGptWebPromptWithinPageCapacity(
     throw capacityError(inlineChars, maxMessageChars, "luna");
   }
 
+  // Every part of an N-way split still carries the inline payload divided N ways plus its own
+  // envelope, so no split below inlineChars/maxMessageChars can fit. Probing that floor first turns
+  // a twelve-part turn's eleven rejected full compiles into one. A probe that does not fit falls
+  // through to the original ascending search, so the part count finally selected, the repartition
+  // fallbacks and every diagnostic below are unchanged.
+  const capacityFloor = Math.min(
+    CHATGPT_WEB_MULTIPART_MAX_PARTS,
+    Math.max(2, Math.floor(inlineChars / maxMessageChars)),
+  );
+  if (capacityFloor > 2) {
+    const probe = compileChatGptWebPrompt(parsed, capabilities, turnToken, {
+      ...baseOptions,
+      multipartParts: capacityFloor,
+    });
+    if (compiledChatGptWebMaxMessageChars(probe) <= maxMessageChars) return probe;
+  }
+
   let lastChars = inlineChars;
   let sourceMultipart: CompiledChatGptWebPrompt | undefined;
   for (let multipartParts = 2; multipartParts <= CHATGPT_WEB_MULTIPART_MAX_PARTS; multipartParts += 1) {
