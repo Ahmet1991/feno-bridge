@@ -29,6 +29,7 @@ import {
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning } from "./prompt";
+import { blockClaimEvidenceFor } from "./block-claim-evidence";
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import {
@@ -853,6 +854,9 @@ export function createChatGptWebAdapter(
   return {
     name: "chatgpt-web",
     async runTurn(parsed, incoming, emit) {
+      // What this bridge actually dispatched, so a claim about a blocked or failed call can be
+      // answered with counts instead of with another instruction the model may ignore.
+      const toolCallLedger = { completed: 0, failed: 0 };
       const runChatGptWebTurn = async (): Promise<void> => {
         const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
         if (manualRequest !== manualInteraction) {
@@ -1313,6 +1317,8 @@ export function createChatGptWebAdapter(
                 }
                 for (const message of results) {
                   await broker.completeTool(turnToken, message.toolCallId, brokerResult(message));
+                  toolCallLedger.completed += 1;
+                  if (message.isError) toolCallLedger.failed += 1;
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);
                 }
@@ -1383,6 +1389,16 @@ export function createChatGptWebAdapter(
                 structuredOutputValidator?.(completedOutcome.answer);
                 if (bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas([completedOutcome.answer], buffer));
+                }
+                // The answer itself is already verified above; this only adds what the bridge
+                // observed, after that check, so the integrity comparison stays untouched.
+                const blockEvidence = blockClaimEvidenceFor(completedOutcome.answer, toolCallLedger);
+                if (blockEvidence) {
+                  console.warn(
+                    `[chatgpt-web] answer claimed a blocked or failed tool call`
+                    + ` completedCalls=${toolCallLedger.completed} failedCalls=${toolCallLedger.failed}`,
+                  );
+                  emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
                 }
                 emitRoundBatch(buffer => emitBrowserCompletion(
                   completedOutcome,
