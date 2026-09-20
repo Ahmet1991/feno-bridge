@@ -8,6 +8,7 @@ import {
   resolveChatGptWebMessageTokenBudget,
   resolveChatGptWebTransportLimits,
 } from "../../chatgpt-web-models";
+import type { ChatGptWebContextLimits } from "../../chatgpt-web-models";
 import type { CodexParsedRequest, CodexUsage } from "../../types";
 import { compiledChatGptWebMessages, estimateChatGptWebImageTokens, estimateCompiledChatGptWebInputTokens } from "./input-tokens";
 import {
@@ -25,6 +26,22 @@ import type { BrokerToolRequest } from "./turn-broker";
 // The real capability has the same length. Keeping it out of usage accounting would make
 // estimates differ slightly between the prepared browser prompt and later Codex tool rounds.
 const ESTIMATE_TURN_TOKEN = "turn_00000000000000000000000000000000";
+
+/** Codex clamps its advertised context indicator to at most 90% of the model window. */
+export function chatGptWebContextOverflowWarning(
+  estimatedInputTokens: number,
+  limits: ChatGptWebContextLimits,
+): { modelContextWindow: number; codexEffectiveContextWindow: number; excessTokens: number } | undefined {
+  const codexEffectiveContextWindow = Math.floor(
+    limits.contextWindow * Math.min(90, limits.effectiveContextWindowPercent) / 100,
+  );
+  if (estimatedInputTokens <= codexEffectiveContextWindow) return undefined;
+  return {
+    modelContextWindow: limits.contextWindow,
+    codexEffectiveContextWindow,
+    excessTokens: estimatedInputTokens - codexEffectiveContextWindow,
+  };
+}
 
 export interface ChatGptWebRoundEvidence {
   answer?: string;
