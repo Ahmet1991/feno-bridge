@@ -4222,6 +4222,8 @@ interface WindowRecoveryAdapterFixture {
   content: string | CodexContentPart[];
 }
 
+let windowRecoveryFixtureSequence = 0;
+
 function windowRecoveryFixtureArguments(fixture: WindowRecoveryAdapterFixture): Record<string, unknown> {
   return fixture.arguments ?? { code: fixture.code, title: "Pencerenin durumunu oku" };
 }
@@ -4229,7 +4231,7 @@ function windowRecoveryFixtureArguments(fixture: WindowRecoveryAdapterFixture): 
 async function deliverWindowRecoveryFixtures(
   fixtures: WindowRecoveryAdapterFixture[],
 ): Promise<BrokerToolResult[]> {
-  const socketPath = brokerTestEndpoint(`cgw-window-recovery-${process.pid}-${Date.now()}-${Math.random()}`);
+  const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://window-recovery-${Date.now()}-${Math.random()}`,
@@ -4414,7 +4416,7 @@ test("policy-stop text from an unrelated parallel result does not suppress recov
 });
 
 test("window recovery state survives continuation rounds until the bound screenshot arrives", async () => {
-  const socketPath = brokerTestEndpoint(`cgw-window-recovery-lifecycle-${process.pid}-${Date.now()}`);
+  const socketPath = brokerTestEndpoint(`wr-life-${process.pid}-${++windowRecoveryFixtureSequence}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://window-recovery-lifecycle-${Date.now()}`,
