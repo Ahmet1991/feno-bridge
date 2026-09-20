@@ -19,22 +19,69 @@ const BLOCK_CLAIM_PATTERNS: readonly RegExp[] = [
   /safety\s+check/i,
 ];
 
+/** The call that captures a window. An answer blaming a blocked screenshot is blaming this one. */
+const WINDOW_CAPTURE = "get_window_state";
+
+/** Reaching either of these means the turn really was working on a window. */
+const WINDOW_SETUP = ["list_windows", "list_apps", "get_window", "activate_window"];
+
 export function claimsBlockedToolCall(answer: string): boolean {
   return BLOCK_CLAIM_PATTERNS.some(pattern => pattern.test(answer));
 }
 
-export function formatBlockClaimEvidence(counts: { completed: number; failed: number }): string {
+/**
+ * What this bridge dispatched for one logical turn.
+ *
+ * A Codex turn spans several adapter rounds: calls go out in one round and their results arrive in
+ * the next. This is therefore kept for the lifetime of the turn's session. Counting per round made
+ * the line report only the final round — on 20 Sep it said one call where the record showed two.
+ */
+export class TurnCallLedger {
+  completed = 0;
+  failed = 0;
+  private readonly functions = new Set<string>();
+
+  record(skyFunctions: readonly string[], isError: boolean): void {
+    this.completed += 1;
+    if (isError) this.failed += 1;
+    for (const name of skyFunctions) this.functions.add(name);
+  }
+
+  /**
+   * The only way to turn a ledger into evidence input. Passing the ledger itself would make the
+   * flag truthy just because a method of that name exists, which a test caught.
+   *
+   * `windowCaptureNeverReached` means the turn set a window up and never asked to capture it. The
+   * capture call may have been suppressed before it reached the bridge, so it reports reach, never
+   * intent.
+   */
+  summary(): { completed: number; failed: number; windowCaptureNeverReached: boolean } {
+    return {
+      completed: this.completed,
+      failed: this.failed,
+      windowCaptureNeverReached:
+        WINDOW_SETUP.some(name => this.functions.has(name)) && !this.functions.has(WINDOW_CAPTURE),
+    };
+  }
+}
+
+export function formatBlockClaimEvidence(
+  counts: { completed: number; failed: number; windowCaptureNeverReached?: boolean },
+): string {
   const { completed, failed } = counts;
   const observed = completed === 0
     ? "Bu turda köprü üzerinden hiç araç çağrısı yapılmadı."
     : `Bu turda ${completed} araç çağrısı tamamlandı, ${failed} tanesi hata döndürdü.`;
-  return `\n\n---\n[Feno Bridge] ${observed}`;
+  const missing = counts.windowCaptureNeverReached
+    ? ` Pencere hazırlandı ama ekran görüntüsü çağrısı (${WINDOW_CAPTURE}) köprüye hiç ulaşmadı.`
+    : "";
+  return `\n\n---\n[Feno Bridge] ${observed}${missing}`;
 }
 
 /** Returns the line to append, or undefined when the answer makes no such claim. */
 export function blockClaimEvidenceFor(
   answer: string,
-  counts: { completed: number; failed: number },
+  counts: { completed: number; failed: number; windowCaptureNeverReached?: boolean },
 ): string | undefined {
   return claimsBlockedToolCall(answer) ? formatBlockClaimEvidence(counts) : undefined;
 }

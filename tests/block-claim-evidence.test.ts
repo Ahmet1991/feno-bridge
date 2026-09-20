@@ -3,7 +3,28 @@ import {
   blockClaimEvidenceFor,
   claimsBlockedToolCall,
   formatBlockClaimEvidence,
+  TurnCallLedger,
 } from "../src/adapters/chatgpt-web/block-claim-evidence";
+import { skyFunctionsIn } from "../src/adapters/chatgpt-web/window-recovery";
+
+test("the window functions a dispatched call asked for are read from the call itself", () => {
+  const call = {
+    callId: "call_1",
+    wireName: "js",
+    freeform: false,
+    arguments: {
+      code: "globalThis.windows = await sky.list_windows(); const w = await sky.get_window({id:589952});",
+    },
+  };
+  expect(skyFunctionsIn(call).sort()).toEqual(["get_window", "list_windows"]);
+  // A shell command that merely mentions the name is not a call.
+  expect(skyFunctionsIn({
+    callId: "call_2",
+    wireName: "exec_command",
+    freeform: false,
+    arguments: { cmd: "rg -n 'sky.get_window_state(' docs" },
+  })).toEqual([]);
+});
 
 test("a blocked-call claim is recognised in the wordings ChatGPT actually produced", () => {
   const seen = [
@@ -23,6 +44,47 @@ test("the evidence line reports what the bridge dispatched, including the none c
     .toContain("4 araç çağrısı tamamlandı, 2 tanesi hata döndürdü");
   expect(formatBlockClaimEvidence({ completed: 0, failed: 0 }))
     .toContain("hiç araç çağrısı yapılmadı");
+});
+
+test("the ledger counts a whole turn, not the round the answer landed in", () => {
+  // 20 Sep: two js calls went out in separate rounds and the line reported one. A Codex turn spans
+  // several adapter rounds, so the ledger has to survive them.
+  const ledger = new TurnCallLedger();
+  ledger.record(["list_windows"], false);
+  ledger.record(["get_window"], false);
+  expect(ledger.completed).toBe(2);
+  expect(ledger.failed).toBe(0);
+  expect(formatBlockClaimEvidence(ledger.summary())).toContain("2 araç çağrısı tamamlandı");
+});
+
+test("a turn that set a window up but never asked to capture it is reported as such", () => {
+  // The 15:38 turn exactly: the window was found and its handle fetched, the screenshot call never
+  // arrived, and the answer blamed a block.
+  const ledger = new TurnCallLedger();
+  ledger.record(["list_windows"], false);
+  ledger.record(["get_window"], false);
+  expect(ledger.summary().windowCaptureNeverReached).toBeTrue();
+
+  const line = formatBlockClaimEvidence(ledger.summary());
+  expect(line).toContain("get_window_state");
+  // It states reach, never intent: a call suppressed above the bridge never arrives either.
+  expect(line).toContain("köprüye hiç ulaşmadı");
+});
+
+test("a turn that did capture the window says nothing about a missing call", () => {
+  const ledger = new TurnCallLedger();
+  ledger.record(["list_windows"], false);
+  ledger.record(["get_window", "activate_window", "get_window_state"], false);
+  expect(ledger.summary().windowCaptureNeverReached).toBeFalse();
+  expect(formatBlockClaimEvidence(ledger.summary())).not.toContain("get_window_state");
+});
+
+test("a turn that never touched a window is not described as missing a screenshot", () => {
+  const ledger = new TurnCallLedger();
+  ledger.record([], false);
+  ledger.record(["read_file"], true);
+  expect(ledger.summary().windowCaptureNeverReached).toBeFalse();
+  expect(ledger.failed).toBe(1);
 });
 
 test("only an answer that claims a block carries the evidence line", () => {
