@@ -1,3 +1,4 @@
+import { TOOL_SEARCH_EMPTY_RESULT, toolSearchLoadedMessage } from "../../responses/parser";
 import { namespacedToolName, type CodexParsedRequest, type CodexTool } from "../../types";
 import { searchCodexToolInventory } from "./tool-inventory-search";
 
@@ -29,12 +30,12 @@ export function backfillEmptyToolSearchResults(parsed: CodexParsedRequest, regis
     if (!search) continue;
     const message = parsed.context.messages.find(entry => entry.role === "toolResult"
       && entry.toolName === "tool_search" && entry.toolCallId === callId);
-    if (!message || message.role !== "toolResult" || message.isError || message.content !== "Tool search returned no tools.") continue;
+    if (!message || message.role !== "toolResult" || message.isError || message.content !== TOOL_SEARCH_EMPTY_RESULT) continue;
 
     const { matches } = searchCodexToolInventory(registry, search.query, search.offset, search.limit);
     if (matches.length === 0) continue;
     const names = matches.map(tool => namespacedToolName(tool.namespace, tool.name));
-    message.content = `Tool search loaded these tools — they are now in your available tools. Call one by its EXACT name: ${names.join(", ")}.`;
+    message.content = toolSearchLoadedMessage(names);
     const available = new Set((parsed.context.tools ?? []).map(tool => namespacedToolName(tool.namespace, tool.name)));
     for (const tool of matches) {
       const name = namespacedToolName(tool.namespace, tool.name);

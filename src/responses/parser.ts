@@ -97,6 +97,17 @@ function mapToolChoice(value: unknown): CodexRequestOptions["toolChoice"] {
   return undefined;
 }
 
+/**
+ * The tool_search result text. Both this parser and the inventory backfill that repairs an empty
+ * native search depend on these exact strings, so they live here and are never spelled out twice.
+ */
+export const TOOL_SEARCH_EMPTY_RESULT = "Tool search returned no tools.";
+
+export function toolSearchLoadedMessage(wireNames: readonly string[]): string {
+  return "Tool search loaded these tools — they are now in your available tools."
+    + ` Call one by its EXACT name: ${wireNames.join(", ")}.`;
+}
+
 function allowedToolName(tool: unknown): string | undefined {
   if (!isObj(tool)) return undefined;
   if (typeof tool.name === "string" && tool.name.length > 0) return tool.name;
@@ -557,8 +568,8 @@ export function parseRequest(body: unknown): CodexParsedRequest {
           content: failed && wireNames.length === 0
             ? `Tool search failed (status: ${out.status}).`
             : wireNames.length
-              ? `Tool search loaded these tools — they are now in your available tools. Call one by its EXACT name: ${wireNames.join(", ")}.`
-              : "Tool search returned no tools.",
+              ? toolSearchLoadedMessage(wireNames)
+              : TOOL_SEARCH_EMPTY_RESULT,
           isError: failed && wireNames.length === 0, timestamp: now,
         });
         continue;
