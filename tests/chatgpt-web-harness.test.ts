@@ -4230,6 +4230,7 @@ function windowRecoveryFixtureArguments(fixture: WindowRecoveryAdapterFixture): 
 
 async function deliverWindowRecoveryFixtures(
   fixtures: WindowRecoveryAdapterFixture[],
+  completedEvents?: AdapterEvent[],
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
   const provider: CodexProviderConfig = {
@@ -4327,6 +4328,7 @@ async function deliverWindowRecoveryFixtures(
     const finalEvents: AdapterEvent[] = [];
     await adapter.runTurn!(continuation, { headers: new Headers() }, event => finalEvents.push(event));
     expect(finalEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+    completedEvents?.push(...finalEvents);
     return delivered;
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
@@ -4348,6 +4350,33 @@ test("the adapter delivers minimized-window guidance unchanged with a separate r
   expect((delivered?.content[2] as { text: string }).text).toContain("include_screenshot: true");
   expect(delivered?.structuredContent).toBeUndefined();
   expect(delivered?.isError).toBeUndefined();
+});
+
+test("image-only broker output preserves the image and tells the model and user it is not visible yet", async () => {
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const [delivered] = await deliverWindowRecoveryFixtures([
+    { wireName: "js", code: "nodeRepl.write('image captured')", content: [image] },
+  ], events);
+
+  expect(delivered?.content[0]).toEqual({ type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" });
+  expect(delivered?.content).toHaveLength(2);
+  expect(delivered?.content[1]).toMatchObject({ type: "text" });
+  const notice = (delivered?.content[1] as { text: string }).text;
+  expect(notice).toContain("not attached to the already-running ChatGPT browser turn");
+  expect(notice).toContain("Do not describe its contents");
+  expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
+    .toContain("1 image result(s) were returned by local tools but could not be attached");
+});
+
+test("text-only broker output does not claim an unseen image", async () => {
+  const events: AdapterEvent[] = [];
+  const [delivered] = await deliverWindowRecoveryFixtures([
+    { wireName: "js", code: "nodeRepl.write('ordinary text')", content: "ordinary text" },
+  ], events);
+  expect(delivered?.content).toEqual([{ type: "text", text: "ordinary text" }]);
+  expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
+    .not.toContain("image result(s)");
 });
 
 test("the near-miss canary logs a fingerprint without exposing result text", async () => {
@@ -4525,11 +4554,14 @@ test("window recovery state survives continuation rounds until the bound screens
     expect(delivered).toHaveLength(3);
     expect(JSON.stringify(delivered[0]!.content)).toContain("[Feno Bridge]");
     expect(JSON.stringify(delivered[1]!.content)).not.toContain("[Feno Bridge]");
-    expect(delivered[2]!.content).toEqual([{
+    expect(delivered[2]!.content[0]).toEqual({
       type: "image",
       data: "/9j/4AAQ",
       mimeType: "image/jpeg",
-    }]);
+    });
+    expect(delivered[2]!.content[1]).toMatchObject({ type: "text" });
+    expect((delivered[2]!.content[1] as { text: string }).text)
+      .toContain("not attached to the already-running ChatGPT browser turn");
     expect(warnings.some(line => line.includes("window recovery returned an image target=process:C:\\\\Feno.exe#4589948")))
       .toBeTrue();
   } finally {
