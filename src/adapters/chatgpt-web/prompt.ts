@@ -33,12 +33,20 @@ export interface CompiledChatGptWebPrompt {
   /** Oldest history items removed by native-style compaction fit recovery; absent on normal turns. */
   trimmedCompactionMessages?: number;
   /**
-   * Images this compile found in the context before attaching any. Logged beside `images.length`
-   * so a turn that carries no image says whether the context held one, which separates an image
-   * the request never delivered from one this compile dropped. Absent only on prompts that were
-   * not produced by this compiler, and the log prints `?` rather than a number it does not have.
+   * Images this compile found in the messages it was handed, before attaching any. On a retained
+   * resume those messages are already trimmed, so this counts what survived the trim — not what
+   * the request carried. Read it with `requestImages`, never alone.
    */
   contextImages?: number;
+  /**
+   * Images the Codex request carried, counted before any retained-resume trim. Set by the caller
+   * that still holds the untrimmed request; this compiler never sees it. With `contextImages` and
+   * `images.length` one log line separates the three ways a turn ends up with no image: the
+   * request carried none (`requestImages=0`), the resume trim excluded it (`contextImages=0`
+   * below a non-zero `requestImages`), or this compile dropped it (`images=0` below a non-zero
+   * `contextImages`). The log prints `?` rather than a number it does not have.
+   */
+  requestImages?: number;
 }
 
 export interface CompileChatGptWebPromptOptions {

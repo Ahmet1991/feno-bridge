@@ -537,6 +537,9 @@ export class LauncherBrowserHelperClient {
                 ...(prepared.contextImages !== undefined
                   ? { contextImages: prepared.contextImages }
                   : {}),
+                ...(prepared.requestImages !== undefined
+                  ? { requestImages: prepared.requestImages }
+                  : {}),
               } satisfies CompiledChatGptWebPrompt,
             });
           });
