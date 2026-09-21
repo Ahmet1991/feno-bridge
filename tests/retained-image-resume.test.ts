@@ -49,3 +49,45 @@ test("identical tool-result images are attached once and the most recent 10 surv
   expect(prompt.images).toHaveLength(10);
   expect(prompt.images.map(image => image.imageUrl)).toEqual(Array.from({ length: 10 }, (_, i) => jpeg(i + 3)));
 });
+
+test("a compiled prompt reports the images its context held, not only the ones it attached", () => {
+  const parsed = parse([user("Inspect screenshot"), ...shot(1), answer("Cannot inspect it"), user("Describe it")]);
+  const resumed = retainedConversationResumeRequest(parsed)!;
+  const prompt = compile(resumed);
+  expect(prompt.images).toHaveLength(1);
+  expect(prompt.contextImages).toBe(countChatGptContextImages(resumed.context.messages));
+  expect(prompt.contextImages).toBe(1);
+
+  // A text-only turn must report zero rather than leaving the field absent. This compile is handed
+  // the untrimmed request, so zero here does mean none arrived; on a resumed turn only the
+  // separately reported request count can say that.
+  const textOnly = compile(parse([user("Task"), answer("Done"), user("Continue")]));
+  expect(textOnly.images).toHaveLength(0);
+  expect(textOnly.contextImages).toBe(0);
+});
+
+test("the reported context image count survives the ten-image attachment cap", () => {
+  const shots = Array.from({ length: 13 }, (_, i) => shot(i + 1)).flat();
+  const parsed = parse([user("Inspect several"), ...shots, user("Describe them")]);
+  const prompt = compile(parsed);
+  // The cap keeps the newest ten; the count still names every image the context carried, which is
+  // what makes a dropped image distinguishable from one that never arrived.
+  expect(prompt.images).toHaveLength(10);
+  expect(prompt.contextImages).toBe(13);
+});
+
+test("a resume that trims an image reports a context count the request count contradicts", () => {
+  // Measured against live requests: once the screenshot round is no longer the most recent round,
+  // the retained-resume trim removes it, and the compile then sees a context with no image at all.
+  // `contextImages` therefore reads 0 on a request that did carry one — so it can never stand
+  // alone in the turn log, and the untrimmed request count has to be reported beside it.
+  const parsed = parse([user("Inspect"), ...shot(1), answer("Done"), user("Describe"), answer("Seen"), user("Continue")]);
+  const requestImages = countChatGptContextImages(parsed.context.messages);
+  expect(requestImages).toBe(1);
+
+  const resumed = retainedConversationResumeRequest(parsed)!;
+  const prompt = compile(resumed);
+  expect(prompt.images).toHaveLength(0);
+  expect(prompt.contextImages).toBe(0);
+  expect(requestImages).toBeGreaterThan(prompt.contextImages!);
+});

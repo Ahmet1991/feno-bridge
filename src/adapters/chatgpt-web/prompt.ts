@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+﻿import { createHash } from "node:crypto";
 import { selectedSkillFile, skillFileTokens, type ChatGptSkillFile } from "./skill-attachments";
 import {
   chatGptWebImageTokenReserve,
@@ -32,6 +32,21 @@ export interface CompiledChatGptWebPrompt {
   multipart?: ChatGptWebMultipartPrompt;
   /** Oldest history items removed by native-style compaction fit recovery; absent on normal turns. */
   trimmedCompactionMessages?: number;
+  /**
+   * Images this compile found in the messages it was handed, before attaching any. On a retained
+   * resume those messages are already trimmed, so this counts what survived the trim — not what
+   * the request carried. Read it with `requestImages`, never alone.
+   */
+  contextImages?: number;
+  /**
+   * Images the Codex request carried, counted before any retained-resume trim. Set by the caller
+   * that still holds the untrimmed request; this compiler never sees it. With `contextImages` and
+   * `images.length` one log line separates the three ways a turn ends up with no image: the
+   * request carried none (`requestImages=0`), the resume trim excluded it (`contextImages=0`
+   * below a non-zero `requestImages`), or this compile dropped it (`images=0` below a non-zero
+   * `contextImages`). The log prints `?` rather than a number it does not have.
+   */
+  requestImages?: number;
 }
 
 export interface CompileChatGptWebPromptOptions {
@@ -849,7 +864,7 @@ export function compileChatGptWebPrompt(
     ]
     : [
       `This is ChatGPT Web ${mode.displayLabel} with no Codex Native bridge to the user's local computer attached to this response. This restriction applies only to local Codex files, commands, processes, and computer mutations.`,
-      "Use any ChatGPT-native capabilities available in this chat—including web search, browsing, research, and other first-party tools—whenever they help complete the request. The missing local-computer bridge says nothing about whether those ChatGPT capabilities are available.",
+      "Use any ChatGPT-native capabilities available in this chatâ€”including web search, browsing, research, and other first-party toolsâ€”whenever they help complete the request. The missing local-computer bridge says nothing about whether those ChatGPT capabilities are available.",
       "The task history below already contains everything Codex collected from the user's local workspace. Treat prior local tool results as authoritative snapshots of that earlier work.",
       "Do not claim a new local inspection, command, edit, or verification unless it actually appears in the task history. If the latest request requires fresh local-computer access or a local mutation, state only that exact limitation instead of inventing success.",
       "Otherwise perform the full requested research, analysis, or synthesis with every capability actually available to you; do not stop at a plan or progress report.",
@@ -942,9 +957,10 @@ export function compileChatGptWebPrompt(
     ];
   const build = (sourceMessages: readonly CodexMessage[], omittedMessages = 0): CompiledChatGptWebPrompt => {
     const images: ChatGptWebPromptImage[] = [];
+    const contextImages = countChatGptContextImages(sourceMessages);
     const budget: ImageBudget = {
       seen: 0,
-      dropped: Math.max(0, countChatGptContextImages(sourceMessages) - CHATGPT_MAX_INPUT_IMAGES),
+      dropped: Math.max(0, contextImages - CHATGPT_MAX_INPUT_IMAGES),
     };
     const skillFiles: ChatGptSkillFile[] = [];
     const messages = sourceMessages.map(message => {
@@ -1012,7 +1028,7 @@ export function compileChatGptWebPrompt(
         return { tokens, chars };
       });
       multipart.parts = partitionMultipartContext(records, multipartParts!, budgets, options?.multipartRecordWeightCache);
-      return { text: multipart.commit, images, ...attachments, multipart };
+      return { text: multipart.commit, images, contextImages, ...attachments, multipart };
     }
     const envelopeJson = withoutRetiredTurnHandles(JSON.stringify({ version: 3, system, messages }));
     const text = [
@@ -1036,7 +1052,7 @@ export function compileChatGptWebPrompt(
         "</codex_transport_resume>",
       ] : transportResume),
     ].join("\n");
-    return { text, images, ...attachments };
+    return { text, images, contextImages, ...attachments };
   };
 
   let sourceMessages = withoutSupersededModelSwitchContracts(parsed.context.messages);

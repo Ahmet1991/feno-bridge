@@ -28,7 +28,7 @@ import {
 } from "./capacity";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { chatGptReadOnlyContextWarning } from "./prompt";
+import { chatGptReadOnlyContextWarning, countChatGptContextImages } from "./prompt";
 import { blockClaimEvidenceFor, TurnCallLedger } from "./block-claim-evidence";
 import {
   callObservesWindow,
@@ -806,13 +806,22 @@ export function createChatGptWebAdapter(
         throw error;
       }
     };
+    // The retained-resume trim runs before the compiler is handed any messages, so a compiled
+    // prompt cannot report what the request itself carried. Count that here, where the untrimmed
+    // request is still in hand, and report the same number on both paths so the turn-open line
+    // reads the same way whether or not the conversation was resumed.
+    const requestImages = countChatGptContextImages(checkpointInput.parsed.context.messages);
+    const prepareReporting = async (input: CodexParsedRequest) => ({
+      ...(await prepareWith(input)),
+      requestImages,
+    });
     const browserTurn = cancellableBrowserTurn(trackBrowserOwner(finalizeCheckpoint(worker.run({
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
       capabilities: turnCapabilities,
-      prepare: () => prepareWith(checkpointInput.parsed),
-      ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
+      prepare: () => prepareReporting(checkpointInput.parsed),
+      ...(resumeInput ? { prepareResume: () => prepareReporting(resumeInput) } : {}),
       ...(retainConversation ? { retainConversation: true, conversationKey } : {}),
       abortSignal: browserAbort.signal,
       ...(parsed._compactionRequest ? { compaction: true } : {}),
