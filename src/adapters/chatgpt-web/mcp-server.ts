@@ -8,6 +8,7 @@ import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
 import { observeMcpToolCalls } from "./mcp-observation";
+import { searchCodexToolInventory } from "./tool-inventory-search";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -798,13 +799,8 @@ export async function runChatGptMcpServer(options: {
         const bound = claimed.environment;
         const needle = query?.trim().toLowerCase();
         const visibleTools = safeVisibleTools(bound, contract);
-        const directMatches = visibleTools.filter(tool => !needle || [
-          wireName(tool),
-          tool.name,
-          tool.namespace ?? "",
-          tool.description,
-        ].join("\n").toLowerCase().includes(needle));
-        const directPage = directMatches.slice(offset, offset + limit).map(tool => ({
+        const { matches: directMatches, total: directTotal } = searchCodexToolInventory(visibleTools, query, offset, limit);
+        const directPage = directMatches.map(tool => ({
           wire_name: wireName(tool),
           name: tool.name,
           namespace: tool.namespace ?? null,
@@ -817,7 +813,7 @@ export async function runChatGptMcpServer(options: {
         const gateway = execGateway(bound);
         if (gateway) {
           const excludedGatewayNames = bound.tools.map(wireName);
-          const nestedOffset = Math.max(0, offset - directMatches.length);
+          const nestedOffset = Math.max(0, offset - directTotal);
           const nestedLimit = Math.max(0, limit - directPage.length);
           const response = await invoke(claimed.bindingId, bound, gateway, {
             input: gatewayToolCatalogProgram({
@@ -848,7 +844,7 @@ export async function runChatGptMcpServer(options: {
           }));
         }
         const page = [...directPage, ...nestedPage];
-        const total = directMatches.length + nestedTotal;
+        const total = directTotal + nestedTotal;
         // A filtered registry miss does not mean deferred tools are unavailable. Expose the
         // actual native discovery entry separately; it is not a query match or an automatic call.
         const discoveryTools = needle && total === 0

@@ -50,6 +50,7 @@ import { stageCompactionContinuationPendingWork } from "./compaction-continuatio
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage } from "./usage";
 import { ChatGptThreadEnvironmentStore } from "./thread-environment";
+import { backfillEmptyToolSearchResults } from "./tool-search-backfill";
 import {
   ChatGptLunaCheckpointStore,
   type CapturedChatGptLunaCheckpoint,
@@ -912,6 +913,7 @@ export function createChatGptWebAdapter(
         if (mode.localTools) {
           try {
             environment = environmentStore.resolve(parsed);
+            backfillEmptyToolSearchResults(parsed, environment.tools);
           } catch (error) {
             const identity = extractChatGptTurnIdentity(parsed);
             console.warn(
