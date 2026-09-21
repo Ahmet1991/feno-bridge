@@ -34,6 +34,7 @@ import {
   callObservesWindow,
   isPolicyStop,
   skyFunctionsIn,
+  toolResultHasImage,
   toolResultText,
   WindowRecoveryTracker,
 } from "./window-recovery";
@@ -72,6 +73,15 @@ import {
 
 const windowRecoveryBySession = new WeakMap<ChatGptTurnSession, WindowRecoveryTracker>();
 const callLedgerBySession = new WeakMap<ChatGptTurnSession, TurnCallLedger>();
+const unshownImagesBySession = new WeakMap<ChatGptTurnSession, number>();
+
+const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image, but it was not attached to the already-running ChatGPT browser turn. You have not visually inspected this image. Do not describe its contents or claim that you saw it. Tell the user that visual inspection requires a new turn with the image attached.";
+
+function unshownImageFinalNotice(count: number): string | undefined {
+  return count > 0
+    ? `\n\n[Feno Bridge] ${count} image result(s) were returned by local tools but could not be attached to this browser turn. Visual inspection of those images has not been verified. Continue in a new turn to attach and inspect them.`
+    : undefined;
+}
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
   const configured = provider.chatgptWeb?.brokerSocketPath?.trim();
@@ -256,6 +266,7 @@ function brokerContent(content: string | CodexContentPart[]): unknown[] {
 
 function brokerResult(message: CodexToolResultMessage, recoveryNote?: string): BrokerToolResult {
   const content = brokerContent(message.content);
+  const imageNotice = toolResultHasImage(message.content) ? BROKER_IMAGE_NOTICE : undefined;
   const text = typeof message.content === "string"
     ? message.content
     : message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
@@ -263,7 +274,11 @@ function brokerResult(message: CodexToolResultMessage, recoveryNote?: string): B
   // the original output stays byte-for-byte intact and a JSON result still parses.
   const structured = structuredContent(text);
   return {
-    content: recoveryNote !== undefined ? [...content, { type: "text", text: recoveryNote }] : content,
+    content: [
+      ...content,
+      ...(recoveryNote !== undefined ? [{ type: "text", text: recoveryNote }] : []),
+      ...(imageNotice !== undefined ? [{ type: "text", text: imageNotice }] : []),
+    ],
     ...(structured !== undefined ? { structuredContent: structured } : {}),
     ...(message.isError ? { isError: true } : {}),
   };
@@ -1313,6 +1328,10 @@ export function createChatGptWebAdapter(
               if (bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([settled.answer], buffer));
               }
+              const unshownImageNotice = unshownImageFinalNotice(unshownImagesBySession.get(session) ?? 0);
+              if (unshownImageNotice && !bufferStructuredOutput) {
+                emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
+              }
               const reasoning = session.roundReasoning(roundKey);
               session.setFinalReasoning(reasoning);
               session.setFinalEvents(session.roundEvents(roundKey));
@@ -1384,6 +1403,11 @@ export function createChatGptWebAdapter(
                     message.toolCallId,
                     brokerResult(message, recovery?.kind === "recover" ? recovery.note : undefined),
                   );
+                  if (toolResultHasImage(message.content)) {
+                    unshownImagesBySession.set(session, (unshownImagesBySession.get(session) ?? 0)
+                      + (typeof message.content === "string" ? 0 : message.content.filter(part => part.type === "image").length));
+                    console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
+                  }
                   toolCallLedger.record(skyFunctionsIn(callsById.get(message.toolCallId)), message.isError);
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);
@@ -1446,7 +1470,6 @@ export function createChatGptWebAdapter(
                 emitNewTrace(session.runtime.trace.drain());
                 emitNewText(session.runtime.text.drain());
                 session.setFinalReasoning(roundReasoning);
-                session.setFinalEvents(session.roundEvents(roundKey));
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
@@ -1468,6 +1491,11 @@ export function createChatGptWebAdapter(
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
                 }
+                const unshownImageNotice = unshownImageFinalNotice(unshownImagesBySession.get(session) ?? 0);
+                if (unshownImageNotice && !bufferStructuredOutput) {
+                  emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
+                }
+                session.setFinalEvents(session.roundEvents(roundKey));
                 emitRoundBatch(buffer => emitBrowserCompletion(
                   completedOutcome,
                   estimateChatGptWebUsage(currentUsageInput(parsed), { answer: completedOutcome.answer, reasoning: roundReasoning }, turnCapabilities, experimentalBiggerContext, experimentalSkillAttachments),
