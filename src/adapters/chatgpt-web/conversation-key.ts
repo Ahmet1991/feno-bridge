@@ -67,7 +67,12 @@ export function retainedConversationResumeRequest(
   }
   const imageResults: typeof suffix = [];
   let images = 0;
-  for (let i = lastAssistant - 1; i > precedingUser && images < CHATGPT_MAX_INPUT_IMAGES; i -= 1) {
+  const candidateIndexes = [
+    ...Array.from({ length: parsed.context.messages.length - lastAssistant - 1 }, (_, offset) => lastAssistant + 1 + offset),
+    ...Array.from({ length: lastAssistant - precedingUser - 1 }, (_, offset) => lastAssistant - 1 - offset),
+  ];
+  for (const i of candidateIndexes) {
+    if (images >= CHATGPT_MAX_INPUT_IMAGES) break;
     const message = parsed.context.messages[i]!;
     if (message.role !== "toolResult" || typeof message.content === "string") continue;
     const distinctImages = message.content.filter(part => {
