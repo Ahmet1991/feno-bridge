@@ -4677,3 +4677,64 @@ test("the evidence line counts every round of a turn and names the capture that 
     await broker.close();
   }
 });
+
+test("a block claim the ledger contradicts is corrected by one tool-less retained turn", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-false-block-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://chatgpt-false-block-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(tempRoot, "retained-launcher.json"),
+      brokerSocketPath: socketPath,
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const turns: BrowserTurn[] = [];
+  const prompts: string[] = [];
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    turns.push(turn);
+    const prepared = await (turns.length === 1 ? turn.prepare() : turn.prepareResume!());
+    prompts.push(prepared.text);
+    prepared.release();
+    // The first answer is the fabrication this repairs; the second is what the model said once it
+    // was shown the record, quoted from the 21 Sep measurement.
+    const answer = turns.length === 1
+      ? "Bu araç OpenAI'ın güvenlik kontrolleri tarafından engellendi."
+      : "Haklısın, bir araç çıktısına dayanmayan bir hata metni aktardım.";
+    turn.onTextDelta(answer);
+    return answer;
+  };
+
+  try {
+    const events: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      rawWireRequest(environmentXml),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+
+    // Exactly two browser turns: the original and one correction, never a third.
+    expect(turns).toHaveLength(2);
+    const correction = turns[1]!;
+    expect(correction.capabilities.localToolsEnabled).toBeFalse();
+    expect(correction.requireRetainedConversation).toBeTrue();
+    expect(correction.conversationKey).toBe(turns[0]!.conversationKey!);
+    // No turn token is compiled into this prompt, which is why it must not advertise tools.
+    expect(prompts[1]).not.toContain("turn_token ");
+    expect(prompts[1]).toContain("hiçbir araç çıktısından gelmedi");
+
+    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+    expect(text).toContain("Bu araç OpenAI'ın güvenlik kontrolleri");
+    expect(text).toContain("[Feno Bridge]");
+    expect(text).toContain("Haklısın, bir araç çıktısına dayanmayan");
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+});

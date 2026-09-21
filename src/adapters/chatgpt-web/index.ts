@@ -29,7 +29,8 @@ import {
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, countChatGptContextImages } from "./prompt";
-import { blockClaimEvidenceFor, TurnCallLedger } from "./block-claim-evidence";
+import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
+import { falseBlockCorrection, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
 import {
   callObservesWindow,
   isPolicyStop,
@@ -74,6 +75,8 @@ import {
 const windowRecoveryBySession = new WeakMap<ChatGptTurnSession, WindowRecoveryTracker>();
 const callLedgerBySession = new WeakMap<ChatGptTurnSession, TurnCallLedger>();
 const unshownImagesBySession = new WeakMap<ChatGptTurnSession, number>();
+/** Sessions already given one correction, so a repeated claim cannot cost a second browser turn. */
+const falseBlockRecoveredSessions = new WeakSet<ChatGptTurnSession>();
 
 const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image, but it was not attached to the already-running ChatGPT browser turn. You have not visually inspected this image. Do not describe its contents or claim that you saw it. Tell the user that visual inspection requires a new turn with the image attached.";
 
@@ -1470,6 +1473,14 @@ export function createChatGptWebAdapter(
                 emitNewTrace(session.runtime.trace.drain());
                 emitNewText(session.runtime.text.drain());
                 session.setFinalReasoning(roundReasoning);
+                const ledger = toolCallLedger.summary();
+                const correcting = completedOutcome.type === "final"
+                  // A buffered structured answer has no room for a correction, so running the turn
+                  // would spend a browser round on text this turn could never emit.
+                  && !bufferStructuredOutput
+                  && session.conversationKey() !== undefined
+                  && !falseBlockRecoveredSessions.has(session)
+                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
@@ -1481,7 +1492,6 @@ export function createChatGptWebAdapter(
                 }
                 // The answer itself is already verified above; this only adds what the bridge
                 // observed, after that check, so the integrity comparison stays untouched.
-                const ledger = toolCallLedger.summary();
                 const blockEvidence = blockClaimEvidenceFor(completedOutcome.answer, ledger);
                 if (blockEvidence) {
                   console.warn(
@@ -1490,6 +1500,58 @@ export function createChatGptWebAdapter(
                     + ` windowCaptureNeverReached=${ledger.windowCaptureNeverReached}`,
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
+                }
+                if (correcting) {
+                  // Once per session: a model that repeats the claim after being shown the record
+                  // is not going to be talked out of it, and a loop would cost real browser turns.
+                  falseBlockRecoveredSessions.add(session);
+                  const prepareCorrection = async () => ({
+                    text: falseBlockCorrection(ledger),
+                    images: [],
+                    release: () => {},
+                  });
+                  let corrected: string | undefined;
+                  let failure: string | undefined;
+                  try {
+                    // Deliberately tool-less, like the compaction handoff: this prompt carries no
+                    // turn token, so advertising the tool environment would offer the model tools it
+                    // has no way to claim. What the measurement produced was a withdrawn claim and a
+                    // real reason, not resumed work, and this turn asks for exactly that much.
+                    //
+                    // Its own stream is suppressed as well — the first answer already reached the
+                    // client and the integrity comparison above is bound to it, so this answer is
+                    // appended from the resolved value instead of joining that stream.
+                    corrected = await worker.run({
+                      traceId,
+                      modelId: parsed.modelId,
+                      reasoning: parsed.options.reasoning,
+                      capabilities: { ...turnCapabilities, localToolsEnabled: false },
+                      nativeConnector: true,
+                      prepare: prepareCorrection,
+                      prepareResume: prepareCorrection,
+                      conversationKey: session.conversationKey(),
+                      requireRetainedConversation: true,
+                      abortSignal: incoming.abortSignal,
+                      onTextDelta: () => {},
+                    });
+                  } catch (error) {
+                    // Best effort throughout: the turn already has an answer, and a correction that
+                    // fails must not take it down with it.
+                    failure = error instanceof Error ? error.message : String(error);
+                  }
+                  // Whether this works is a claim about a model, so it is counted rather than
+                  // assumed: the line reports that a correction was sent and whether the answer it
+                  // produced still claims a block, which is countable from the log afterwards.
+                  console.warn(
+                    `[chatgpt-web] false block claim correction sent`
+                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
+                    + ` answered=${corrected !== undefined}`
+                    + ` stillClaimsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
+                    + (failure !== undefined ? ` failure=${JSON.stringify(failure)}` : ""),
+                  );
+                  if (corrected !== undefined && corrected.trim().length > 0) {
+                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${corrected}`], buffer));
+                  }
                 }
                 const unshownImageNotice = unshownImageFinalNotice(unshownImagesBySession.get(session) ?? 0);
                 if (unshownImageNotice && !bufferStructuredOutput) {
