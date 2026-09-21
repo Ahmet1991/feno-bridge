@@ -52,3 +52,24 @@ Güncelleme sırasında kurulum kapanır veya yeniden açılmazsa önce kurulu s
 Bu genel belirti tek bir sebep kanıtlamaz. ChatGPT sayfasındaki değişiklik, oturum/hesap sınırı, kapanan tarayıcı yüzeyi, Codex yönlendirmesi veya uzun süren bir araç çağrısı olabilir. Son ayrıntılı hatayı ve Feno sürümünü al; yeni bir Codex görevinde bir kez tekrar dene; Feno'da **Ayarlar → Sistem kontrolünü çalıştır** ve **Etkinlik → Güvenli günlüğü dışa aktar** adımlarını kullan. Ekran görüntüsü veya güvenli günlük paylaşılırken oturum çerezlerini, API anahtarlarını ve özel konuşma içeriğini yayımlama.
 
 Güncel proje belgeleri: https://github.com/Ahmet1991/feno-bridge/blob/main/TROUBLESHOOTING.md ve https://github.com/Ahmet1991/feno-bridge/blob/main/docs/release-validation.md
+
+## `mcp__node_repl__js` çekirdeği ve ekran görüntüsü
+
+Bu çekirdek tam bir Node ortamı değil: `require`, `process`, `module` ve `window` **tanımsızdır**. Dinamik `import()` çalışır. Global'ler arasında `Buffer`, `fetch`, `crypto`, `atob`/`btoa` ve iki özel giriş vardır: `tmpDir` ve `nodeRepl` (`{ cwd, env, homeDir, tmpDir, requestMeta, write, emitImage, rpc }`).
+
+Ekran görüntüsü `@oai/sky` üzerinden alınır. Çalışan kalıp:
+
+```js
+if (!globalThis.sky) { const m = await import('@oai/sky'); globalThis.sky = m.sky; }
+const win = (await sky.list_windows()).find(w => w.title === '<BAŞLIK>');
+const handle = await sky.get_window({ id: win.id, app: win.app });
+await sky.activate_window({ window: handle });
+const state = await sky.get_window_state({ window: handle, include_screenshot: true });
+const fs = await import('node:fs/promises');
+await fs.writeFile(out, Buffer.from(state.screenshots[0].url.split(',')[1], 'base64'));
+nodeRepl.write(out);
+```
+
+`process is not defined` gibi bir hata aracın engellendiğini göstermez; yanlış API kullanıldığını gösterir. API'yi bilmemek bir engel değildir — hangi çağrının neyi döndürdüğünü ölçerek ilerle.
+
+Araç sonucu bir görüntü içeriyorsa onu **görmüş sayılmazsın**: görüntü çalışmakta olan tarayıcı turuna ek olarak bağlanamıyor. İçeriğini anlatma; görsel inceleme için yeni bir tur gerektiğini söyle.

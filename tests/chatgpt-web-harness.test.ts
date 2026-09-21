@@ -4231,12 +4231,18 @@ function windowRecoveryFixtureArguments(fixture: WindowRecoveryAdapterFixture): 
 async function deliverWindowRecoveryFixtures(
   fixtures: WindowRecoveryAdapterFixture[],
   completedEvents?: AdapterEvent[],
+  // A retained conversation is what a follow-up turn needs to speak into, so only a fixture that
+  // asks for one gets the launcher descriptor that produces a conversation key.
+  options?: { retained?: boolean; browserTurns?: BrowserTurn[] },
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://window-recovery-${Date.now()}-${Math.random()}`,
     chatgptWeb: {
+      ...(options?.retained
+        ? { browserHost: "launcher" as const, browserHostDescriptorPath: join(tempRoot, "retained-launcher.json") }
+        : {}),
       brokerSocketPath: socketPath,
       turnTimeoutMs: 30_000,
       localToolsEnabled: true,
@@ -4250,9 +4256,17 @@ async function deliverWindowRecoveryFixtures(
   const originalRun = worker.run.bind(worker);
   const delivered: BrokerToolResult[] = [];
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    options?.browserTurns?.push(turn);
     const prepared = await turn.prepare();
     try {
       const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      // A follow-up turn the adapter opened itself carries no turn token, because it compiles a
+      // fixed prompt rather than a tool environment. Answer it instead of failing the fixture.
+      if (!token && options?.browserTurns) {
+        const answer = "Ekte gördüğüm pencere: Feno Bridge.";
+        turn.onTextDelta(answer);
+        return answer;
+      }
       if (!token) throw new Error("turn token missing from window recovery test prompt");
       const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
       const results = await invokeAfterBrowserBoundary(turn, () => Promise.all(fixtures.map(fixture => (
@@ -4676,4 +4690,97 @@ test("the evidence line counts every round of a turn and names the capture that 
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     await broker.close();
   }
+});
+
+test("a block claim the ledger contradicts is corrected by one tool-less retained turn", async () => {
+  const socketPath = brokerTestEndpoint(`cgw-false-block-${process.pid}-${Date.now()}`);
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://chatgpt-false-block-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(tempRoot, "retained-launcher.json"),
+      brokerSocketPath: socketPath,
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const turns: BrowserTurn[] = [];
+  const prompts: string[] = [];
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    turns.push(turn);
+    const prepared = await (turns.length === 1 ? turn.prepare() : turn.prepareResume!());
+    prompts.push(prepared.text);
+    prepared.release();
+    // The first answer is the fabrication this repairs; the second is what the model said once it
+    // was shown the record, quoted from the 21 Sep measurement.
+    const answer = turns.length === 1
+      ? "Bu araç OpenAI'ın güvenlik kontrolleri tarafından engellendi."
+      : "Haklısın, bir araç çıktısına dayanmayan bir hata metni aktardım.";
+    turn.onTextDelta(answer);
+    return answer;
+  };
+
+  try {
+    const events: AdapterEvent[] = [];
+    await createChatGptWebAdapter(provider).runTurn!(
+      rawWireRequest(environmentXml),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+
+    // Exactly two browser turns: the original and one correction, never a third.
+    expect(turns).toHaveLength(2);
+    const correction = turns[1]!;
+    expect(correction.capabilities.localToolsEnabled).toBeFalse();
+    expect(correction.requireRetainedConversation).toBeTrue();
+    expect(correction.conversationKey).toBe(turns[0]!.conversationKey!);
+    // No turn token is compiled into this prompt, which is why it must not advertise tools.
+    expect(prompts[1]).not.toContain("turn_token ");
+    expect(prompts[1]).toContain("hiçbir araç çıktısından gelmedi");
+
+    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+    expect(text).toContain("Bu araç OpenAI'ın güvenlik kontrolleri");
+    expect(text).toContain("[Feno Bridge]");
+    expect(text).toContain("Haklısın, bir araç çıktısına dayanmayan");
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(socketPath).close();
+  }
+});
+
+test("an image a tool returned mid-turn is delivered by a follow-up turn that attaches it", async () => {
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const [delivered] = await deliverWindowRecoveryFixtures(
+    [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+    events,
+    { retained: true, browserTurns },
+  );
+
+  // The broker result is untouched: the image still rides on it, with the notice beside it.
+  expect(delivered?.content[0]).toEqual({ type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" });
+
+  // One original turn and one delivery turn, never more.
+  expect(browserTurns).toHaveLength(2);
+  const delivery = browserTurns[1]!;
+  const prompt = await delivery.prepare();
+  expect(prompt.images.map(entry => entry.imageUrl)).toEqual([image.imageUrl]);
+  // Attachments are what makes this work, so the prompt must produce a real uploadable file.
+  expect(chatGptPromptFilePayloads(prompt).map(file => file.mimeType)).toEqual(["image/jpeg"]);
+  expect(prompt.text).toContain("ek olarak bağlandı");
+  expect(delivery.capabilities.localToolsEnabled).toBeFalse();
+  expect(delivery.requireRetainedConversation).toBeTrue();
+  expect(delivery.conversationKey).toBe(browserTurns[0]!.conversationKey!);
+  prompt.release();
+
+  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+  expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
+  // A delivered image is no longer unseen, so the turn must not also report it as unshown.
+  expect(text).not.toContain("could not be attached");
 });

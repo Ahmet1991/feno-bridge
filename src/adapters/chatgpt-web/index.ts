@@ -28,8 +28,9 @@ import {
 } from "./capacity";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { chatGptReadOnlyContextWarning, countChatGptContextImages } from "./prompt";
-import { blockClaimEvidenceFor, TurnCallLedger } from "./block-claim-evidence";
+import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
+import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
+import { falseBlockCorrection, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
 import {
   callObservesWindow,
   isPolicyStop,
@@ -73,9 +74,26 @@ import {
 
 const windowRecoveryBySession = new WeakMap<ChatGptTurnSession, WindowRecoveryTracker>();
 const callLedgerBySession = new WeakMap<ChatGptTurnSession, TurnCallLedger>();
-const unshownImagesBySession = new WeakMap<ChatGptTurnSession, number>();
+/**
+ * Images a local tool returned mid-turn, kept rather than counted: a follow-up turn can attach
+ * them, which is the only way one reaches the model at all.
+ */
+const unshownImagesBySession = new WeakMap<ChatGptTurnSession, ChatGptWebPromptImage[]>();
+/** Sessions already given one delivery turn, so a long tool round cannot spawn one per image. */
+const imagesDeliveredSessions = new WeakSet<ChatGptTurnSession>();
+/** Sessions already given one correction, so a repeated claim cannot cost a second browser turn. */
+const falseBlockRecoveredSessions = new WeakSet<ChatGptTurnSession>();
 
 const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image, but it was not attached to the already-running ChatGPT browser turn. You have not visually inspected this image. Do not describe its contents or claim that you saw it. Tell the user that visual inspection requires a new turn with the image attached.";
+
+/**
+ * What a delivery turn says. The images ride on this message as real attachments, which is the one
+ * path by which a tool's image reaches the model at all — a result returned into a generation
+ * already under way never becomes one.
+ */
+const DELIVERED_IMAGES_PROMPT = "[Feno Bridge] Önceki araç çağrısının döndürdüğü görüntü(ler) bu"
+  + " mesaja ek olarak bağlandı, artık görebilirsin. Bir önceki turda göremediğin için"
+  + " yanıtlayamadığın soruyu şimdi yanıtla. Göremediğin bir şey varsa göremediğini söyle.";
 
 function unshownImageFinalNotice(count: number): string | undefined {
   return count > 0
@@ -1328,7 +1346,7 @@ export function createChatGptWebAdapter(
               if (bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([settled.answer], buffer));
               }
-              const unshownImageNotice = unshownImageFinalNotice(unshownImagesBySession.get(session) ?? 0);
+              const unshownImageNotice = unshownImageFinalNotice((unshownImagesBySession.get(session) ?? []).length);
               if (unshownImageNotice && !bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
               }
@@ -1403,9 +1421,16 @@ export function createChatGptWebAdapter(
                     message.toolCallId,
                     brokerResult(message, recovery?.kind === "recover" ? recovery.note : undefined),
                   );
-                  if (toolResultHasImage(message.content)) {
-                    unshownImagesBySession.set(session, (unshownImagesBySession.get(session) ?? 0)
-                      + (typeof message.content === "string" ? 0 : message.content.filter(part => part.type === "image").length));
+                  if (toolResultHasImage(message.content) && typeof message.content !== "string") {
+                    // Kept for the delivery turn below. The cap is ChatGPT's own attachment limit,
+                    // and the newest images are the ones the answer is about, so a long tool round
+                    // drops its oldest rather than refusing to attach anything.
+                    const pending = unshownImagesBySession.get(session) ?? [];
+                    for (const part of message.content) {
+                      if (part.type !== "image") continue;
+                      pending.push({ ref: `codex-tool-image-${pending.length + 1}`, imageUrl: part.imageUrl });
+                    }
+                    unshownImagesBySession.set(session, pending.slice(-CHATGPT_MAX_INPUT_IMAGES));
                     console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
                   }
                   toolCallLedger.record(skyFunctionsIn(callsById.get(message.toolCallId)), message.isError);
@@ -1470,6 +1495,14 @@ export function createChatGptWebAdapter(
                 emitNewTrace(session.runtime.trace.drain());
                 emitNewText(session.runtime.text.drain());
                 session.setFinalReasoning(roundReasoning);
+                const ledger = toolCallLedger.summary();
+                const correcting = completedOutcome.type === "final"
+                  // A buffered structured answer has no room for a correction, so running the turn
+                  // would spend a browser round on text this turn could never emit.
+                  && !bufferStructuredOutput
+                  && session.conversationKey() !== undefined
+                  && !falseBlockRecoveredSessions.has(session)
+                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
@@ -1481,7 +1514,6 @@ export function createChatGptWebAdapter(
                 }
                 // The answer itself is already verified above; this only adds what the bridge
                 // observed, after that check, so the integrity comparison stays untouched.
-                const ledger = toolCallLedger.summary();
                 const blockEvidence = blockClaimEvidenceFor(completedOutcome.answer, ledger);
                 if (blockEvidence) {
                   console.warn(
@@ -1491,7 +1523,110 @@ export function createChatGptWebAdapter(
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
                 }
-                const unshownImageNotice = unshownImageFinalNotice(unshownImagesBySession.get(session) ?? 0);
+                if (correcting) {
+                  // Once per session: a model that repeats the claim after being shown the record
+                  // is not going to be talked out of it, and a loop would cost real browser turns.
+                  falseBlockRecoveredSessions.add(session);
+                  const prepareCorrection = async () => ({
+                    text: falseBlockCorrection(ledger),
+                    images: [],
+                    release: () => {},
+                  });
+                  let corrected: string | undefined;
+                  let failure: string | undefined;
+                  try {
+                    // Deliberately tool-less, like the compaction handoff: this prompt carries no
+                    // turn token, so advertising the tool environment would offer the model tools it
+                    // has no way to claim. What the measurement produced was a withdrawn claim and a
+                    // real reason, not resumed work, and this turn asks for exactly that much.
+                    //
+                    // Its own stream is suppressed as well — the first answer already reached the
+                    // client and the integrity comparison above is bound to it, so this answer is
+                    // appended from the resolved value instead of joining that stream.
+                    corrected = await worker.run({
+                      traceId,
+                      modelId: parsed.modelId,
+                      reasoning: parsed.options.reasoning,
+                      capabilities: { ...turnCapabilities, localToolsEnabled: false },
+                      nativeConnector: true,
+                      prepare: prepareCorrection,
+                      prepareResume: prepareCorrection,
+                      conversationKey: session.conversationKey(),
+                      requireRetainedConversation: true,
+                      abortSignal: incoming.abortSignal,
+                      onTextDelta: () => {},
+                    });
+                  } catch (error) {
+                    // Best effort throughout: the turn already has an answer, and a correction that
+                    // fails must not take it down with it.
+                    failure = error instanceof Error ? error.message : String(error);
+                  }
+                  // Whether this works is a claim about a model, so it is counted rather than
+                  // assumed: the line reports that a correction was sent and whether the answer it
+                  // produced still claims a block, which is countable from the log afterwards.
+                  console.warn(
+                    `[chatgpt-web] false block claim correction sent`
+                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
+                    + ` answered=${corrected !== undefined}`
+                    + ` stillClaimsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
+                    + (failure !== undefined ? ` failure=${JSON.stringify(failure)}` : ""),
+                  );
+                  if (corrected !== undefined && corrected.trim().length > 0) {
+                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${corrected}`], buffer));
+                  }
+                }
+                const pendingImages = unshownImagesBySession.get(session) ?? [];
+                let delivered: string | undefined;
+                if (completedOutcome.type === "final"
+                  && !bufferStructuredOutput
+                  && pendingImages.length > 0
+                  && session.conversationKey() !== undefined
+                  && !imagesDeliveredSessions.has(session)) {
+                  // The one path that gets a tool's image in front of the model: attachments are
+                  // uploaded while a turn is being composed, so an image that arrived mid-generation
+                  // needs a turn of its own. Once per session — a delivery turn per screenshot in a
+                  // long round would cost more browser turns than the work itself.
+                  imagesDeliveredSessions.add(session);
+                  const prepareDelivery = async () => ({
+                    text: DELIVERED_IMAGES_PROMPT,
+                    images: pendingImages,
+                    release: () => {},
+                  });
+                  let deliveryFailure: string | undefined;
+                  try {
+                    delivered = await worker.run({
+                      traceId,
+                      modelId: parsed.modelId,
+                      reasoning: parsed.options.reasoning,
+                      // Tool-less for the same reason as the correction turn: this prompt carries no
+                      // turn token, and looking at an attachment needs no tools.
+                      capabilities: { ...turnCapabilities, localToolsEnabled: false },
+                      nativeConnector: true,
+                      prepare: prepareDelivery,
+                      prepareResume: prepareDelivery,
+                      conversationKey: session.conversationKey(),
+                      requireRetainedConversation: true,
+                      abortSignal: incoming.abortSignal,
+                      onTextDelta: () => {},
+                    });
+                  } catch (error) {
+                    // Best effort: a failed delivery falls back to the notice below, which is what
+                    // this turn would have said anyway.
+                    deliveryFailure = error instanceof Error ? error.message : String(error);
+                  }
+                  console.warn(
+                    `[chatgpt-web] tool image delivery turn images=${pendingImages.length}`
+                    + ` answered=${delivered !== undefined}`
+                    + (deliveryFailure !== undefined ? ` failure=${JSON.stringify(deliveryFailure)}` : ""),
+                  );
+                  if (delivered !== undefined && delivered.trim().length > 0) {
+                    unshownImagesBySession.delete(session);
+                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${delivered}`], buffer));
+                  }
+                }
+                // Only for images still unshown: a delivered one is no longer unseen, and saying it
+                // was would contradict the answer just appended.
+                const unshownImageNotice = unshownImageFinalNotice((unshownImagesBySession.get(session) ?? []).length);
                 if (unshownImageNotice && !bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
                 }

@@ -156,8 +156,47 @@ export async function closeTurnBrokers(): Promise<void> {
   }
 }
 
+/**
+ * Hex, not base64url: this id is written into a prompt, rendered as Markdown, and read back by the
+ * model before it claims the turn. `_` and `-` are Markdown's own emphasis characters, and on
+ * 21 Sep a claim arrived one character short of the length every accepted claim has — the same
+ * value three times in one turn, so not a typo. Hex cannot lose a character that way, and the
+ * compaction transaction store already generates its prompt-carried ids this way.
+ *
+ * 16 bytes keeps the id exactly as long as the base64url form it replaces, so prompt budgets and
+ * the tokenChars figure in the claim log stay directly comparable to every turn before it.
+ */
 function opaqueId(prefix: string): string {
-  return `${prefix}_${randomBytes(24).toString("base64url")}`;
+  return `${prefix}_${randomBytes(16).toString("hex")}`;
+}
+
+/**
+ * True when `candidate` is one deletion, insertion or substitution away from `live`.
+ *
+ * Distance is the whole question here — a claim that lost one character in transit is a bug in how
+ * the token reaches the model, while an unrelated token is an ordinary stale claim — so this stops
+ * as soon as a second edit is needed rather than computing a full distance.
+ */
+export function withinOneEdit(candidate: string, live: string): boolean {
+  if (candidate === live) return true;
+  if (Math.abs(candidate.length - live.length) > 1) return false;
+  const [shorter, longer] = candidate.length <= live.length ? [candidate, live] : [live, candidate];
+  let i = 0;
+  let j = 0;
+  let edited = false;
+  while (i < shorter.length && j < longer.length) {
+    if (shorter[i] === longer[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    if (edited) return false;
+    edited = true;
+    // Equal lengths can only be a substitution; otherwise the longer string carries the extra.
+    if (shorter.length === longer.length) i += 1;
+    j += 1;
+  }
+  return true;
 }
 
 function handleFingerprint(value: string): string {
@@ -265,6 +304,17 @@ export class TurnBroker implements TurnBrokerOwner {
   private startPromise?: Promise<void>;
 
   private constructor(readonly socketPath: string) {}
+
+  /**
+   * Whether a rejected claim is one edit away from a token this broker still holds — evidence that
+   * the token was altered on its way to the model rather than simply being stale. Retired tokens
+   * count too: a turn that ends while a mangled claim is in flight would otherwise look unrelated.
+   */
+  private nearLiveToken(token: string): boolean {
+    for (const live of this.channels.keys()) if (withinOneEdit(token, live)) return true;
+    for (const live of this.retiredTokens.keys()) if (withinOneEdit(token, live)) return true;
+    return false;
+  }
 
   /**
    * A ChatGPT turn outlives the request that started it, and its Codex Native calls arrive from a
@@ -1026,9 +1076,15 @@ export class TurnBroker implements TurnBrokerOwner {
       const channel = this.channels.get(token);
       let activeChannel = channel && !channel.completionCommitted ? channel : undefined;
       const retiredTurn = channel?.completionCommitted ? channel.traceId : this.retiredTokens.get(token);
+      // A rejected claim reports whether it is one edit away from a token this broker is holding.
+      // That distinguishes a token the surface mangled in transit from one that is simply stale,
+      // and it is reported as a boolean: no part of either token may reach the log.
+      const rejectionDetail = activeChannel
+        ? ""
+        : `, retiredTurn=${retiredTurn ?? "unknown"}, nearLiveToken=${this.nearLiveToken(token)}`;
       console.error(
-        `[chatgpt-web] broker claim received (tokenChars=${token.length}, tokenHash=${handleFingerprint(token)}, valid=${Boolean(activeChannel)}`
-        + `${activeChannel ? "" : `, retiredTurn=${retiredTurn ?? "unknown"}`})`,
+        `[chatgpt-web] broker claim received (tokenChars=${token.length}`
+        + `, tokenHash=${handleFingerprint(token)}, valid=${Boolean(activeChannel)}${rejectionDetail})`,
       );
       if (!activeChannel) {
         throw new Error(retiredTurn !== undefined
