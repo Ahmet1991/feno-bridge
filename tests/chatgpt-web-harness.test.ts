@@ -4692,7 +4692,7 @@ test("the evidence line counts every round of a turn and names the capture that 
   }
 });
 
-test("a block claim the ledger contradicts is corrected by one tool-less retained turn", async () => {
+test("a block claim the ledger contradicts is corrected by one retained turn that keeps its tools", async () => {
   const socketPath = brokerTestEndpoint(`cgw-false-block-${process.pid}-${Date.now()}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -4710,10 +4710,22 @@ test("a block claim the ledger contradicts is corrected by one tool-less retaine
   const originalRun = worker.run.bind(worker);
   const turns: BrowserTurn[] = [];
   const prompts: string[] = [];
+  let firstToken: string | undefined;
+  let tokenLiveDuringCorrection: boolean | undefined;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     turns.push(turn);
     const prepared = await (turns.length === 1 ? turn.prepare() : turn.prepareResume!());
     prompts.push(prepared.text);
+    if (turns.length === 1) {
+      firstToken = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+    } else if (firstToken) {
+      // The whole point of the fix: the model reaches for the token the retained conversation
+      // already showed it, so that token has to still be claimable while this turn is running.
+      tokenLiveDuringCorrection = await callTurnBroker<{ bindingId: string }>(socketPath, {
+        method: "claim",
+        token: firstToken,
+      }).then(() => true, () => false);
+    }
     prepared.release();
     // The first answer is the fabrication this repairs; the second is what the model said once it
     // was shown the record, quoted from the 21 Sep measurement.
@@ -4735,10 +4747,13 @@ test("a block claim the ledger contradicts is corrected by one tool-less retaine
     // Exactly two browser turns: the original and one correction, never a third.
     expect(turns).toHaveLength(2);
     const correction = turns[1]!;
-    expect(correction.capabilities.localToolsEnabled).toBeFalse();
+    expect(firstToken).toBeDefined();
+    expect(tokenLiveDuringCorrection).toBeTrue();
+    expect(correction.capabilities.localToolsEnabled).toBeTrue();
     expect(correction.requireRetainedConversation).toBeTrue();
     expect(correction.conversationKey).toBe(turns[0]!.conversationKey!);
-    // No turn token is compiled into this prompt, which is why it must not advertise tools.
+    // The correction prompt compiles no token of its own; the model uses the one it was already
+    // shown, which is exactly why that token has to outlive the answer it is correcting.
     expect(prompts[1]).not.toContain("turn_token ");
     expect(prompts[1]).toContain("hiçbir araç çıktısından gelmedi");
 

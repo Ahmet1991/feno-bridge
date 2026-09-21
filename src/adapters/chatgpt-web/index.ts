@@ -1503,7 +1503,14 @@ export function createChatGptWebAdapter(
                   && session.conversationKey() !== undefined
                   && !falseBlockRecoveredSessions.has(session)
                   && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
-                if (turnToken) await broker.revoke(turnToken);
+                // Held open across the correction turn. Two live turns on 22 Sep show the model does
+                // not merely withdraw the claim there — it retries the work, and the broker answered
+                // "this turn_token ... has already finished" because the token had been revoked a
+                // few lines earlier. The retained conversation still shows the model the original
+                // prompt, so the token it reaches for is this one. The `finally` below guarantees
+                // the revoke happens even when a check here throws.
+                if (turnToken && !correcting) await broker.revoke(turnToken);
+                try {
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
                   throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
@@ -1535,20 +1542,19 @@ export function createChatGptWebAdapter(
                   let corrected: string | undefined;
                   let failure: string | undefined;
                   try {
-                    // Deliberately tool-less, like the compaction handoff: this prompt carries no
-                    // turn token, so advertising the tool environment would offer the model tools it
-                    // has no way to claim. What the measurement produced was a withdrawn claim and a
-                    // real reason, not resumed work, and this turn asks for exactly that much.
+                    // Keeps this turn's tool environment. The correction is still not an instruction
+                    // to proceed — some stops are right — but a model that decides to carry on must
+                    // not be stopped by a handle the bridge took away, which is what both live turns
+                    // showed happening.
                     //
-                    // Its own stream is suppressed as well — the first answer already reached the
-                    // client and the integrity comparison above is bound to it, so this answer is
-                    // appended from the resolved value instead of joining that stream.
+                    // Its own stream is suppressed — the first answer already reached the client and
+                    // the integrity comparison above is bound to it, so this answer is appended from
+                    // the resolved value instead of joining that stream.
                     corrected = await worker.run({
                       traceId,
                       modelId: parsed.modelId,
                       reasoning: parsed.options.reasoning,
-                      capabilities: { ...turnCapabilities, localToolsEnabled: false },
-                      nativeConnector: true,
+                      capabilities: turnCapabilities,
                       prepare: prepareCorrection,
                       prepareResume: prepareCorrection,
                       conversationKey: session.conversationKey(),
@@ -1574,6 +1580,9 @@ export function createChatGptWebAdapter(
                   if (corrected !== undefined && corrected.trim().length > 0) {
                     emitRoundBatch(buffer => emitTextDeltas([`\n\n${corrected}`], buffer));
                   }
+                }
+                } finally {
+                  if (turnToken && correcting) await broker.revoke(turnToken);
                 }
                 const pendingImages = unshownImagesBySession.get(session) ?? [];
                 let delivered: string | undefined;
