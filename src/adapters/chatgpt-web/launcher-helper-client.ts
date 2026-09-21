@@ -534,6 +534,9 @@ export class LauncherBrowserHelperClient {
                 ...(prepared.trimmedCompactionMessages !== undefined
                   ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }
                   : {}),
+                ...(prepared.contextImages !== undefined
+                  ? { contextImages: prepared.contextImages }
+                  : {}),
               } satisfies CompiledChatGptWebPrompt,
             });
           });

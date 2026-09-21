@@ -49,3 +49,28 @@ test("identical tool-result images are attached once and the most recent 10 surv
   expect(prompt.images).toHaveLength(10);
   expect(prompt.images.map(image => image.imageUrl)).toEqual(Array.from({ length: 10 }, (_, i) => jpeg(i + 3)));
 });
+
+test("a compiled prompt reports the images its context held, not only the ones it attached", () => {
+  const parsed = parse([user("Inspect screenshot"), ...shot(1), answer("Cannot inspect it"), user("Describe it")]);
+  const resumed = retainedConversationResumeRequest(parsed)!;
+  const prompt = compile(resumed);
+  expect(prompt.images).toHaveLength(1);
+  expect(prompt.contextImages).toBe(countChatGptContextImages(resumed.context.messages));
+  expect(prompt.contextImages).toBe(1);
+
+  // A text-only turn must report zero rather than leaving the field absent, so `images=0` in the
+  // turn log is readable: zero context images means the request never delivered one.
+  const textOnly = compile(parse([user("Task"), answer("Done"), user("Continue")]));
+  expect(textOnly.images).toHaveLength(0);
+  expect(textOnly.contextImages).toBe(0);
+});
+
+test("the reported context image count survives the ten-image attachment cap", () => {
+  const shots = Array.from({ length: 13 }, (_, i) => shot(i + 1)).flat();
+  const parsed = parse([user("Inspect several"), ...shots, user("Describe them")]);
+  const prompt = compile(parsed);
+  // The cap keeps the newest ten; the count still names every image the context carried, which is
+  // what makes a dropped image distinguishable from one that never arrived.
+  expect(prompt.images).toHaveLength(10);
+  expect(prompt.contextImages).toBe(13);
+});
