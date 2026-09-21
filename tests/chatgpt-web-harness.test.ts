@@ -4231,12 +4231,18 @@ function windowRecoveryFixtureArguments(fixture: WindowRecoveryAdapterFixture): 
 async function deliverWindowRecoveryFixtures(
   fixtures: WindowRecoveryAdapterFixture[],
   completedEvents?: AdapterEvent[],
+  // A retained conversation is what a follow-up turn needs to speak into, so only a fixture that
+  // asks for one gets the launcher descriptor that produces a conversation key.
+  options?: { retained?: boolean; browserTurns?: BrowserTurn[] },
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://window-recovery-${Date.now()}-${Math.random()}`,
     chatgptWeb: {
+      ...(options?.retained
+        ? { browserHost: "launcher" as const, browserHostDescriptorPath: join(tempRoot, "retained-launcher.json") }
+        : {}),
       brokerSocketPath: socketPath,
       turnTimeoutMs: 30_000,
       localToolsEnabled: true,
@@ -4250,9 +4256,17 @@ async function deliverWindowRecoveryFixtures(
   const originalRun = worker.run.bind(worker);
   const delivered: BrokerToolResult[] = [];
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    options?.browserTurns?.push(turn);
     const prepared = await turn.prepare();
     try {
       const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      // A follow-up turn the adapter opened itself carries no turn token, because it compiles a
+      // fixed prompt rather than a tool environment. Answer it instead of failing the fixture.
+      if (!token && options?.browserTurns) {
+        const answer = "Ekte gördüğüm pencere: Feno Bridge.";
+        turn.onTextDelta(answer);
+        return answer;
+      }
       if (!token) throw new Error("turn token missing from window recovery test prompt");
       const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
       const results = await invokeAfterBrowserBoundary(turn, () => Promise.all(fixtures.map(fixture => (
@@ -4737,4 +4751,36 @@ test("a block claim the ledger contradicts is corrected by one tool-less retaine
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     await TurnBroker.forSocket(socketPath).close();
   }
+});
+
+test("an image a tool returned mid-turn is delivered by a follow-up turn that attaches it", async () => {
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const [delivered] = await deliverWindowRecoveryFixtures(
+    [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+    events,
+    { retained: true, browserTurns },
+  );
+
+  // The broker result is untouched: the image still rides on it, with the notice beside it.
+  expect(delivered?.content[0]).toEqual({ type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" });
+
+  // One original turn and one delivery turn, never more.
+  expect(browserTurns).toHaveLength(2);
+  const delivery = browserTurns[1]!;
+  const prompt = await delivery.prepare();
+  expect(prompt.images.map(entry => entry.imageUrl)).toEqual([image.imageUrl]);
+  // Attachments are what makes this work, so the prompt must produce a real uploadable file.
+  expect(chatGptPromptFilePayloads(prompt).map(file => file.mimeType)).toEqual(["image/jpeg"]);
+  expect(prompt.text).toContain("ek olarak bağlandı");
+  expect(delivery.capabilities.localToolsEnabled).toBeFalse();
+  expect(delivery.requireRetainedConversation).toBeTrue();
+  expect(delivery.conversationKey).toBe(browserTurns[0]!.conversationKey!);
+  prompt.release();
+
+  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+  expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
+  // A delivered image is no longer unseen, so the turn must not also report it as unshown.
+  expect(text).not.toContain("could not be attached");
 });
