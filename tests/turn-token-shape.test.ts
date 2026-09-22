@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { withinOneEdit } from "../src/adapters/chatgpt-web/turn-broker";
+import { looksAlteredInTransit, withinOneEdit } from "../src/adapters/chatgpt-web/turn-broker";
 
 // The live signature this was written for: on 21 Sep a claim arrived with 36 characters where every
 // accepted claim has 37, the same value three times in one turn.
@@ -43,4 +43,13 @@ test("the generated token carries nothing Markdown can eat", async () => {
   } finally {
     await broker.close();
   }
+});
+
+test("a verbatim token is stale, not altered; a one-character loss is altered", () => {
+  // The figure exists to separate a token the surface changed from one that is merely late, so a
+  // verbatim claim has to fall on the stale side even though `withinOneEdit` accepts it.
+  expect(withinOneEdit(LIVE, LIVE)).toBeTrue();
+  expect(looksAlteredInTransit(LIVE, LIVE)).toBeFalse();
+  expect(looksAlteredInTransit(LIVE.slice(0, 20) + LIVE.slice(21), LIVE)).toBeTrue();
+  expect(looksAlteredInTransit("turn_ffffffffffffffffffffffffffffffff", LIVE)).toBeFalse();
 });
