@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { chatGptHtmlToMarkdown } from "../src/adapters/chatgpt-web/markdown";
+import {
+  ChatGptMarkdownBuffer, chatGptHtmlToMarkdown, type ChatGptMarkdownSegment,
+} from "../src/adapters/chatgpt-web/markdown";
 
 test("turns observed inline file path formats into Markdown links", () => {
   const cases = [
@@ -77,4 +79,43 @@ test("converts Obsidian aliases and headings but preserves code examples and emb
     "[[wiki/fenced]]",
     "````",
   ].join("\n"));
+});
+
+
+function segment(key: string, text: string, sourceStart: number): ChatGptMarkdownSegment {
+  return {
+    key, tag: "p", html: `<p>${text}</p>`, text, streamable: true,
+    sourceStart, sourceEnd: sourceStart + text.length,
+  };
+}
+
+test("a rewritten block ends an ordinary turn, because Codex already read the first version", () => {
+  const buffer = new ChatGptMarkdownBuffer();
+  buffer.observe([segment("a", "first", 0)], 0);
+  expect(buffer.finish().markdown).toBe("first");
+  // Codex consumed "first" as it streamed, so ChatGPT replacing it is a broken promise, not an edit.
+  buffer.observe([segment("a", "rewritten", 0)], 1);
+  expect(buffer.currentSnapshotIsConsistent()).toBeFalse();
+  expect(() => buffer.finish()).toThrow("changed a completed text block");
+});
+
+test("a rewritten block is absorbed when the answer never streamed to Codex", () => {
+  // The live failure this exists for: on 22 Sep the image delivery turn produced a 659-character
+  // answer that the bridge threw away because ChatGPT re-rendered a block. That turn suppresses its
+  // own stream and appends the finished answer, so nothing downstream had read the earlier text.
+  const buffer = new ChatGptMarkdownBuffer(undefined, undefined, false);
+  buffer.observe([segment("a", "first", 0)], 0);
+  expect(buffer.finish().markdown).toBe("first");
+  buffer.observe([segment("a", "rewritten", 0)], 1);
+  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+  expect(buffer.finish().markdown).toBe("rewritten");
+});
+
+test("absorbing a rewrite keeps the rest of the answer, not just the block that changed", () => {
+  const buffer = new ChatGptMarkdownBuffer(undefined, undefined, false);
+  buffer.observe([segment("a", "opening", 0), segment("b", "middle", 20)], 0);
+  expect(buffer.finish().markdown).toBe("opening\n\nmiddle");
+  buffer.observe([segment("a", "opening", 0), segment("b", "edited", 20), segment("c", "closing", 40)], 1);
+  expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+  expect(buffer.finish().markdown).toBe("opening\n\nedited\n\nclosing");
 });

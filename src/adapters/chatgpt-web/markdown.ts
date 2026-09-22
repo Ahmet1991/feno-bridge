@@ -194,6 +194,12 @@ export class ChatGptMarkdownBuffer {
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
     private readonly stabilityMs = 750,
+    /**
+     * Whether an already-committed block is a promise to Codex. It is for an ordinary turn, whose
+     * text Codex has consumed as it arrived; it is not for a turn the adapter opens for itself and
+     * whose stream it suppresses, because nothing downstream has seen the earlier text.
+     */
+    private readonly committedBlocksAreContract = true,
   ) {
     if (!Number.isFinite(stabilityMs) || stabilityMs < 0) {
       throw new Error("ChatGPT Markdown stability window must be a non-negative finite number");
@@ -203,6 +209,15 @@ export class ChatGptMarkdownBuffer {
   observe(segments: ChatGptMarkdownSegment[], now = Date.now()): string {
     const reconciled = this.reconcile(segments);
     if (reconciled instanceof ChatGptMarkdownConsistencyError) {
+      // Measured on 22 Sep: the image delivery turn answered (659 characters are in the turn
+      // record) and was then discarded because ChatGPT re-rendered a block it had already shown.
+      // Nothing had been streamed to Codex, so the rewrite broke no promise -- it edited a draft
+      // no one had read. Rebuilding from what is on screen keeps that answer.
+      if (!this.committedBlocksAreContract) {
+        this.resetCommittedHistory();
+        // `reconcile` returns its input unchanged once nothing is committed, so this cannot recur.
+        return this.observe(segments, now);
+      }
       this.consistencyError = reconciled;
       return "";
     }
@@ -267,6 +282,16 @@ export class ChatGptMarkdownBuffer {
 
   currentSnapshotIsConsistent(): boolean {
     return this.consistencyError === undefined;
+  }
+
+  /** Forgets what was committed so the next observation rebuilds the answer from scratch. */
+  private resetCommittedHistory(): void {
+    this.committed.length = 0;
+    this.candidates.clear();
+    this.latest = [];
+    this.markdown = "";
+    this.lastGroup = undefined;
+    this.consistencyError = undefined;
   }
 
   private reconcile(

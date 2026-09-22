@@ -1566,6 +1566,8 @@ export function createChatGptWebAdapter(
                       modelId: parsed.modelId,
                       reasoning: parsed.options.reasoning,
                       capabilities: turnCapabilities,
+                      // Its answer is appended, not streamed, so a late ChatGPT edit is harmless.
+                      streamsToCodex: false,
                       prepare: prepareCorrection,
                       prepareResume: prepareCorrection,
                       conversationKey: session.conversationKey(),
@@ -1627,6 +1629,8 @@ export function createChatGptWebAdapter(
                       // the log below counts it rather than the code assuming it.
                       capabilities: { ...turnCapabilities, localToolsEnabled: false },
                       nativeConnector: true,
+                      // Same reason as the correction turn: this answer is appended, not streamed.
+                      streamsToCodex: false,
                       prepare: prepareDelivery,
                       prepareResume: prepareDelivery,
                       conversationKey: session.conversationKey(),

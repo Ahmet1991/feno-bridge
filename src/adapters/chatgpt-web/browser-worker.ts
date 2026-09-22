@@ -1432,6 +1432,13 @@ export interface BrowserTurn {
   onCommentary?: (text: string, continuation?: boolean) => void;
   /** Append-only, structurally stable Markdown chunks. */
   onTextDelta: (delta: string) => void;
+  /**
+   * Whether this turn's answer reaches Codex as it streams. False for the turns the adapter opens
+   * for itself -- the false-block correction and the image delivery turn -- which suppress their
+   * stream and append the finished answer. For those, a late ChatGPT edit rewrites text nobody has
+   * read yet, so it must not end the turn.
+   */
+  streamsToCodex?: boolean;
   /** Proven current-turn MCP activity; never response content or completion. */
   externalProgress?: ChatGptTurnProgressReader;
   /** Atomically fences browser completion against concurrent MCP claims in the turn broker. */
@@ -5421,7 +5428,7 @@ export class ChatGptBrowserWorker {
       const progressWatchdog = new ChatGptTurnProgressWatchdog(sentAt);
       let contentProgressObserved = false;
       const visibleTrace = new ChatGptVisibleTraceTracker();
-      const markdownBuffer = new ChatGptMarkdownBuffer();
+      const markdownBuffer = new ChatGptMarkdownBuffer(undefined, undefined, turn.streamsToCodex !== false);
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
