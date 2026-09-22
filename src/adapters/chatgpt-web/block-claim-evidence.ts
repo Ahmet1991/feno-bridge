@@ -17,6 +17,13 @@ const BLOCK_CLAIM_PATTERNS: readonly RegExp[] = [
   /g[üu]venlik\s+(?:kontrol|denetim|durum|engel)/i,
   /blocked\s+by\s+OpenAI/i,
   /safety\s+check/i,
+  // "the tool is not here" is the same stop as "the tool was blocked": the model quits without
+  // trying and blames the system. Measured on 22 Sep -- it said the local tools were not available
+  // on a turn whose own request, as the bridge received it, declared exec_command, write_stdin,
+  // apply_patch and view_image. A tool word has to appear near the phrase, so an answer that merely
+  // reports something else being unavailable does not match.
+  /(?:ara[cç]|tool|exec_command|write_stdin|apply_patch|view_image|tool_search)[^.\n]{0,80}(?:kullan[iı]labilir\s+(?:de[gğ]il|olarak\s+g[oö]r[uü]nm[uü]yor)|mevcut\s+de[gğ]il|eri[sş]ilemiyor)/i,
+  /(?:tool|tools)[^.\n]{0,80}(?:not\s+available|unavailable|not\s+connected)/i,
 ];
 
 /** The call that captures a window. An answer blaming a blocked screenshot is blaming this one. */
