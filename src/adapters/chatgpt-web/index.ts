@@ -28,7 +28,7 @@ import {
 } from "./capacity";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
+import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, chatGptTurnTokenInstruction, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
 import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
 import { falseBlockCorrection, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
 import {
@@ -1496,21 +1496,19 @@ export function createChatGptWebAdapter(
                 emitNewText(session.runtime.text.drain());
                 session.setFinalReasoning(roundReasoning);
                 const ledger = toolCallLedger.summary();
+                // Bound here so the narrowing survives into the correction block below.
+                const correctionEnvironment = environment;
                 const correcting = completedOutcome.type === "final"
                   // A buffered structured answer has no room for a correction, so running the turn
                   // would spend a browser round on text this turn could never emit.
                   && !bufferStructuredOutput
+                  // The correction turn registers a handle of its own, which needs the environment
+                  // this turn's tools were registered against.
+                  && correctionEnvironment !== undefined
                   && session.conversationKey() !== undefined
                   && !falseBlockRecoveredSessions.has(session)
                   && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
-                // Held open across the correction turn. Two live turns on 22 Sep show the model does
-                // not merely withdraw the claim there — it retries the work, and the broker answered
-                // "this turn_token ... has already finished" because the token had been revoked a
-                // few lines earlier. The retained conversation still shows the model the original
-                // prompt, so the token it reaches for is this one. The `finally` below guarantees
-                // the revoke happens even when a check here throws.
-                if (turnToken && !correcting) await broker.revoke(turnToken);
-                try {
+                if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
                   throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
@@ -1530,12 +1528,26 @@ export function createChatGptWebAdapter(
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
                 }
-                if (correcting) {
+                if (correcting && correctionEnvironment) {
                   // Once per session: a model that repeats the claim after being shown the record
                   // is not going to be talked out of it, and a loop would cost real browser turns.
                   falseBlockRecoveredSessions.add(session);
+                  // A handle of its own. Holding the finished turn's token open was not enough and
+                  // could never have been: `commitBrowserCompletion` retires a channel the moment
+                  // the browser turn completes, so by the time a correction runs that token is dead
+                  // whether or not it was revoked — which is exactly what the 22 Sep claim log shows
+                  // (`valid=false, retiredTurn=…` on the same hash that was valid moments earlier).
+                  const correctionToken = await broker.register(
+                    correctionEnvironment,
+                    timeoutMs === undefined ? undefined : timeoutMs + 60_000,
+                    traceId,
+                  );
+                  // The retained conversation still holds the history and the tool contract, so this
+                  // prompt carries only the correction and the new handle — handed over in the same
+                  // sentence an ordinary turn uses, which is why that sentence is shared rather than
+                  // written out a second time here.
                   const prepareCorrection = async () => ({
-                    text: falseBlockCorrection(ledger),
+                    text: `${falseBlockCorrection(ledger)}\n\n${chatGptTurnTokenInstruction(correctionToken)}`,
                     images: [],
                     release: () => {},
                   });
@@ -1544,8 +1556,7 @@ export function createChatGptWebAdapter(
                   try {
                     // Keeps this turn's tool environment. The correction is still not an instruction
                     // to proceed — some stops are right — but a model that decides to carry on must
-                    // not be stopped by a handle the bridge took away, which is what both live turns
-                    // showed happening.
+                    // be able to.
                     //
                     // Its own stream is suppressed — the first answer already reached the client and
                     // the integrity comparison above is bound to it, so this answer is appended from
@@ -1566,23 +1577,25 @@ export function createChatGptWebAdapter(
                     // Best effort throughout: the turn already has an answer, and a correction that
                     // fails must not take it down with it.
                     failure = error instanceof Error ? error.message : String(error);
+                  } finally {
+                    await broker.revoke(correctionToken);
                   }
                   // Whether this works is a claim about a model, so it is counted rather than
-                  // assumed: the line reports that a correction was sent and whether the answer it
-                  // produced still claims a block, which is countable from the log afterwards.
+                  // assumed. The second figure is deliberately not named "still claims a block": on
+                  // 22 Sep a corrected answer that withdrew the claim — "bunu kesin bir güvenlik
+                  // engeli olarak sunmam doğru değildi" — matched the detector, because withdrawing
+                  // a claim means naming it. It says what it measures, a mention, and reading it as
+                  // a failure would have scored a success as one.
                   console.warn(
                     `[chatgpt-web] false block claim correction sent`
                     + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
                     + ` answered=${corrected !== undefined}`
-                    + ` stillClaimsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
+                    + ` secondAnswerMentionsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
                     + (failure !== undefined ? ` failure=${JSON.stringify(failure)}` : ""),
                   );
                   if (corrected !== undefined && corrected.trim().length > 0) {
                     emitRoundBatch(buffer => emitTextDeltas([`\n\n${corrected}`], buffer));
                   }
-                }
-                } finally {
-                  if (turnToken && correcting) await broker.revoke(turnToken);
                 }
                 const pendingImages = unshownImagesBySession.get(session) ?? [];
                 let delivered: string | undefined;
@@ -1607,8 +1620,11 @@ export function createChatGptWebAdapter(
                       traceId,
                       modelId: parsed.modelId,
                       reasoning: parsed.options.reasoning,
-                      // Tool-less for the same reason as the correction turn: this prompt carries no
-                      // turn token, and looking at an attachment needs no tools.
+                      // Tool-less on purpose, and no longer for the reason the correction turn used to
+                      // give: looking at an attachment needs no tools, so this turn carries no token
+                      // and cannot hit the retired-channel problem. Whether the model wants to carry
+                      // the work on once it can finally see the image is a question about a model, so
+                      // the log below counts it rather than the code assuming it.
                       capabilities: { ...turnCapabilities, localToolsEnabled: false },
                       nativeConnector: true,
                       prepare: prepareDelivery,

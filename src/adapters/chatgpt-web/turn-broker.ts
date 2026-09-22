@@ -199,6 +199,17 @@ export function withinOneEdit(candidate: string, live: string): boolean {
   return true;
 }
 
+/**
+ * Whether a rejected claim looks like a token this broker holds, altered on its way to the model.
+ *
+ * An exact match is excluded on purpose. A claim carrying a token verbatim is an ordinary stale or
+ * retired claim, and counting it here made the figure read "mangled" for the commonest rejection
+ * there is — which it did on 22 Sep, for a claim that was simply late.
+ */
+export function looksAlteredInTransit(token: string, live: string): boolean {
+  return live !== token && withinOneEdit(token, live);
+}
+
 function handleFingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
@@ -311,8 +322,8 @@ export class TurnBroker implements TurnBrokerOwner {
    * count too: a turn that ends while a mangled claim is in flight would otherwise look unrelated.
    */
   private nearLiveToken(token: string): boolean {
-    for (const live of this.channels.keys()) if (withinOneEdit(token, live)) return true;
-    for (const live of this.retiredTokens.keys()) if (withinOneEdit(token, live)) return true;
+    for (const live of this.channels.keys()) if (looksAlteredInTransit(token, live)) return true;
+    for (const live of this.retiredTokens.keys()) if (looksAlteredInTransit(token, live)) return true;
     return false;
   }
 

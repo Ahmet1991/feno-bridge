@@ -4711,20 +4711,23 @@ test("a block claim the ledger contradicts is corrected by one retained turn tha
   const turns: BrowserTurn[] = [];
   const prompts: string[] = [];
   let firstToken: string | undefined;
+  let correctionToken: string | undefined;
   let tokenLiveDuringCorrection: boolean | undefined;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     turns.push(turn);
     const prepared = await (turns.length === 1 ? turn.prepare() : turn.prepareResume!());
     prompts.push(prepared.text);
+    const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
     if (turns.length === 1) {
-      firstToken = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
-    } else if (firstToken) {
-      // The whole point of the fix: the model reaches for the token the retained conversation
-      // already showed it, so that token has to still be claimable while this turn is running.
-      tokenLiveDuringCorrection = await callTurnBroker<{ bindingId: string }>(socketPath, {
-        method: "claim",
-        token: firstToken,
-      }).then(() => true, () => false);
+      firstToken = token;
+    } else {
+      correctionToken = token;
+      // The whole point of the fix: the finished turn's handle is retired by its own completion,
+      // so the correction has to arrive with a new one that can actually be claimed.
+      tokenLiveDuringCorrection = token === undefined
+        ? false
+        : await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token })
+          .then(() => true, () => false);
     }
     prepared.release();
     // The first answer is the fabrication this repairs; the second is what the model said once it
@@ -4752,9 +4755,10 @@ test("a block claim the ledger contradicts is corrected by one retained turn tha
     expect(correction.capabilities.localToolsEnabled).toBeTrue();
     expect(correction.requireRetainedConversation).toBeTrue();
     expect(correction.conversationKey).toBe(turns[0]!.conversationKey!);
-    // The correction prompt compiles no token of its own; the model uses the one it was already
-    // shown, which is exactly why that token has to outlive the answer it is correcting.
-    expect(prompts[1]).not.toContain("turn_token ");
+    // A handle of its own, and a different one: reusing the finished turn's token is what did not
+    // work, because its completion retires the channel whether or not the token was revoked.
+    expect(correctionToken).toBeDefined();
+    expect(correctionToken).not.toBe(firstToken);
     expect(prompts[1]).toContain("hiçbir araç çıktısından gelmedi");
 
     const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
