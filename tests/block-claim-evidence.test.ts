@@ -95,3 +95,34 @@ test("only an answer that claims a block carries the evidence line", () => {
   )).toContain("6 araç çağrısı tamamlandı, 0 tanesi hata döndürdü");
   expect(blockClaimEvidenceFor("Üç sekme okundu.", { completed: 6, failed: 0 })).toBeUndefined();
 });
+
+
+test("an answer that says the tools are not there is a block claim too", () => {
+  // Both sentences are verbatim from 22 Sep. The request the bridge received for those same turns
+  // declared exec_command, write_stdin, apply_patch and view_image, so the claim was false -- and
+  // the detector stayed silent, which is why the correction never ran.
+  for (const answer of [
+    "Adim 2, 3 ve 4 icin gerekli yerel Codex Native araclari bu oturumda kullanilabilir olarak"
+      + " gorunmuyor; bu nedenle islemleri calistirip sonuc uretemiyorum.",
+    "`exec_command` araci bu oturumda kullanilabilir degil; bu nedenle komutu calistiramadim.",
+    "Adım 2, 3 ve 4 için gerekli yerel Codex Native araçları bu oturumda kullanılabilir olarak"
+      + " görünmüyor; bu nedenle işlemleri çalıştırıp sonuç üretemiyorum.",
+    "`exec_command` aracı bu oturumda kullanılabilir değil; bu nedenle komutu çalıştıramadım.",
+    "The exec_command tool is not available in this session, so I could not run it.",
+  ]) {
+    expect(claimsBlockedToolCall(answer)).toBeTrue();
+  }
+});
+
+test("an unavailable thing that is not a tool is not a block claim", () => {
+  // The line costs the user attention, so it must not fire on an answer that is simply reporting.
+  for (const answer of [
+    "Dosya mevcut degil, bu yuzden olusturdum.",
+    "The staging server is not available right now, so I used the local build.",
+    "Bu klasore erisilemiyor; izinleri kontrol eder misin?",
+    "exec_command ile calistirdim ve cikti basariliydi.",
+    "Araclari kullanarak dort adimi da tamamladim.",
+  ]) {
+    expect(claimsBlockedToolCall(answer)).toBeFalse();
+  }
+});

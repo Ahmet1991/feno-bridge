@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { isWindowsPipeEndpoint } from "../../config";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { getConfigDir, isWindowsPipeEndpoint } from "../../config";
 import {
   CompactionTransactionStore,
   type CompactionTransactionHandle,
@@ -212,6 +212,29 @@ export function looksAlteredInTransit(token: string, live: string): boolean {
 
 function handleFingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+/**
+ * A rejected claim, written where it can still be read after the process is gone.
+ *
+ * The console line beside this one has said everything needed to diagnose a rejected claim since
+ * 21 Sep, and none of it survived: the bridge's stdout goes nowhere on Windows, so three separate
+ * investigations into `turn token is invalid, expired, or revoked` had to guess. Only rejections
+ * are recorded -- an accepted claim is the ordinary case and would bury them.
+ *
+ * Best effort by construction: a claim must never fail because a diagnostic could not be written.
+ */
+function recordClaimRejection(entry: Record<string, unknown>): void {
+  try {
+    const dir = join(getConfigDir(), "diagnostics");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "claim-rejections.jsonl");
+    // Rejections are rare, but "rare" is an assumption and an unbounded log is a bug in waiting.
+    if (existsSync(file) && statSync(file).size > 512_000) unlinkSync(file);
+    appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`, "utf8");
+  } catch {
+    // Deliberately silent: the console line above carries the same facts for a live session.
+  }
 }
 
 function errorOf(value: unknown): Error {
@@ -1098,6 +1121,15 @@ export class TurnBroker implements TurnBrokerOwner {
         + `, tokenHash=${handleFingerprint(token)}, valid=${Boolean(activeChannel)}${rejectionDetail})`,
       );
       if (!activeChannel) {
+        recordClaimRejection({
+          tokenChars: token.length,
+          tokenHash: handleFingerprint(token),
+          retiredTurn: retiredTurn ?? null,
+          nearLiveToken: this.nearLiveToken(token),
+          liveChannels: [...this.channels.values()].filter(live => !live.completionCommitted).length,
+          retiredTokens: this.retiredTokens.size,
+          contract,
+        });
         throw new Error(retiredTurn !== undefined
           ? `${contract === "safe" ? "This request_id" : "This turn_token"} was issued for ${retiredTurnLabel(retiredTurn)}, which has already finished.`
           + " This Codex Native action can no longer run."
