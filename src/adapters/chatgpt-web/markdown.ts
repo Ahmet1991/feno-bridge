@@ -167,6 +167,18 @@ export class ChatGptMarkdownConsistencyError extends Error {
     committedEnd?: number;
     observedTextChars: number;
     committedTextChars: number;
+    /** Turn-local ordinals, not proof that two DOM nodes have the same identity. */
+    conflict?: "pending_before_committed" | "committed_order_reversed";
+    observedOrdinal?: number;
+    committedOrdinal?: number;
+    previousMatchedCommittedOrdinal?: number;
+    committedOrder?: number[];
+    observedOrder?: (number | null)[];
+    observedCountThroughConflict?: number;
+    committedCount?: number;
+    matchBasis?: "range" | "key" | "semantic";
+    textEqual?: boolean;
+    bufferFinishCompleted?: boolean;
   }) {
     super(message);
     this.name = "ChatGptMarkdownConsistencyError";
@@ -190,6 +202,7 @@ export class ChatGptMarkdownBuffer {
   private markdown = "";
   private lastGroup: string | undefined;
   private consistencyError: ChatGptMarkdownConsistencyError | undefined;
+  private finishCompleted = false;
 
   constructor(
     private readonly transform: (markdown: string) => string = markdown => markdown,
@@ -277,6 +290,7 @@ export class ChatGptMarkdownBuffer {
     }
     this.candidates.clear();
     this.latest = [];
+    this.finishCompleted = true;
     return { markdown: this.markdown, delta };
   }
 
@@ -292,6 +306,7 @@ export class ChatGptMarkdownBuffer {
     this.markdown = "";
     this.lastGroup = undefined;
     this.consistencyError = undefined;
+    this.finishCompleted = false;
   }
 
   private reconcile(
@@ -307,8 +322,9 @@ export class ChatGptMarkdownBuffer {
     let highestCommittedIndex = -1;
     let sawPending = false;
     let previousSourceStart: number | undefined;
+    const observedOrder: (number | null)[] = [];
 
-    for (const segment of segments) {
+    for (const [observedOrdinal, segment] of segments.entries()) {
       if (segment.sourceStart !== undefined) {
         if (previousSourceStart !== undefined && segment.sourceStart <= previousSourceStart) {
           return new ChatGptMarkdownConsistencyError(
@@ -320,17 +336,39 @@ export class ChatGptMarkdownBuffer {
       const committedIndex = this.committedIndex(segment);
       if (committedIndex !== undefined) {
         const committed = this.committed[committedIndex]!;
+        observedOrder.push(committedIndex);
+        if (observedOrder.length > 8) observedOrder.shift();
         if (sawPending || committedIndex < highestCommittedIndex || committed.text !== segment.text) {
           return this.changedCommittedBlockError(
             sawPending || committedIndex < highestCommittedIndex ? "block_order_changed" : "text_changed",
             segment,
             committed,
+            sawPending || committedIndex < highestCommittedIndex ? {
+              conflict: sawPending ? "pending_before_committed" : "committed_order_reversed",
+              observedOrdinal,
+              committedOrdinal: committedIndex,
+              previousMatchedCommittedOrdinal: highestCommittedIndex,
+              committedOrder: Array.from(
+                { length: Math.min(8, this.committed.length) },
+                (_, index) => this.committed.length - Math.min(8, this.committed.length) + index,
+              ),
+              observedOrder: [...observedOrder],
+              observedCountThroughConflict: observedOrdinal + 1,
+              committedCount: this.committed.length,
+              matchBasis: segment.sourceStart !== undefined && committed.sourceStart !== undefined
+                ? "range"
+                : segment.key === committed.key ? "key" : "semantic",
+              textEqual: committed.text === segment.text,
+              bufferFinishCompleted: this.finishCompleted,
+            } : undefined,
           );
         }
         highestCommittedIndex = committedIndex;
         continue;
       }
 
+      observedOrder.push(null);
+      if (observedOrder.length > 8) observedOrder.shift();
       if (segment.sourceStart !== undefined && lastCommittedEnd !== undefined) {
         if (segment.sourceStart <= lastCommittedEnd) {
           return this.changedCommittedBlockError("source_range_overlap", segment, lastRangedCommitted!);
@@ -403,6 +441,10 @@ export class ChatGptMarkdownBuffer {
     reason: NonNullable<ChatGptMarkdownConsistencyError["diagnostic"]>["reason"],
     observed: ChatGptMarkdownSegment,
     committed: CommittedChatGptMarkdownSegment,
+    orderDiagnostic?: Pick<NonNullable<ChatGptMarkdownConsistencyError["diagnostic"]>,
+      "conflict" | "observedOrdinal" | "committedOrdinal" | "previousMatchedCommittedOrdinal"
+      | "committedOrder" | "observedOrder" | "observedCountThroughConflict" | "committedCount"
+      | "matchBasis" | "textEqual" | "bufferFinishCompleted">,
   ): ChatGptMarkdownConsistencyError {
     return new ChatGptMarkdownConsistencyError(
       "ChatGPT changed a completed text block that was already streamed to Codex",
@@ -414,6 +456,7 @@ export class ChatGptMarkdownBuffer {
         committedEnd: committed.sourceEnd,
         observedTextChars: observed.text.length,
         committedTextChars: committed.text.length,
+        ...orderDiagnostic,
       },
     );
   }

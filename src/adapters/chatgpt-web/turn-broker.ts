@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { isWindowsPipeEndpoint } from "../../config";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { getConfigDir, isWindowsPipeEndpoint } from "../../config";
 import {
   CompactionTransactionStore,
   type CompactionTransactionHandle,
@@ -214,6 +214,18 @@ function handleFingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
+function recordTokenDiagnostic(entry: Record<string, unknown>): void {
+  try {
+    const dir = join(getConfigDir(), "diagnostics");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "claim-rejections.jsonl");
+    if (existsSync(file) && statSync(file).size > 512_000) unlinkSync(file);
+    appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`, "utf8");
+  } catch {
+    // Diagnostics must not affect token acceptance or retirement.
+  }
+}
+
 function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
@@ -310,6 +322,7 @@ export class TurnBroker implements TurnBrokerOwner {
   // previous turn's handle" from "this handle never existed".
   private readonly retiredBindings = new Map<string, string>();
   private readonly retiredTokens = new Map<string, string>();
+  private readonly diagnosticId = randomBytes(8).toString("hex");
   private acceptingExternalOwners = true;
   private server?: Server;
   private startPromise?: Promise<void>;
@@ -375,6 +388,9 @@ export class TurnBroker implements TurnBrokerOwner {
     };
     this.channels.set(token, channel);
     this.pending.set(token, channel);
+    recordTokenDiagnostic({
+      event: "register", brokerId: this.diagnosticId, tokenHash: handleFingerprint(token), traceId,
+    });
     console.info(`[chatgpt-web] broker trace=${traceId} registered tokenHash=${handleFingerprint(token)}`);
     return token;
   }
@@ -526,6 +542,10 @@ export class TurnBroker implements TurnBrokerOwner {
       || channel.invocations.size > 0) return false;
     channel.completionCommitted = true;
     channel.completionRevision = revision;
+    recordTokenDiagnostic({
+      event: "completion", brokerId: this.diagnosticId, tokenHash: handleFingerprint(token),
+      traceId: channel.traceId, revision,
+    });
     console.info(
       `[chatgpt-web] broker trace=${channel.traceId} committed browser completion revision=${revision}`,
     );
@@ -698,6 +718,10 @@ export class TurnBroker implements TurnBrokerOwner {
       this.rejectSafeWaiters(channel.safe.completionWaiters, reason);
     }
     this.retire(this.retiredTokens, token, channel.traceId);
+    recordTokenDiagnostic({
+      event: "retire", brokerId: this.diagnosticId, tokenHash: handleFingerprint(token),
+      traceId: channel.traceId, completionCommitted: channel.completionCommitted,
+    });
     this.resolveSafeWaiters(channel.retirementWaiters, undefined);
     this.rejectChannel(channel, reason);
   }
@@ -1098,6 +1122,13 @@ export class TurnBroker implements TurnBrokerOwner {
         + `, tokenHash=${handleFingerprint(token)}, valid=${Boolean(activeChannel)}${rejectionDetail})`,
       );
       if (!activeChannel) {
+        recordTokenDiagnostic({
+          event: "reject", brokerId: this.diagnosticId, tokenHash: handleFingerprint(token),
+          tokenChars: token.length, retiredTurn: retiredTurn ?? null,
+          nearLiveToken: this.nearLiveToken(token),
+          liveChannels: [...this.channels.values()].filter(live => !live.completionCommitted).length,
+          contract,
+        });
         throw new Error(retiredTurn !== undefined
           ? `${contract === "safe" ? "This request_id" : "This turn_token"} was issued for ${retiredTurnLabel(retiredTurn)}, which has already finished.`
           + " This Codex Native action can no longer run."

@@ -293,7 +293,13 @@ test("an unbounded broker call fails when the broker closes without answering", 
   const broker = unansweredBrokerEndpoint("cgw-broker-closed-", socket => socket.on("data", () => socket.end()));
   await broker.listen();
   try {
-    await expect(callTurnBroker(broker.socketPath, { method: "claim", token: "turn_closed" }, null))
+    const call = callTurnBroker(broker.socketPath, { method: "claim", token: "turn_closed" }, null);
+    // Keep one test-owned timer alive so Bun processes the named-pipe close rejection.
+    // If the broker call truly stays pending, the race fails this test rather than hanging it.
+    await expect(Promise.race([
+      call,
+      Bun.sleep(100).then(() => { throw new Error("broker call did not settle after peer close"); }),
+    ]))
       .rejects.toThrow("closed the connection");
   } finally {
     await broker.close();

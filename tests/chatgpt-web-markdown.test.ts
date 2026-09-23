@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  ChatGptMarkdownBuffer, chatGptHtmlToMarkdown, type ChatGptMarkdownSegment,
+  ChatGptMarkdownBuffer, ChatGptMarkdownConsistencyError, chatGptHtmlToMarkdown, type ChatGptMarkdownSegment,
 } from "../src/adapters/chatgpt-web/markdown";
 
 test("turns observed inline file path formats into Markdown links", () => {
@@ -96,7 +96,13 @@ test("a rewritten block ends an ordinary turn, because Codex already read the fi
   // Codex consumed "first" as it streamed, so ChatGPT replacing it is a broken promise, not an edit.
   buffer.observe([segment("a", "rewritten", 0)], 1);
   expect(buffer.currentSnapshotIsConsistent()).toBeFalse();
-  expect(() => buffer.finish()).toThrow("changed a completed text block");
+  try {
+    buffer.finish();
+    throw new Error("expected the completed block rewrite to fail");
+  } catch (error) {
+    expect((error as ChatGptMarkdownConsistencyError).message).toContain("changed a completed text block");
+    expect((error as ChatGptMarkdownConsistencyError).diagnostic?.reason).toBe("text_changed");
+  }
 });
 
 test("a rewritten block is absorbed when the answer never streamed to Codex", () => {
@@ -118,4 +124,48 @@ test("absorbing a rewrite keeps the rest of the answer, not just the block that 
   buffer.observe([segment("a", "opening", 0), segment("b", "edited", 20), segment("c", "closing", 40)], 1);
   expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
   expect(buffer.finish().markdown).toBe("opening\n\nedited\n\nclosing");
+});
+
+test("diagnostic distinguishes pending-before-committed from a committed-order reversal without text", () => {
+  const bare = (key: string, text: string, streamable = true): ChatGptMarkdownSegment => ({
+    key, tag: "p", html: `<p>${text}</p>`, text, streamable,
+  });
+  const pending = new ChatGptMarkdownBuffer(undefined, 0);
+  pending.observe([bare("a", "PRIVATE_A"), bare("x", "PRIVATE_X", false)], 0);
+  pending.observe([bare("a", "PRIVATE_A"), bare("x", "PRIVATE_X", false), bare("a", "PRIVATE_A")], 1);
+  expect(() => pending.finish()).toThrow(ChatGptMarkdownConsistencyError);
+  const pendingDiagnostic = (() => { try { pending.finish(); } catch (error) {
+    return (error as ChatGptMarkdownConsistencyError).diagnostic;
+  } })();
+  expect(pendingDiagnostic).toMatchObject({
+    reason: "block_order_changed", conflict: "pending_before_committed",
+    observedOrdinal: 2, committedOrdinal: 0, previousMatchedCommittedOrdinal: 0,
+    committedOrder: [0], observedOrder: [0, null, 0], textEqual: true,
+    matchBasis: "key", bufferFinishCompleted: false,
+  });
+  expect(JSON.stringify(pendingDiagnostic)).not.toContain("PRIVATE_");
+
+  const reversed = new ChatGptMarkdownBuffer(undefined, 0);
+  reversed.observe([bare("a", "PRIVATE_A"), bare("b", "PRIVATE_B")], 0);
+  reversed.observe([bare("b", "PRIVATE_B"), bare("a", "PRIVATE_A")], 1);
+  const reversedDiagnostic = (() => { try { reversed.finish(); } catch (error) {
+    return (error as ChatGptMarkdownConsistencyError).diagnostic;
+  } })();
+  expect(reversedDiagnostic).toMatchObject({
+    reason: "block_order_changed", conflict: "committed_order_reversed",
+    observedOrdinal: 1, committedOrdinal: 0, previousMatchedCommittedOrdinal: 1,
+    committedOrder: [0, 1], observedOrder: [1, 0], textEqual: true,
+    matchBasis: "key", bufferFinishCompleted: false,
+  });
+  expect(JSON.stringify(reversedDiagnostic)).not.toContain("PRIVATE_");
+
+  const bounded = new ChatGptMarkdownBuffer(undefined, 0);
+  bounded.observe(Array.from({ length: 12 }, (_, index) => bare(String(index), `PRIVATE_${index}`)), 0);
+  bounded.observe([bare("11", "PRIVATE_11"), bare("10", "PRIVATE_10")], 1);
+  const boundedDiagnostic = (() => { try { bounded.finish(); } catch (error) {
+    return (error as ChatGptMarkdownConsistencyError).diagnostic;
+  } })();
+  expect(boundedDiagnostic?.committedOrder).toEqual([4, 5, 6, 7, 8, 9, 10, 11]);
+  expect(boundedDiagnostic?.observedOrder).toEqual([11, 10]);
+  expect(JSON.stringify(boundedDiagnostic)).not.toContain("PRIVATE_");
 });
