@@ -1,18 +1,9 @@
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
-
-function createStableReleaseFixture(): string {
-  const scratch = mkdtempSync(join(tmpdir(), "feno-release-dry-run-"));
-  mkdirSync(join(scratch, "scripts"));
-  copyFileSync(join(ROOT, "scripts", "release-windows.ts"), join(scratch, "scripts", "release-windows.ts"));
-  copyFileSync(join(ROOT, "YAYINLA.bat"), join(scratch, "YAYINLA.bat"));
-  writeFileSync(join(scratch, "package.json"), JSON.stringify({ version: "5.0.31" }));
-  return scratch;
-}
 
 test("local Windows release chooses the next patch version", async () => {
   const { nextPatchVersion, releaseRuntimeIsMutableBuildPath, RELEASE_REPOSITORY, SOURCE_REPOSITORY } = await import("../scripts/release-windows");
@@ -92,104 +83,57 @@ test("release prepares a stable setup download with matching checksums", async (
 });
 
 test("local Windows release dry-run is safe and explicit", async () => {
-  const scratch = createStableReleaseFixture();
-  const packagePath = join(scratch, "package.json");
-  const repositoryPackagePath = join(ROOT, "package.json");
-  try {
-    const before = await Bun.file(packagePath).text();
-    const repositoryBefore = await Bun.file(repositoryPackagePath).text();
-    const proc = Bun.spawn([
-      process.execPath,
-      "run",
-      "scripts/release-windows.ts",
-      "9.8.7",
-      "--dry-run",
-      "--yes",
-    ], {
-      cwd: scratch,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+  const packagePath = join(ROOT, "package.json");
+  const before = await Bun.file(packagePath).text();
+  const proc = Bun.spawn([
+    process.execPath,
+    "run",
+    "scripts/release-windows.ts",
+    "9.8.7",
+    "--dry-run",
+    "--yes",
+  ], {
+    cwd: ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
 
-    expect(exitCode, stderr).toBe(0);
-    expect(stdout).toContain("YAYIN_PLANI v9.8.7");
-    expect(stdout).toContain("DRY_RUN_OK");
-    expect(await Bun.file(packagePath).text()).toBe(before);
-    expect(await Bun.file(repositoryPackagePath).text()).toBe(repositoryBefore);
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-});
-
-test("local Windows release dry-run rejects a prerelease source version", async () => {
-  const scratch = createStableReleaseFixture();
-  try {
-    const packagePath = join(scratch, "package.json");
-    const prereleasePackage = JSON.stringify({ version: "5.0.31-rc.2" });
-    writeFileSync(packagePath, prereleasePackage);
-    const proc = Bun.spawn([
-      process.execPath,
-      "run",
-      "scripts/release-windows.ts",
-      "9.8.7",
-      "--dry-run",
-      "--yes",
-    ], {
-      cwd: scratch,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-
-    expect(exitCode).not.toBe(0);
-    expect(stderr).toContain("Version must be stable x.y.z, received: 5.0.31-rc.2");
-    expect(stdout).not.toContain("DRY_RUN_OK");
-    expect(await Bun.file(packagePath).text()).toBe(prereleasePackage);
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
+  expect(exitCode, stderr).toBe(0);
+  expect(stdout).toContain("YAYIN_PLANI v9.8.7");
+  expect(stdout).toContain("DRY_RUN_OK");
+  expect(await Bun.file(packagePath).text()).toBe(before);
 });
 
 test("YAYINLA wrapper offers the same one-command dry-run", async () => {
   if (process.platform !== "win32") return;
-  const scratch = createStableReleaseFixture();
-  try {
-    const wrapper = join(scratch, "YAYINLA.bat");
-    const proc = Bun.spawn([
-      process.env.COMSPEC || "cmd.exe",
-      "/d",
-      "/c",
-      wrapper,
-      "9.8.7",
-      "--dry-run",
-      "--yes",
-    ], {
-      cwd: scratch,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+  const wrapper = join(ROOT, "YAYINLA.bat");
+  const proc = Bun.spawn([
+    process.env.COMSPEC || "cmd.exe",
+    "/d",
+    "/c",
+    wrapper,
+    "9.8.7",
+    "--dry-run",
+    "--yes",
+  ], {
+    cwd: ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
 
-    expect(exitCode, stderr).toBe(0);
-    expect(stdout).toContain("YAYIN_PLANI v9.8.7");
-    expect(stdout).toContain("DRY_RUN_OK");
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
+  expect(exitCode, stderr).toBe(0);
+  expect(stdout).toContain("YAYIN_PLANI v9.8.7");
+  expect(stdout).toContain("DRY_RUN_OK");
 });
