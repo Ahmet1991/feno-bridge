@@ -509,9 +509,9 @@ test("a mutating stage timeout preserves a failed cleanup integrity error", asyn
     },
   };
   const page = {
-    getByRole: (_role: string, options: { name: string | RegExp }) => (
-      asksFor(options.name, "Personalized") ? personalized : unpersonalized
-    ),
+    getByRole: (role: string, options: { name: string | RegExp }) => role === "menu"
+      ? { filter: () => ({ count: async () => 0 }) }
+      : asksFor(options.name, "Personalized") ? personalized : unpersonalized,
     locator: (selector: string) => selector === "body"
       ? { press: async () => { throw new Error("menu cleanup failed"); } }
       : menu,
@@ -626,6 +626,57 @@ test("personalization owned-menu discovery has its own short readiness budget", 
   // Its own budget, not the turn deadline: this is the property the test is named for.
   expect(ownedMenuAttributeTimeout).toBeLessThanOrEqual(workerBudgetMs("CHATGPT_PERSONALIZATION_INTERACTION_TIMEOUT_MS"));
   expect(ownedMenuAttributeTimeout).toBeLessThan(workerBudgetMs("CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS"));
+});
+
+test.each([1, 2])("personalization requires a unique new semantic menu without aria-controls (menu count=%i)", async menuCount => {
+  let personalized = false;
+  let menuOpen = false;
+  let controlClicks = 0;
+  let choiceClicks = 0;
+  const roleControl = (name: string | RegExp) => ({
+    filter: () => roleControl(name),
+    count: async () => asksFor(name, personalized ? "Personalized" : "Unpersonalized") ? 1 : 0,
+    waitFor: async () => {},
+    click: async () => { menuOpen = true; controlClicks += 1; },
+    getAttribute: async () => null,
+  });
+  const personalizedChoice = {
+    filter: () => personalizedChoice,
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "aria-checked" ? String(personalized) : null,
+    click: async () => { personalized = true; menuOpen = false; choiceClicks += 1; },
+  };
+  const choices = {
+    filter: () => choices,
+    count: async () => 2,
+    nth: (index: number) => ({
+      getAttribute: async (name: string) => name === "aria-checked"
+        ? String(index === (personalized ? 0 : 1)) : null,
+    }),
+  };
+  const menu = {
+    filter: () => menu,
+    first: () => menu,
+    count: async () => menuOpen ? menuCount : 0,
+    locator: () => choices,
+    getByRole: (role: string, options: { name: string | RegExp }) => (
+      role === "menuitemradio" && asksFor(options.name, "Personalized")
+        ? personalizedChoice : { filter: () => ({ count: async () => 0 }) }
+    ),
+  };
+  const page = {
+    getByRole: (role: string, options: { name: string | RegExp }) => (
+      role === "menu" ? menu : roleControl(options.name)
+    ),
+    locator: (selector: string) => selector === "body" ? { press: async () => {} } : menu,
+  } as any;
+  if (menuCount === 1) {
+    await expect(ensureChatGptPersonalizedConnectorAccess(page)).resolves.toBe("enabled");
+  } else {
+    await expect(ensureChatGptPersonalizedConnectorAccess(page)).rejects.toThrow("ownership is ambiguous");
+  }
+  expect(controlClicks).toBe(1);
+  expect(choiceClicks).toBe(menuCount === 1 ? 1 : 0);
 });
 
 test("structural personalization never toggles away from an already Personalized account", async () => {

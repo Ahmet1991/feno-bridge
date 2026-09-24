@@ -106,6 +106,7 @@ for (const labels of personalizationLabels) test(`an ${labels.unpersonalized} Te
   };
   const page = {
     getByRole: (_role: string, options: { name: string | RegExp }) => {
+      if (_role === "menu") return visibleLocator(() => 0);
       if (matchesName(options.name, labels.personalized)) {
         expect(matchesName(options.name, labels.unpersonalized)).toBeFalse();
         expect(matchesName(options.name, `${labels.personalized} settings`)).toBeFalse();
@@ -575,9 +576,9 @@ test("the labeled Unpersonalized path never hides an unclosed menu", async () =>
     getAttribute: async () => "labeled-cleanup-menu",
   });
   const page = {
-    getByRole: (_role: string, options: { name: string | RegExp }) => (
-      matchesName(options.name, "Personalized") ? personalized : unpersonalized
-    ),
+    getByRole: (_role: string, options: { name: string | RegExp }) => _role === "menu"
+      ? visibleLocator(() => 0)
+      : matchesName(options.name, "Personalized") ? personalized : unpersonalized,
     locator: (selector: string) => {
       if (selector === "body") return {
         press: async () => { throw new Error("escape cleanup failed"); },
@@ -748,6 +749,7 @@ test("a Turkish-labeled Unpersonalized Temporary Chat is resolved and switched b
   };
   const page = {
     getByRole: (_role: string, options: { name: string | RegExp }) => {
+      if (_role === "menu") return visibleLocator(() => 0);
       if (matchesName(options.name, "Kişiselleştirilmiş")) return personalized;
       if (matchesName(options.name, "Kişiselleştirilmemiş")) return unpersonalized;
       return absent;
