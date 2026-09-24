@@ -12,6 +12,10 @@ const VERSION_FILES = [
   "launcher/package.json",
   "src/version.ts",
   "scripts/install.sh",
+  "README.md",
+  "README.zh-CN.md",
+  "README.ja.md",
+  "README.ko.md",
 ] as const;
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
@@ -154,6 +158,17 @@ function replaceExactly(path: string, from: string, to: string): void {
   writeFileSync(absolute, original.replace(from, to), "utf8");
 }
 
+export function updateReadmeDownloadLinks(text: string, fromVersion: string, toVersion: string): string {
+  let updated = text;
+  for (const target of ["win-x64.exe", "mac-arm64.zip", "mac-x64.zip", "linux-x64.AppImage"]) {
+    const from = `releases/download/v${fromVersion}/feno-bridge-${fromVersion}-${target}`;
+    const to = `releases/download/v${toVersion}/feno-bridge-${toVersion}-${target}`;
+    if (!updated.includes(from)) throw new Error(`README has no ${target} download for ${fromVersion}`);
+    updated = updated.replaceAll(from, to);
+  }
+  return updated;
+}
+
 function updateVersions(fromVersion: string, toVersion: string): void {
   replaceExactly("package.json", `\"version\": \"${fromVersion}\"`, `\"version\": \"${toVersion}\"`);
   replaceExactly("launcher/package.json", `\"version\": \"${fromVersion}\"`, `\"version\": \"${toVersion}\"`);
@@ -163,6 +178,10 @@ function updateVersions(fromVersion: string, toVersion: string): void {
     `VERSION=\"\${CODEX_CHATGPT_WEB_VERSION:-${fromVersion}}\"`,
     `VERSION=\"\${CODEX_CHATGPT_WEB_VERSION:-${toVersion}}\"`,
   );
+  for (const path of VERSION_FILES.filter(file => file.startsWith("README"))) {
+    const absolute = join(ROOT, path);
+    writeFileSync(absolute, updateReadmeDownloadLinks(readFileSync(absolute, "utf8"), fromVersion, toVersion), "utf8");
+  }
 }
 
 async function sha256(path: string): Promise<string> {

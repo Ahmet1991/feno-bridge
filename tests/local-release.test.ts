@@ -16,6 +16,20 @@ test("local Windows release chooses the next patch version", async () => {
   expect(() => nextPatchVersion("5.0.5-beta.1")).toThrow(/stable x\.y\.z/i);
 });
 
+test("release bump updates all README download targets before version verification", async () => {
+  const { nextPatchVersion, updateReadmeDownloadLinks } = await import("../scripts/release-windows");
+  const current = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version as string;
+  const next = nextPatchVersion(current);
+  for (const name of ["README.md", "README.zh-CN.md", "README.ja.md", "README.ko.md"]) {
+    const before = readFileSync(join(ROOT, name), "utf8");
+    const after = updateReadmeDownloadLinks(before, current, next);
+    for (const target of ["win-x64.exe", "mac-arm64.zip", "mac-x64.zip", "linux-x64.AppImage"]) {
+      expect(after).toContain(`releases/download/v${next}/feno-bridge-${next}-${target}`);
+      expect(after).not.toContain(`releases/download/v${current}/feno-bridge-${current}-${target}`);
+    }
+  }
+});
+
 test("a public release is complete only with checksummed installers for every supported platform", async () => {
   const { releaseAssetsComplete } = await import("../scripts/release-windows");
   const version = "5.0.9";
