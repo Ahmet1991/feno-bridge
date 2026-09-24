@@ -1539,10 +1539,12 @@ export type ChatGptConnectorAttachmentMode = "none" | "mention" | "retained";
 /** A launcher lease may reuse a connector only after proving that exact retained surface is bound. */
 export function chatGptConnectorAttachmentMode(
   localTools: boolean,
-  reuseConversation: boolean,
+  _reuseConversation: boolean,
 ): ChatGptConnectorAttachmentMode {
   if (!localTools) return "none";
-  return reuseConversation ? "retained" : "mention";
+  // Retaining a launcher tab proves only local ownership. Each new ChatGPT submission must
+  // independently select and verify the connector on its current composer surface.
+  return "mention";
 }
 
 export async function setChatGptThinkMode(
@@ -5429,6 +5431,8 @@ export class ChatGptBrowserWorker {
       let contentProgressObserved = false;
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = new ChatGptMarkdownBuffer(undefined, undefined, turn.streamsToCodex !== false);
+      let lastCompletionEvidence: { running: boolean; completionActionVisible: boolean; externalToolCallsInFlight: boolean } | undefined;
+      let finalizationRequested = false;
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
@@ -5439,9 +5443,18 @@ export class ChatGptBrowserWorker {
       const throwMarkdownConsistencyError = (error: unknown): never => {
         if (!(error instanceof ChatGptMarkdownConsistencyError)) throw error;
         if (error.diagnostic) {
-          console.error(
-            `[chatgpt-web] browser turn ${turn.traceId} Markdown conflict: ${JSON.stringify(error.diagnostic)}`,
-          );
+          try {
+            console.error(
+              `[chatgpt-web] browser turn ${turn.traceId} Markdown conflict: ${JSON.stringify({
+                ...error.diagnostic,
+                streamDeliveryMode: turn.streamsToCodex === false ? "suppressed" : "live",
+                finalizationRequested,
+                completionEvidence: lastCompletionEvidence,
+              })}`,
+            );
+          } catch {
+            // Diagnostic output is best effort; preserve the same stream-integrity failure.
+          }
         }
         throw new ChatGptWebAdapterError(error.message, {
           status: 502,
@@ -5591,6 +5604,7 @@ export class ChatGptBrowserWorker {
           });
         }
         if (snapshot.responsePresent) {
+          lastCompletionEvidence = { running, completionActionVisible: snapshot.completionActionVisible, externalToolCallsInFlight };
           if (!capturedResponse) {
             capturedResponse = true;
             await diagnostics.capture(page, "response-visible");
@@ -5658,6 +5672,7 @@ export class ChatGptBrowserWorker {
             }
             const final = (() => {
               try {
+                finalizationRequested = true;
                 return markdownBuffer.finish();
               } catch (error) {
                 return throwMarkdownConsistencyError(error);

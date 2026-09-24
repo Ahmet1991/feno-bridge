@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { looksAlteredInTransit, withinOneEdit } from "../src/adapters/chatgpt-web/turn-broker";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { callTurnBroker, looksAlteredInTransit, TurnBroker, withinOneEdit } from "../src/adapters/chatgpt-web/turn-broker";
+import { defaultBrokerEndpoint } from "../src/config";
 
 // The live signature this was written for: on 21 Sep a claim arrived with 36 characters where every
 // accepted claim has 37, the same value three times in one turn.
@@ -52,4 +56,84 @@ test("a verbatim token is stale, not altered; a one-character loss is altered", 
   expect(looksAlteredInTransit(LIVE, LIVE)).toBeFalse();
   expect(looksAlteredInTransit(LIVE.slice(0, 20) + LIVE.slice(21), LIVE)).toBeTrue();
   expect(looksAlteredInTransit("turn_ffffffffffffffffffffffffffffffff", LIVE)).toBeFalse();
+});
+
+test("claim diagnostics correlate altered and retired tokens without storing token text", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cgw-claim-diagnostics-"));
+  const previous = process.env.CODEX_CHATGPT_WEB_HOME;
+  process.env.CODEX_CHATGPT_WEB_HOME = home;
+  const broker = TurnBroker.forSocket(defaultBrokerEndpoint(home));
+  try {
+    const token = await broker.register({ tools: [], instructions: "" } as never, 60_000, "trace_claim_diagnostic");
+    const altered = token.slice(0, 20) + token.slice(21);
+    await expect(callTurnBroker(broker.socketPath, { method: "claim", token: altered }))
+      .rejects.toThrow("invalid, expired, or revoked");
+    broker.revoke(token);
+    await expect(callTurnBroker(broker.socketPath, { method: "claim", token }))
+      .rejects.toThrow("already finished");
+
+    const content = readFileSync(join(home, "diagnostics", "claim-rejections.jsonl"), "utf8");
+    const events = content.trim().split("\n").map(line => JSON.parse(line));
+    expect(events.map(event => event.event)).toEqual(["register", "reject", "retire", "reject"]);
+    expect(events[1]).toMatchObject({ brokerId: events[0].brokerId, nearLiveToken: true, retiredTurn: null });
+    expect(events[3]).toMatchObject({ brokerId: events[0].brokerId, tokenHash: events[0].tokenHash, retiredTurn: "trace_claim_diagnostic", nearLiveToken: false });
+    expect(content).not.toContain(token);
+    expect(content).not.toContain(altered);
+  } finally {
+    await broker.close();
+    if (previous === undefined) delete process.env.CODEX_CHATGPT_WEB_HOME;
+    else process.env.CODEX_CHATGPT_WEB_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("completion rejection retains its recorded state transition", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cgw-claim-completion-"));
+  const previous = process.env.CODEX_CHATGPT_WEB_HOME;
+  process.env.CODEX_CHATGPT_WEB_HOME = home;
+  const broker = TurnBroker.forSocket(defaultBrokerEndpoint(home));
+  try {
+    const token = await broker.register({ tools: [], instructions: "" } as never, 60_000, "trace_completed");
+    const revision = broker.beginCompletionFence(token);
+    expect(revision).toBeDefined();
+    expect(broker.commitCompletionFence(token, revision!)).toBeTrue();
+    await expect(callTurnBroker(broker.socketPath, { method: "claim", token }))
+      .rejects.toThrow("already finished");
+    const content = readFileSync(join(home, "diagnostics", "claim-rejections.jsonl"), "utf8");
+    const events = content.trim().split("\n").map(line => JSON.parse(line));
+    expect(events.map(event => event.event)).toEqual(["register", "completion", "reject"]);
+    expect(events[1]).toMatchObject({
+      brokerId: events[0].brokerId, tokenHash: events[0].tokenHash,
+      traceId: "trace_completed", revision,
+    });
+    expect(events[2]).toMatchObject({
+      brokerId: events[0].brokerId, tokenHash: events[0].tokenHash,
+      retiredTurn: "trace_completed",
+    });
+    expect(content).not.toContain(token);
+  } finally {
+    await broker.close();
+    if (previous === undefined) delete process.env.CODEX_CHATGPT_WEB_HOME;
+    else process.env.CODEX_CHATGPT_WEB_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("unwritable diagnostics leave broker rejection unchanged", async () => {
+  const home = mkdtempSync(join(tmpdir(), "cgw-claim-unwritable-"));
+  const previous = process.env.CODEX_CHATGPT_WEB_HOME;
+  process.env.CODEX_CHATGPT_WEB_HOME = home;
+  writeFileSync(join(home, "diagnostics"), "blocking file");
+  const broker = TurnBroker.forSocket(defaultBrokerEndpoint(home));
+  try {
+    const token = await broker.register({ tools: [], instructions: "" } as never, 60_000, "trace_unwritable");
+    broker.revoke(token);
+    await expect(callTurnBroker(broker.socketPath, { method: "claim", token }))
+      .rejects.toThrow("already finished");
+  } finally {
+    await broker.close();
+    if (previous === undefined) delete process.env.CODEX_CHATGPT_WEB_HOME;
+    else process.env.CODEX_CHATGPT_WEB_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
 });

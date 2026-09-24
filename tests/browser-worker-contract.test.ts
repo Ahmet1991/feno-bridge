@@ -319,9 +319,9 @@ test("response caching rechecks CSS visibility without requiring a DOM mutation"
   }
 });
 
-test("a retained MCP conversation reuses its proven connector binding", () => {
+test("a retained MCP conversation selects the connector for every tool-capable submission", () => {
   expect(chatGptConnectorAttachmentMode(true, false)).toBe("mention");
-  expect(chatGptConnectorAttachmentMode(true, true)).toBe("retained");
+  expect(chatGptConnectorAttachmentMode(true, true)).toBe("mention");
   expect(chatGptConnectorAttachmentMode(false, false)).toBe("none");
 });
 
@@ -2125,7 +2125,7 @@ test("connector catalog refresh stays fail-closed for absent, legacy, and exact 
   await expect(run([CHATGPT_CONNECTOR_NAME])).rejects.toThrow("exact row was not visible");
 });
 
-test("tool-capable prompts use the shared Playwright connector selection before inserting context", async () => {
+test("a retained tool-capable prompt verifies the real connector selection before inserting context", async () => {
   const controller = new AbortController();
   const calls: Array<[string, string?]> = [];
   let selected = false;
@@ -2179,6 +2179,10 @@ test("tool-capable prompts use the shared Playwright connector selection before 
       selected = true;
       calls.push(["selectConnector"]);
     },
+    evaluate: async (_fn: unknown, value: string) => {
+      calls.push(["plainText", value]);
+      return true;
+    },
   };
   const page = {
     getByRole: personalizedTemporaryChatRole,
@@ -2188,13 +2192,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
       : (() => { throw new Error(`Unexpected locator: ${selector}`); })(),
   };
   const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
-    attachPrompt(
-      page: unknown,
-      prompt: string,
-      localTools: boolean,
-      captureDiagnostic?: unknown,
-      abortSignal?: AbortSignal,
-    ): Promise<void>;
+    attachPrompt(...args: unknown[]): Promise<void>;
   }).attachPrompt;
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown): Promise<unknown>;
@@ -2215,7 +2213,8 @@ test("tool-capable prompts use the shared Playwright connector selection before 
       return selected ? selectedComposer : initialComposer;
     },
     assertPromptAttached: async () => { calls.push(["assertPrompt"]); },
-  }, page, "context", true, undefined, controller.signal);
+    clearChatGptComposerState: async () => { calls.push(["cleanup"]); },
+  }, page, "context", true, undefined, controller.signal, false, undefined, true);
 
   expect(calls).toEqual([
     ["fill", ""],
@@ -2542,7 +2541,7 @@ test("an abort while inserting a connector prompt clears the selected pill and p
   expect(connectorSelected).toBeFalse();
 });
 
-test("retained tool turns insert into the connector-bound composer without selecting it again", async () => {
+test("retained tool turns select the connector before inserting context", async () => {
   const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
     attachPrompt(
       page: unknown,
@@ -2557,17 +2556,16 @@ test("retained tool turns insert into the connector-bound composer without selec
   }).attachPrompt;
 
   const calls: string[] = [];
-  const composer = {
-    fill: async (value: string) => { expect(value).toBe(""); calls.push("fill"); },
+  const selectedComposer = {
     focus: async () => { calls.push("focus"); },
+    press: async (key: string) => { expect(key).toBe(CHATGPT_COMPOSER_DOCUMENT_END_KEY); calls.push("end"); },
   };
   await attachPrompt.call({
-    activeComposer: async () => composer,
-    selectConnector: async () => { throw new Error("retained connector must not be selected again"); },
-    insertPromptText: async (_page: unknown, text: string) => { expect(text).toBe("retained context"); calls.push("insert"); },
+    selectConnector: async () => { calls.push("select"); return selectedComposer; },
+    insertPromptText: async (_page: unknown, text: string) => { expect(text).toBe(" retained context"); calls.push("insert"); },
     assertPromptAttached: async () => { calls.push("assert"); },
   }, {}, "retained context", true, undefined, undefined, false, undefined, true);
-  expect(calls).toEqual(["fill", "focus", "insert", "assert"]);
+  expect(calls).toEqual(["select", "focus", "end", "insert", "assert"]);
 });
 
 test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
@@ -2749,7 +2747,7 @@ test("Think slash requires one command and verifies a newly exposed control", as
   expect(unavailable.state.enters).toBe(0);
 });
 
-test("Think attachment runs after fresh connector selection and rechecks retained and Browser-only turns", async () => {
+test("Think attachment selects the connector for each retained and fresh tool turn", async () => {
   const attach = (ChatGptBrowserWorker.prototype as unknown as { attachPrompt: (...args: unknown[]) => Promise<void> }).attachPrompt;
   for (const [localTools, retained] of [[true, false], [true, true], [false, false]]) {
     const ui = thinkSlashFixture();
@@ -2763,14 +2761,14 @@ test("Think attachment runs after fresh connector selection and rechecks retaine
     };
     await attach.call(worker, ui.page, "requested task", localTools, undefined, undefined, false, undefined, retained, true);
     expect(submitted).toEqual([true]);
-    expect(connectorSelections).toBe(localTools && !retained ? 1 : 0);
-    if (localTools && !retained) expect(ui.state.connectors).toEqual(["Codex Native2"]);
+    expect(connectorSelections).toBe(localTools ? 1 : 0);
+    if (localTools) expect(ui.state.connectors).toEqual(["Codex Native2"]);
     if (retained) {
       ui.state.pressed = false;
       await attach.call(worker, ui.page, "follow-up task", localTools, undefined, undefined, false, undefined, retained, true);
       expect(submitted).toEqual([true, true]);
       expect(ui.state.commands).toEqual(["/think", "/think"]);
-      expect(connectorSelections).toBe(0);
+      expect(connectorSelections).toBe(2);
     }
   }
 });
