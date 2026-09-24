@@ -628,7 +628,7 @@ test("personalization owned-menu discovery has its own short readiness budget", 
   expect(ownedMenuAttributeTimeout).toBeLessThan(workerBudgetMs("CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS"));
 });
 
-test.each([1, 2])("personalization requires a unique new semantic menu without aria-controls (menu count=%i)", async menuCount => {
+test.each([["missing", 1], ["timeout", 1], ["missing", 2]] as const)("personalization requires a unique new semantic menu when aria-controls is %s (menu count=%i)", async (attributeMode, menuCount) => {
   let personalized = false;
   let menuOpen = false;
   let controlClicks = 0;
@@ -638,7 +638,14 @@ test.each([1, 2])("personalization requires a unique new semantic menu without a
     count: async () => asksFor(name, personalized ? "Personalized" : "Unpersonalized") ? 1 : 0,
     waitFor: async () => {},
     click: async () => { menuOpen = true; controlClicks += 1; },
-    getAttribute: async () => null,
+    getAttribute: async () => {
+      if (attributeMode === "timeout") {
+        const error = new Error("personalization trigger was replaced after opening its menu");
+        error.name = "TimeoutError";
+        throw error;
+      }
+      return null;
+    },
   });
   const personalizedChoice = {
     filter: () => personalizedChoice,

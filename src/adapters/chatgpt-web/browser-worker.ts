@@ -433,6 +433,7 @@ async function waitForChatGptOwnedPersonalizationMenu(
   );
   let menuId: string | null = null;
   while (!menuId) {
+    let attributeTimedOut = false;
     const globalRemaining = remainingChatGptPersonalizationMs(deadline, signal);
     const ownershipRemaining = ownershipDeadline - Date.now();
     if (ownershipRemaining <= 0) {
@@ -447,9 +448,10 @@ async function waitForChatGptOwnedPersonalizationMenu(
       });
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
-      throw chatGptConnectorUnavailableError(
-        "ChatGPT personalization control did not expose aria-controls for its owned menu within the short readiness budget",
-      );
+      // The trigger may be replaced as the menu opens. Inspect the new menu under the
+      // same ownership rules before treating the missing attribute as a failure.
+      menuId = null;
+      attributeTimedOut = true;
     }
     if (!menuId) {
       // Some ChatGPT menu triggers do not expose aria-controls. Accept the newly opened
@@ -475,6 +477,11 @@ async function waitForChatGptOwnedPersonalizationMenu(
             return candidate;
           }
         }
+      }
+      if (attributeTimedOut) {
+        throw chatGptConnectorUnavailableError(
+          "ChatGPT personalization control did not expose aria-controls for its owned menu within the short readiness budget",
+        );
       }
       await waitForChatGptPersonalizationPoll(
         Math.min(50, Math.max(1, ownershipDeadline - Date.now())),
