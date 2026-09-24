@@ -58,7 +58,10 @@ const HIDDEN_TURN_VIEWPORT = Object.freeze({ width: 800, height: 600 });
 const TURN_HEARTBEAT_SWEEP_MS = 5_000;
 const TURN_HEARTBEAT_TIMEOUT_MS = 60_000;
 const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
-const RETAINED_TURN_TAB_TTL_MS = 30 * 60 * 1000;
+// A temporary chat has no durable URL to reopen after its tab is reclaimed. Keep the owned tab
+// through a normal workday so a later Codex turn can resume the same conversation. The existing
+// five-tab cap still evicts the oldest idle retained tab when capacity is needed.
+const RETAINED_TURN_TAB_TTL_MS = 12 * 60 * 60 * 1000;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];

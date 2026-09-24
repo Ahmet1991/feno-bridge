@@ -6,6 +6,7 @@ import {
 } from "../src/adapters/chatgpt-web/input-tokens";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { estimateTokens } from "../src/lib/token-estimate";
+import { chatGptPromptFilePayloads } from "../src/adapters/chatgpt-web/browser-worker";
 import {
   chatGptWebImageTokenReserve,
   resolveChatGptWebMessageTokenBudget,
@@ -129,6 +130,64 @@ test("page capacity chooses the smallest dynamic whole-record multipart transpor
   const commit = formatChatGptWebMultipartCommit(compiled.multipart!, transactionId);
   expect(commit).toContain("acknowledged_parts: 3/4");
   expect(commit).toMatch(/manifest: .*1\/4:[a-f0-9]{64} .*4\/4:[a-f0-9]{64}/);
+});
+
+test("an instruction-heavy first turn carries its complete context in one text attachment", () => {
+  const userText = "Please continue the task. ".repeat(900);
+  const systemText = "Follow these workspace instructions. ".repeat(1500);
+  const parsed = request([{ role: "user", content: userText, timestamp: 1 }]);
+  parsed.context.systemPrompt = [systemText];
+  const localCapabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: false };
+  const token = "turn_12345678901234567890123456789012";
+  const compiled = compileChatGptWebPromptWithinPageCapacity(parsed, localCapabilities, token, {
+    maxMessageChars: 70_200,
+    experimentalSkillAttachments: true,
+  });
+  expect(compiled.multipart).toBeUndefined();
+  expect(compiledChatGptWebMaxMessageChars(compiled)).toBeLessThanOrEqual(70_200);
+  expect(compiled.text).toContain("<codex_context_file");
+  const [file] = chatGptPromptFilePayloads(compiled);
+  expect(file!.name).toMatch(/^codex-context--[a-f0-9]{16}\.txt$/);
+  const context = JSON.parse(file!.buffer.toString("utf8"));
+  expect(context.system).toEqual([systemText]);
+  expect(context.messages[0].content).toBe(userText);
+  const disabled = compileChatGptWebPromptWithinPageCapacity(parsed, localCapabilities, token, {
+    maxMessageChars: 70_200,
+  });
+  expect(disabled.multipart).toBeDefined();
+});
+
+test("context file transport falls back to multipart when the single-message token budget is too small", () => {
+  const dense = "a!b@c#d$e%f^g&h*".repeat(10_000);
+  const parsed = request([{ role: "user", content: dense, timestamp: 1 }]);
+  const localCapabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: false };
+  const compiled = compileChatGptWebPromptWithinPageCapacity(
+    parsed, localCapabilities, "turn_12345678901234567890123456789012",
+    { maxMessageChars: 70_200, experimentalSkillAttachments: true },
+  );
+  expect(compiled.multipart).toBeDefined();
+  expect(compiled.skillFiles).toBeUndefined();
+});
+
+test("context file transport preserves the attachment limit for selected skills", () => {
+  const skills: CodexMessage[] = Array.from({ length: 10 }, (_unused, index) => ({
+    role: "user",
+    origin: "codex_skill",
+    content: `<skill>\n<name>skill-${index}</name>\n<path>/skills/${index}/SKILL.md</path>\nRead me.\n</skill>`,
+    timestamp: index,
+  }));
+  const parsed = request([
+    ...skills,
+    { role: "user", content: "Continue the task. ".repeat(5_000), timestamp: 11 },
+  ]);
+  const compiled = compileChatGptWebPromptWithinPageCapacity(
+    parsed,
+    { localToolsEnabled: true, solAvailable: true, proAvailable: false },
+    "turn_12345678901234567890123456789012",
+    { maxMessageChars: 70_200, experimentalSkillAttachments: true },
+  );
+  expect(compiled.multipart).toBeDefined();
+  expect(chatGptPromptFilePayloads(compiled)).toHaveLength(10);
 });
 
 test("multipart compiler balances whole records against token and composer budgets", () => {
