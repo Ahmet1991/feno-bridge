@@ -2669,7 +2669,7 @@ test("ending one browser turn does not stop another running tab", async () => {
   assert.equal(fixture.activeTraceId, active.traceId);
 });
 
-test("a completed keyed turn is retained for thirty minutes and preserves its acknowledgement", async () => {
+test("a completed keyed turn is retained for twelve hours and preserves its acknowledgement", async () => {
   const throttling = [];
   const tab = {
     id: "tab-retained",
@@ -2718,11 +2718,11 @@ test("a completed keyed turn is retained for thirty minutes and preserves its ac
   assert.deepEqual(throttling, [true]);
 
   const retainedAt = tab.lastHeartbeatAt;
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, retainedAt + (30 * 60 * 1000) - 1);
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, retainedAt + (12 * 60 * 60 * 1000) - 1);
   assert.equal(fixture.turnTabs.has(tab.id), true);
 });
 
-test("a retained browser tab expires at thirty minutes", () => {
+test("a retained browser tab expires after twelve hours", () => {
   const removed = [];
   const tab = {
     id: "tab-expired",
@@ -2739,7 +2739,7 @@ test("a retained browser tab expires at thirty minutes", () => {
     },
   };
 
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + (30 * 60 * 1000));
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + (12 * 60 * 60 * 1000));
 
   assert.deepEqual(removed, [[tab.id, false]]);
   assert.equal(fixture.turnTabs.size, 0);

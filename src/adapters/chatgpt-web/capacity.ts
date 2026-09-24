@@ -5,8 +5,11 @@ import {
   compiledChatGptWebMessagesForCapacityDiagnostic,
   compiledChatGptWebMaxMessageChars,
   DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS,
+  estimateChatGptWebImageTokens,
+  estimateCompiledChatGptWebMessageTokens,
 } from "./input-tokens";
-import { CHATGPT_WEB_LUNA_MODEL_ID, type ChatGptWebCapabilities } from "./model";
+import { resolveChatGptWebMessageTokenBudget } from "../../chatgpt-web-models";
+import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import {
   CHATGPT_WEB_MULTIPART_MAX_PARTS,
   compileChatGptWebPrompt,
@@ -230,6 +233,27 @@ export function compileChatGptWebPromptWithinPageCapacity(
   }
   if (parsed.modelId === CHATGPT_WEB_LUNA_MODEL_ID) {
     throw capacityError(inlineChars, maxMessageChars, "luna");
+  }
+
+  // A text attachment avoids staging an instruction-heavy first turn in multiple browser
+  // messages. Keep multipart as the fallback when the file, attachments or model budget cannot
+  // carry the complete context. Native compaction retains its existing transport semantics.
+  if (capabilities.localToolsEnabled && options.experimentalSkillAttachments === true && !parsed._compactionRequest) {
+    const fileCandidate = compileChatGptWebPrompt(parsed, capabilities, turnToken, {
+      ...baseOptions,
+      contextAsFile: true,
+    });
+    const files = fileCandidate.skillFiles ?? [];
+    const contextFile = files.at(-1);
+    const effort = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities).effort;
+    if (contextFile
+      && files.length + fileCandidate.images.length <= 10
+      && Buffer.byteLength(contextFile.text, "utf8") <= 20_000_000
+      && compiledChatGptWebMaxMessageChars(fileCandidate) <= maxMessageChars
+      && estimateCompiledChatGptWebMessageTokens(fileCandidate, parsed.modelId)
+        <= resolveChatGptWebMessageTokenBudget(
+          CHATGPT_WEB_MODEL_ID, effort, capabilities, estimateChatGptWebImageTokens(fileCandidate),
+        )) return fileCandidate;
   }
 
   // Every part of an N-way split still carries the inline payload divided N ways plus its own

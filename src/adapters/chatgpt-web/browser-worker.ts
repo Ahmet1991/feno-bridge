@@ -424,7 +424,8 @@ async function waitForChatGptOwnedPersonalizationMenu(
   page: Page,
   control: Locator,
   deadline: number,
-  signal?: AbortSignal,
+  signal: AbortSignal,
+  visibleMenusBeforeClick = -1,
 ): Promise<Locator> {
   const ownershipDeadline = Math.min(
     deadline,
@@ -432,6 +433,7 @@ async function waitForChatGptOwnedPersonalizationMenu(
   );
   let menuId: string | null = null;
   while (!menuId) {
+    let attributeTimedOut = false;
     const globalRemaining = remainingChatGptPersonalizationMs(deadline, signal);
     const ownershipRemaining = ownershipDeadline - Date.now();
     if (ownershipRemaining <= 0) {
@@ -446,11 +448,41 @@ async function waitForChatGptOwnedPersonalizationMenu(
       });
     } catch (error) {
       if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
-      throw chatGptConnectorUnavailableError(
-        "ChatGPT personalization control did not expose aria-controls for its owned menu within the short readiness budget",
-      );
+      // The trigger may be replaced as the menu opens. Inspect the new menu under the
+      // same ownership rules before treating the missing attribute as a failure.
+      menuId = null;
+      attributeTimedOut = true;
     }
     if (!menuId) {
+      // Some ChatGPT menu triggers do not expose aria-controls. Accept the newly opened
+      // menu only if there was no visible menu before this click and the result is unique,
+      // has both checkable personalization states, and names the Personalized choice.
+      // Never infer ownership from a pre-existing or ambiguous page-wide menu.
+      if (visibleMenusBeforeClick === 0) {
+        const visibleMenus = page.getByRole("menu", { includeHidden: true }).filter({ visible: true });
+        const menuCount = await runChatGptPersonalizationStep(() => visibleMenus.count(), deadline, signal);
+        if (menuCount > 1) {
+          throw chatGptConnectorUnavailableError(
+            "ChatGPT exposed multiple menus after opening personalization; ownership is ambiguous",
+          );
+        }
+        if (menuCount === 1) {
+          const candidate = visibleMenus.first();
+          const choices = candidate.locator(CHATGPT_PERSONALIZATION_CHOICE_SELECTOR).filter({ visible: true });
+          if (await runChatGptPersonalizationStep(() => choices.count(), deadline, signal) === 2) {
+            const personalizedChoice = await chatGptPersonalizedMenuChoice(candidate, deadline, signal);
+            await chatGptPersonalizationChoiceIsChecked(personalizedChoice, deadline, signal);
+            // A second checked state is required to avoid acting on an unrelated radio menu.
+            await readChatGptPersonalizationCheckedIndex(choices, deadline, signal);
+            return candidate;
+          }
+        }
+      }
+      if (attributeTimedOut) {
+        throw chatGptConnectorUnavailableError(
+          "ChatGPT personalization control did not expose aria-controls for its owned menu within the short readiness budget",
+        );
+      }
       await waitForChatGptPersonalizationPoll(
         Math.min(50, Math.max(1, ownershipDeadline - Date.now())),
         signal,
@@ -532,11 +564,18 @@ async function openChatGptStructuralPersonalizationState(
       `ChatGPT Temporary Chat exposed ${controlCount} structural personalization controls; expected exactly one`,
     );
   }
+  const visibleMenusBeforeClick = await runChatGptPersonalizationStep(
+    () => page.getByRole("menu", { includeHidden: true }).filter({ visible: true }).count(),
+    deadline,
+    signal,
+  );
   await control.click({
     timeout: chatGptPersonalizationInteractionMs(deadline, signal),
     signal,
   });
-  const menu = await waitForChatGptOwnedPersonalizationMenu(page, control, deadline, signal);
+  const menu = await waitForChatGptOwnedPersonalizationMenu(
+    page, control, deadline, signal, visibleMenusBeforeClick,
+  );
   const choices = menu.locator(CHATGPT_PERSONALIZATION_CHOICE_SELECTOR).filter({ visible: true });
   if (await runChatGptPersonalizationStep(() => choices.count(), deadline, signal) !== 2) {
     throw chatGptConnectorUnavailableError(
@@ -700,6 +739,11 @@ async function ensureChatGptPersonalizedConnectorAccessWithinDeadline(
   }
 
   await capture("personalization-unpersonalized");
+  const visibleMenusBeforeClick = await runChatGptPersonalizationStep(
+    () => page.getByRole("menu", { includeHidden: true }).filter({ visible: true }).count(),
+    deadline,
+    abortSignal,
+  );
   await unpersonalized.click({
     timeout: chatGptPersonalizationInteractionMs(deadline, abortSignal),
     signal: abortSignal,
@@ -710,6 +754,7 @@ async function ensureChatGptPersonalizedConnectorAccessWithinDeadline(
       unpersonalized,
       deadline,
       abortSignal,
+      visibleMenusBeforeClick,
     );
     const choice = await chatGptPersonalizedMenuChoice(menu, deadline, abortSignal);
     await choice.click({
