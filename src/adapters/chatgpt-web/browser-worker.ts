@@ -2195,7 +2195,7 @@ class ChatGptBrowserDiagnostics {
               if (!rendered(element)) return false;
               if (element.matches('button[data-list-navigation-item="true"]')) {
                 const content = element.querySelector('[data-menu-row-content="true"]');
-                const leaf = content && [content, ...content.querySelectorAll("*")].find(candidate => (
+                const leaf = content && [content, ...Array.from(content.querySelectorAll("*"))].find(candidate => (
                   candidate.children.length === 0 && (candidate.textContent ?? "").trim().length > 0
                 ));
                 return (leaf?.textContent ?? "").replace(/\s+/g, " ").trim() === appName;
@@ -3535,7 +3535,7 @@ export class ChatGptBrowserWorker {
           if (element.matches('button[data-list-navigation-item="true"]')) {
             const content = element.querySelector('[data-menu-row-content="true"]');
             if (!content) return "";
-            const firstTitleLeaf = [content, ...content.querySelectorAll("*")].find(candidate => (
+            const firstTitleLeaf = [content, ...Array.from(content.querySelectorAll("*"))].find(candidate => (
               candidate.children.length === 0 && (candidate.textContent ?? "").trim().length > 0
             ));
             return (firstTitleLeaf?.textContent ?? "").replace(/\s+/g, " ").trim();
