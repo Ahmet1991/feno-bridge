@@ -166,6 +166,7 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "data-turn",
   "data-turn-id",
   "data-turn-id-container",
+  "data-content-search-unit-key",
   "disabled",
   "hidden",
   "inert",
@@ -174,6 +175,25 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "start",
   "style",
 ] as const;
+
+const CHATGPT_BROWSER_USER_TURN_SELECTOR = [
+  CHATGPT_USER_TURN_SELECTOR,
+  '[data-content-search-unit-key$=":user"]',
+].join(", ");
+const CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR = [
+  CHATGPT_ASSISTANT_TURN_SELECTOR,
+  '[data-content-search-unit-key$=":assistant"]',
+].join(", ");
+
+/** Resolve either legacy turn IDs or unit keys without guessing their value format. */
+export function chatGptTurnIdentitySelector(identity: string): string {
+  const quotedIdentity = JSON.stringify(identity);
+  return `[data-turn-id=${quotedIdentity}], [data-content-search-unit-key=${quotedIdentity}]`;
+}
+
+function chatGptTurnLocator(page: Page, identity: string): Locator {
+  return page.locator(chatGptTurnIdentitySelector(identity));
+}
 
 const settleChatGptUi = (): Promise<void> => (
   new Promise(resolveSettle => setTimeout(resolveSettle, CHATGPT_UI_SETTLE_MS))
@@ -3129,10 +3149,14 @@ export class ChatGptBrowserWorker {
       })();
       const observerKey = `${observerState.id}:${observerState.revision}`;
       if (options.knownKey === observerKey) return { key: observerKey };
-      const identities = (elements: Element[], attribute: string): string[] => {
-        const values = elements.map(element => element.getAttribute(attribute));
+      const identity = (element: Element, container: boolean): string | null => {
+        const legacy = element.getAttribute(container ? "data-turn-id-container" : "data-turn-id");
+        return legacy?.trim() ? legacy : element.getAttribute("data-content-search-unit-key");
+      };
+      const identities = (elements: Element[], container = false): string[] => {
+        const values = elements.map(element => identity(element, container));
         if (values.some(value => typeof value !== "string" || value.trim().length === 0)) {
-          throw new Error(`ChatGPT conversation turn has no stable ${attribute} identity`);
+          throw new Error("ChatGPT conversation turn has no stable identity");
         }
         const typed = values as string[];
         if (new Set(typed).size !== typed.length) {
@@ -3150,12 +3174,23 @@ export class ChatGptBrowserWorker {
       };
       // data-testid contains a display index: ChatGPT can renumber it while the same turn lives.
       // Virtualization removes a turn's section, but retains its outer identity container.
-      const containers = [...document.querySelectorAll("[data-turn-id-container]")].filter(element =>
-        element.parentElement?.closest("[data-turn-id-container]")?.getAttribute("data-turn-id-container")
-          !== element.getAttribute("data-turn-id-container"));
-      const turnIdentities = identities(containers, "data-turn-id-container");
-      const userIdentities = identities([...document.querySelectorAll(options.userTurnSelector)], "data-turn-id");
-      const responseIdentities = identities([...document.querySelectorAll(options.assistantTurnSelector)], "data-turn-id");
+      const containerSelector = "[data-turn-id-container], [data-content-search-unit-key]";
+      const containers = [...new Set([
+        ...document.querySelectorAll("[data-turn-id-container]"),
+        ...document.querySelectorAll("[data-content-search-unit-key]"),
+      ])].filter(element => {
+        const parent = element.parentElement?.closest(containerSelector);
+        return !parent || identity(parent, true) !== identity(element, true);
+      });
+      const turnIdentities = identities(containers, true);
+      const userIdentities = identities([...new Set([
+        ...document.querySelectorAll(options.userTurnSelector),
+        ...document.querySelectorAll('[data-content-search-unit-key$=":user"]'),
+      ])]);
+      const responseIdentities = identities([...new Set([
+        ...document.querySelectorAll(options.assistantTurnSelector),
+        ...document.querySelectorAll('[data-content-search-unit-key$=":assistant"]'),
+      ])]);
       const knownTurns = new Set(turnIdentities);
       if ([...userIdentities, ...responseIdentities].some(identity => !knownTurns.has(identity))) {
         throw new Error("ChatGPT conversation turn has no matching identity container");
@@ -3215,13 +3250,13 @@ export class ChatGptBrowserWorker {
       state.responseIdentities,
     );
     if (!identity) return "";
-    const locator = page.locator(`[data-turn-id=${JSON.stringify(identity)}]`);
+    const locator = chatGptTurnLocator(page, identity);
     return (await this.responseDomSnapshot(locator, {})).visibleText;
   }
 
   private async captureSubmissionBaseline(page: Page): Promise<ChatGptSubmissionBaseline> {
-    const userTurns = page.locator(CHATGPT_USER_TURN_SELECTOR);
-    const responseTurns = page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR);
+    const userTurns = page.locator(CHATGPT_BROWSER_USER_TURN_SELECTOR);
+    const responseTurns = page.locator(CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR);
     const domCache: ChatGptSubmissionDomCache = {};
     const state = await this.submissionDomState(page, domCache);
     return {
@@ -3329,7 +3364,7 @@ export class ChatGptBrowserWorker {
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
         const boundaryText = identity
           ? (await this.responseDomSnapshot(
-            observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+            chatGptTurnLocator(observationPage, identity),
             {},
           )).visibleText
           : "";
@@ -3338,7 +3373,7 @@ export class ChatGptBrowserWorker {
       }
       if (identity) return {
         identity,
-        locator: observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+        locator: chatGptTurnLocator(observationPage, identity),
         acceptedTurnIdentities: state.turnIdentities,
       };
       // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
@@ -3391,7 +3426,7 @@ export class ChatGptBrowserWorker {
     }
     return {
       identity,
-      locator: page.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+      locator: chatGptTurnLocator(page, identity),
       acceptedTurnIdentities,
     };
   }
@@ -4411,9 +4446,14 @@ export class ChatGptBrowserWorker {
       // render a completed commentary Markdown root immediately before that live status container.
       // Final-answer Markdown follows the live status instead, so DOM order remains the semantic
       // boundary without relying on localized labels such as "Pro thinking".
-      const allMarkdownRoots = [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
-        .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))
-        .filter(renderedInDom);
+      // The measured unit-key outer assistant container holds the entire response.
+      // Multiple assistant-message bodies can coexist while streaming: do not select one.
+      const unitKeyAnswer = root.matches('[data-content-search-unit-key$=":assistant"]');
+      const allMarkdownRoots = unitKeyAnswer
+        ? [root].filter(renderedInDom)
+        : [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
+          .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))
+          .filter(renderedInDom);
       const streamingStatusContainers = [...root.querySelectorAll<HTMLElement>("[data-streaming-response-status]")]
         .filter(renderedInDom);
       // CHATGPT_COMMENTARY_CLASSIFIER_BEGIN
@@ -4445,7 +4485,9 @@ export class ChatGptBrowserWorker {
         };
       };
       // CHATGPT_COMMENTARY_CLASSIFIER_END
-      const classified = selectChatGptAnswerRoots(allMarkdownRoots, streamingStatusContainers);
+      const classified = unitKeyAnswer
+        ? { commentaryRoots: [] as HTMLElement[], answerRoots: allMarkdownRoots }
+        : selectChatGptAnswerRoots(allMarkdownRoots, streamingStatusContainers);
       const commentaryRoots = classified.commentaryRoots;
       const renderedRoots = classified.answerRoots;
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
@@ -5130,8 +5172,8 @@ export class ChatGptBrowserWorker {
         await rebindLauncherPage(attempt, cause, abortSignal);
         const reboundBaseline: ChatGptSubmissionBaseline = {
           ...baseline,
-          userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
-          responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
+          userTurns: page.locator(CHATGPT_BROWSER_USER_TURN_SELECTOR),
+          responseTurns: page.locator(CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR),
           domCache: {},
         };
         await diagnostics.capture(page, checkpoint);
@@ -5581,13 +5623,13 @@ export class ChatGptBrowserWorker {
             await rebindLauncherPage(consecutiveObservationRebinds, error, turn.abortSignal);
             submissionBaseline = {
               ...submissionBaseline,
-              userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
-              responseTurns: page.locator(CHATGPT_ASSISTANT_TURN_SELECTOR),
+              userTurns: page.locator(CHATGPT_BROWSER_USER_TURN_SELECTOR),
+              responseTurns: page.locator(CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR),
               domCache: {},
             };
             responseTurn = {
               ...responseTurn,
-              locator: page.locator(`[data-turn-id=${JSON.stringify(responseTurn.identity)}]`),
+              locator: chatGptTurnLocator(page, responseTurn.identity),
             };
             responseDomCache.key = undefined;
             responseDomCache.snapshot = undefined;
