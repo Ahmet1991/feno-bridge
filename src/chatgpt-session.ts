@@ -6,19 +6,23 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
+  '[contenteditable="true"][data-composer-markdown]',
+  'div.ProseMirror[contenteditable="true"][role="textbox"]',
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
+  'button[data-composer-navigation-target="reasoning"][aria-haspopup="menu"]',
+  'button[data-codex-intelligence-trigger="true"]',
 ].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
-  '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
-  '[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
-  '[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
+  '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider], [data-reasoning-slider])',
+  '[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider], [data-reasoning-slider])',
+  '[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider], [data-reasoning-slider])',
 ].join(", ");
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
-export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider]';
-export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"]';
+export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider], [data-reasoning-slider="true"]';
+export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"], [data-reasoning-slider="true"] [role="slider"]';
 export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 5;
 export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
 export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
@@ -26,11 +30,13 @@ export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+  '[data-content-search-unit-key$=":assistant"] [data-markdown-text-style="assistant-message"]',
 ].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="user"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+  '[data-content-search-unit-key$=":user"] [data-user-message-bubble="true"]',
 ].join(", ");
 
 export interface ChatGptEffortSliderState {
