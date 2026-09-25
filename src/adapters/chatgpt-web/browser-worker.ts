@@ -3530,7 +3530,7 @@ export class ChatGptBrowserWorker {
   ): Promise<string[]> {
     try {
       const visibleRows = menuRows.filter({ visible: true });
-      return await withBrowserTurnAbort(
+      const titles = await withBrowserTurnAbort(
         withChatGptBrowserObservationTimeout(visibleRows.evaluateAll(elements => elements.map(element => {
           if (element.matches('button[data-list-navigation-item="true"]')) {
             const content = element.querySelector('[data-menu-row-content="true"]');
@@ -3546,6 +3546,7 @@ export class ChatGptBrowserWorker {
         }))),
         abortSignal,
       );
+      return titles.filter(title => title.length > 0);
     } catch (error) {
       if (abortSignal?.aborted) throw error;
       return [];
