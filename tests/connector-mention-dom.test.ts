@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createWindow } from "@mixmark-io/domino";
+const { createWindow } = require("@mixmark-io/domino");
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 
 type ConnectorWorker = {
