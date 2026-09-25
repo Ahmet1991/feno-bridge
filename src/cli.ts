@@ -23,6 +23,7 @@ import {
 import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
 import { runCommand } from "./process";
+import { formatSelectorHealthReport, inspectLauncherSelectors } from "./selector-health";
 import { startServer } from "./server";
 import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
 import { existingFullSetupCredentials, preflightSetup, setup, type SetupOptions } from "./setup";
@@ -43,6 +44,7 @@ Usage:
   codex-chatgpt-web route <status|connect|disconnect>
   codex-chatgpt-web subagents <status|compatibility-v1|native>
   codex-chatgpt-web browser check
+  codex-chatgpt-web browser selectors [--json]
   codex-chatgpt-web dev launcher
   codex-chatgpt-web dev status [--json]
   codex-chatgpt-web dev setup <--browser-only|--full> [options]
@@ -579,9 +581,21 @@ async function main(): Promise<void> {
   else if (command === "subagents") await subagentsCommand(args);
   else if (command === "browser") {
     const action = args.shift();
+    if (action !== "check" && action !== "selectors") {
+      throw new Error("Browser command must be: browser check or browser selectors [--json]");
+    }
+    const json = action === "selectors" ? takeFlag(args, "--json") : false;
     assertNoArgs(args);
-    if (action !== "check") throw new Error("Browser command must be: browser check");
     const config = loadConfig();
+    if (action === "selectors") {
+      if (config.browserHost !== "launcher" || !config.browserHostDescriptorPath) {
+        throw new Error("Selector inspection requires the existing launcher browser");
+      }
+      const report = await inspectLauncherSelectors(config.browserHostDescriptorPath);
+      stdout.write(json ? JSON.stringify(report, null, 2) + "\n" : formatSelectorHealthReport(report));
+      if (!report.ok) process.exitCode = 1;
+      return;
+    }
     if (config.browserHost === "launcher") {
       if (config.browserInteractionMode === "manual") {
         await inspectLauncherBrowserHostLiveness(config.browserHostDescriptorPath!);

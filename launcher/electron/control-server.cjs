@@ -104,6 +104,7 @@ class BrowserControlServer {
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
+    const isSelectorInspect = request.url === "/v1/session/selectors";
     const isProxyResolution = request.url === "/v1/network/resolve-proxy";
     const manualAction = new Map([
       ["/v1/manual/start", "start"],
@@ -114,7 +115,7 @@ class BrowserControlServer {
       ["/v1/manual/cancel", "cancel"],
     ]).get(request.url);
     if (request.method !== "POST"
-      || (!isTurn && !isTurnRelease && !isSessionInspect && !isProxyResolution && !manualAction)) {
+      || (!isTurn && !isTurnRelease && !isSessionInspect && !isSelectorInspect && !isProxyResolution && !manualAction)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -144,6 +145,18 @@ class BrowserControlServer {
       const preferences = this.getPreferences();
       const host = this.getBrowserHost();
       if (!host) throw new Error("browser host is not ready");
+      if (isSelectorInspect) {
+        if (!Array.isArray(body?.selectors) || body.selectors.length !== 13
+          || body.selectors.some(spec => !spec || typeof spec !== "object"
+            || typeof spec.name !== "string" || spec.name.length < 1 || spec.name.length > 128
+            || typeof spec.selector !== "string" || spec.selector.length < 1 || spec.selector.length > 4096
+            || typeof spec.required !== "boolean")) {
+          throw new Error("Selector inspection requires thirteen named selectors");
+        }
+        const inspected = await host.inspectSelectors(body.selectors);
+        writeJson(response, 200, inspected);
+        return;
+      }
       if (isSessionInspect) {
         if (host.browserInteractionMode() === "manual") {
           const error = new Error(
