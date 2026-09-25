@@ -4978,9 +4978,23 @@ test("legacy IDs and measured unit keys remain distinct turn identities", async 
   ]);
   expect(state.userIdentities).toEqual(["old-user", "fallback-turn-0:0:user"]);
   expect(state.responseIdentities).toEqual(["old-assistant", "fallback-turn-0:2:assistant"]);
-  expect(chatGptTurnIdentitySelector("old-assistant")).toBe('[data-turn-id="old-assistant"]');
+  expect(chatGptTurnIdentitySelector("old-assistant"))
+    .toBe('[data-turn-id="old-assistant"], [data-content-search-unit-key="old-assistant"]');
   expect(chatGptTurnIdentitySelector("fallback-turn-0:2:assistant"))
-    .toBe('[data-content-search-unit-key="fallback-turn-0:2:assistant"]');
+    .toBe('[data-turn-id="fallback-turn-0:2:assistant"], [data-content-search-unit-key="fallback-turn-0:2:assistant"]');
   expect(chatGptTurnIdentitySelector("fallback-turn-0:0:user"))
-    .toBe('[data-content-search-unit-key="fallback-turn-0:0:user"]');
+    .toBe('[data-turn-id="fallback-turn-0:0:user"], [data-content-search-unit-key="fallback-turn-0:0:user"]');
+});
+
+test("turn selector locates unit keys without a fallback-turn prefix", () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const dom = createWindow(
+    '<div data-turn-id="legacy:assistant">Legacy answer</div>'
+      + '<div data-content-search-unit-key="new-format:7:assistant">New-format answer</div>',
+  );
+  const legacy = dom.document.querySelector('[data-turn-id="legacy:assistant"]');
+  const newFormat = dom.document.querySelector('[data-content-search-unit-key="new-format:7:assistant"]');
+  expect(dom.document.querySelector(chatGptTurnIdentitySelector("legacy:assistant"))).toBe(legacy);
+  expect(dom.document.querySelector(chatGptTurnIdentitySelector("new-format:7:assistant"))).toBe(newFormat);
+  expect(dom.document.querySelectorAll(chatGptTurnIdentitySelector("new-format:7:assistant")).length).toBe(1);
 });
