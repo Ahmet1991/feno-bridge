@@ -45,7 +45,7 @@ test("effort slider selectors match both measured and legacy container structure
   const matches = (selector: string) => Array.from(document.querySelectorAll(selector)).map(element => element.id);
   expect(matches(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR)).toEqual(["legacy-slider", "new-slider"]);
   expect(matches(CHATGPT_EFFORT_SLIDER_SELECTOR)).toEqual(["legacy-input", "new-input"]);
-  expect(CHATGPT_EFFORT_MENU_SELECTOR.match(/\\[data-reasoning-slider\\]/g)).toHaveLength(3);
+  expect(CHATGPT_EFFORT_MENU_SELECTOR.split("[data-reasoning-slider]")).toHaveLength(4);
 });
 
 test("conversation selectors recognize measured role-specific message structures", () => {
