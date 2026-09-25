@@ -9,6 +9,7 @@ const {
 } = require("./browser-helper-verifier.cjs");
 const { validateConnectorName } = require("./connector-identity.cjs");
 const { processRunning } = require("./process-tree.cjs");
+const { measureSelectorHealth } = require("./selector-health.cjs");
 const { validatePasskeyLoginState } = require("./passkey-login-state.cjs");
 const {
   refreshTurnLeasesAfterSuspension,
@@ -3047,6 +3048,32 @@ class BrowserHost {
       });
       throw error;
     }
+  }
+
+  async inspectSelectors(selectors) {
+    requireAutomaticBrowserInspection(this, "ChatGPT selector inspection");
+    return await this.withManualOperation("selector inspection", async () => {
+      const contents = this.view.webContents;
+      const startedIdle = contents.getURL() === IDLE_BROWSER_URL;
+      try {
+        // Measure a fresh, idle Temporary Chat, never an in-progress turn tab.
+        // Do not use the composer-based authentication check: the diagnostic must
+        // still work when the composer selector is the thing that broke.
+        await contents.loadURL(TEMPORARY_CHAT_URL);
+        const script = "(" + measureSelectorHealth.toString() + ")(document, "
+          + JSON.stringify(selectors) + ", getComputedStyle)";
+        const deadline = Date.now() + 10_000;
+        let measurements;
+        do {
+          await sleep(250);
+          measurements = await contents.executeJavaScript(script, true);
+          if (selectors.every((spec, index) => !spec.required || measurements[index].matches > 0)) break;
+        } while (Date.now() < deadline);
+        return { url: contents.getURL(), measurements };
+      } finally {
+        if (startedIdle) await this.returnToIdle();
+      }
+    });
   }
 
   async inspectSession(detectCapabilities = false) {
