@@ -1639,8 +1639,10 @@ export async function setChatGptThinkMode(
     const composer = composerForm.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
     const composerState = () => composer.evaluate(element => {
       const copy = element.cloneNode(true) as HTMLElement;
-      const pills = [...copy.querySelectorAll('[data-id^="plugin:"][data-keyword]')];
-      const connectors = pills.map(pill => pill.getAttribute("data-keyword")).sort();
+      const pills = [...copy.querySelectorAll('[data-id^="plugin:"][data-keyword], [app-mention-display-name]')];
+      const connectors = pills.map(pill => (
+        pill.getAttribute("data-keyword") ?? pill.getAttribute("app-mention-display-name")
+      )).sort();
       for (const pill of pills) pill.remove();
       const text = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
         ? element.value : copy.textContent ?? "";
@@ -2185,11 +2187,21 @@ class ChatGptBrowserDiagnostics {
           const composers = [...document.querySelectorAll(composerSelector)].filter(rendered);
           const assistantTurns = [...document.querySelectorAll(assistantTurnSelector)].filter(rendered);
           const selectedConnectors = composers.flatMap(composer => (
-            [...composer.querySelectorAll('[data-id^="plugin:"][data-keyword]')]
+            [...composer.querySelectorAll('[data-id^="plugin:"][data-keyword], [app-mention-display-name]')]
           ))
             .filter(rendered);
-          const exactConnectorRows = [...document.querySelectorAll('.__menu-item[tabindex="0"]')]
-            .filter(element => rendered(element) && exactText(element, appName));
+          const exactConnectorRows = [...document.querySelectorAll('.__menu-item[tabindex="0"], button[data-list-navigation-item="true"]')]
+            .filter(element => {
+              if (!rendered(element)) return false;
+              if (element.matches('button[data-list-navigation-item="true"]')) {
+                const content = element.querySelector('[data-menu-row-content="true"]');
+                const leaf = content && [content, ...content.querySelectorAll("*")].find(candidate => (
+                  candidate.children.length === 0 && (candidate.textContent ?? "").trim().length > 0
+                ));
+                return (leaf?.textContent ?? "").replace(/\s+/g, " ").trim() === appName;
+              }
+              return exactText(element, appName);
+            });
           const currentUrl = new URL(location.href);
           const integerAttribute = (element: Element, name: string): number | null => {
             const raw = element.getAttribute(name);
@@ -2221,7 +2233,7 @@ class ChatGptBrowserDiagnostics {
               })),
               selectedConnectorCount: selectedConnectors.length,
               exactSelectedConnectorCount: selectedConnectors.filter(
-                element => element.getAttribute("data-keyword") === appName,
+                element => (element.getAttribute("data-keyword") ?? element.getAttribute("app-mention-display-name")) === appName,
               ).length,
             },
             focus: {
@@ -3436,7 +3448,7 @@ export class ChatGptBrowserWorker {
     return currentComposer.evaluate(element => {
       const clone = element.cloneNode(true) as HTMLElement;
       clone.querySelectorAll(
-        '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target]',
+        '[data-id^="plugin:"][data-keyword], [app-mention-display-name], [data-inline-selection-pill-cursor-target]',
       )
         .forEach(part => part.remove());
       return [...clone.childNodes]
@@ -3472,20 +3484,24 @@ export class ChatGptBrowserWorker {
   }
 
   private selectedConnectorControl(composer: Locator): Locator {
+    // Keep the legacy plugin pill, but also recognize the new composer mention node.
+    // The visible text can differ from app-mention-display-name; compare attributes below.
     return composer
-      .locator('[data-id^="plugin:"][data-keyword]')
-      .filter({ hasText: this.config.appName, visible: true });
+      .locator('[data-id^="plugin:"][data-keyword], [app-mention-display-name]')
+      .filter({ visible: true });
   }
 
   private async connectorIsSelected(composer: Locator, abortSignal?: AbortSignal): Promise<boolean> {
     const selected = this.selectedConnectorControl(composer);
-    const keywords = await withBrowserTurnAbort(
+    const names = await withBrowserTurnAbort(
       withChatGptBrowserObservationTimeout(selected.evaluateAll(elements => (
-        elements.map(element => element.getAttribute("data-keyword"))
+        elements.map(element => (
+          element.getAttribute("data-keyword") ?? element.getAttribute("app-mention-display-name")
+        ))
       ))),
       abortSignal,
     );
-    const exactMatches = keywords.filter(keyword => keyword === this.config.appName).length;
+    const exactMatches = names.filter(name => name === this.config.appName).length;
     if (exactMatches > 1) {
       throw new Error(`ChatGPT composer exposed duplicate ${JSON.stringify(this.config.appName)} connector selections`);
     }
@@ -3512,19 +3528,28 @@ export class ChatGptBrowserWorker {
     menuRows: Locator,
     abortSignal?: AbortSignal,
   ): Promise<string[]> {
-    let texts: string[];
     try {
-      texts = await withBrowserTurnAbort(
-        withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).allInnerTexts()),
+      const visibleRows = menuRows.filter({ visible: true });
+      return await withBrowserTurnAbort(
+        withChatGptBrowserObservationTimeout(visibleRows.evaluateAll(elements => elements.map(element => {
+          if (element.matches('button[data-list-navigation-item="true"]')) {
+            const content = element.querySelector('[data-menu-row-content="true"]');
+            if (!content) return "";
+            const firstTitleLeaf = [content, ...content.querySelectorAll("*")].find(candidate => (
+              candidate.children.length === 0 && (candidate.textContent ?? "").trim().length > 0
+            ));
+            return (firstTitleLeaf?.textContent ?? "").replace(/\s+/g, " ").trim();
+          }
+          // Legacy menu rows have a newline between the title and description.
+          return ((element as HTMLElement).innerText?.split("\n")[0] ?? "")
+            .replace(/\s+/g, " ").trim();
+        }))),
         abortSignal,
       );
     } catch (error) {
       if (abortSignal?.aborted) throw error;
-      texts = [];
+      return [];
     }
-    return texts
-      .map(text => (text.split("\n")[0] ?? "").replace(/\s+/g, " ").trim())
-      .filter(title => title.length > 0);
   }
 
   private async connectorMentionFailure(
@@ -3534,7 +3559,16 @@ export class ChatGptBrowserWorker {
   ): Promise<string> {
     const titles = await this.connectorMentionRowTitles(menuRows, abortSignal);
     if (titles.length === 0) {
-      return `ChatGPT connector menu did not open after ${triggerAttempts} complete mention trigger attempt(s)`;
+      const visibleRowCount = await withBrowserTurnAbort(
+        withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).count()),
+        abortSignal,
+      );
+      if (visibleRowCount > 0) {
+        return `ChatGPT connector menu opened with ${visibleRowCount} visible row(s), but their titles could not be recognized`
+          + ` after ${triggerAttempts} complete mention trigger attempt(s)`;
+      }
+      return `ChatGPT connector menu did not open (no visible menu rows)`
+        + ` after ${triggerAttempts} complete mention trigger attempt(s)`;
     }
     if (this.config.appName === CHATGPT_CONNECTOR_NAME && titles.includes(DEV_CHATGPT_CONNECTOR_NAME)) {
       return `ChatGPT exposes the isolated DEV connector ${JSON.stringify(DEV_CHATGPT_CONNECTOR_NAME)},`
@@ -3610,7 +3644,9 @@ export class ChatGptBrowserWorker {
     let sessionKey = await this.personalizationSessionKey?.(page);
     let cachedProof = this.personalizationProofCache?.isValid(page, sessionKey) ?? false;
     let provedThisTurn = alreadyProved;
-    const menuRows = page.locator('.__menu-item[tabindex="0"]');
+    // Legacy rows first; the new list-navigation buttons are the fallback when no
+    // legacy menu row exists. Neither structure exposes a dependable ARIA menu role.
+    const menuRows = page.locator('.__menu-item[tabindex="0"], button[data-list-navigation-item="true"]');
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
@@ -3788,7 +3824,10 @@ export class ChatGptBrowserWorker {
         withChatGptBrowserObservationTimeout(appResult.count()),
         abortSignal,
       );
-      if (exactResultCount !== 1) {
+      // getByText(exact) finds the title leaf, but an unrelated row may also have
+      // an exact text leaf in its description. The first title leaf is authoritative.
+      const candidateTitles = await this.connectorMentionRowTitles(appResult, abortSignal);
+      if (exactResultCount !== 1 || candidateTitles[0] !== this.config.appName) {
         if (cachedProof) {
           this.personalizationProofCache?.invalidate(page);
           await capture("personalization-cache-miss");
@@ -3798,8 +3837,7 @@ export class ChatGptBrowserWorker {
           return this.selectConnector(page, captureDiagnostic, catalogRefreshAvailable, attemptBudget, abortSignal, true);
         }
         throw chatGptConnectorUnavailableError(
-          `ChatGPT connector menu did not expose one exact ${JSON.stringify(this.config.appName)} row`
-          + ` after ${attemptBudget.triggerAttempts} complete mention trigger attempt(s)`,
+          await this.connectorMentionFailure(menuRows, attemptBudget.triggerAttempts, abortSignal),
         );
       }
       // Hidden launcher maintenance keeps a 1x1 Chromium viewport, so pointer activation cannot
