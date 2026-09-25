@@ -108,3 +108,17 @@ test("DIL response extraction preserves ownership, commentary and completion bou
   expect(noCopy.visibleText).toBe("CODEX WEB GPT READY");
   expect(noCopy.completionActionVisible).toBeFalse();
 });
+
+test("unit-key assistant extraction reads the entire outer turn across streaming bodies", async () => {
+  const response = await snapshot(`
+    <section id="turn" data-content-search-unit-key="fallback-turn-0:2:assistant">
+      <div data-markdown-text-style="assistant-message"><p>First part. </p></div>
+      <div data-markdown-text-style="assistant-message"><p>Second part. </p></div>
+      <div data-markdown-text-style="assistant-message"><p>Third part.</p></div>
+    </section>
+  `);
+  expect(response.responsePresent).toBeTrue();
+  expect(response.visibleText).toBe("First part. Second part. Third part.");
+  expect(response.fullHtml).toContain("Third part.");
+  expect(response.markdownSegments.length).toBeGreaterThan(0);
+});
