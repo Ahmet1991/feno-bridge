@@ -30,7 +30,7 @@ function composer(html: string) {
     locator: (selector: string) => ({
       filter: (_options: { visible: boolean }) => ({
         evaluateAll: async (callback: (elements: Element[]) => (string | null)[]) => (
-          callback(Array.from(root.querySelectorAll(selector)))
+          callback(Array.from(root.querySelectorAll(selector)) as Element[])
         ),
       }),
     }),
@@ -64,7 +64,7 @@ test("current list-navigation rows extract only the first nonempty title leaf", 
     <button data-list-navigation-item="true">
       <div data-menu-row-content="true"><span>Codex Native2 notes.txt</span><span>Stored file</span></div>
     </button>`);
-  const rows = Array.from(document.querySelectorAll('button[data-list-navigation-item="true"]'));
+  const rows = Array.from(document.querySelectorAll('button[data-list-navigation-item="true"]')) as Element[];
   expect(rows[1]!.textContent).toContain("Codex Native2");
   expect(rows[1]!.textContent).toContain("Automatic ChatGPT Web bridge");
   const titles = await worker().connectorMentionRowTitles(menuRows(rows));
@@ -81,7 +81,7 @@ test("visible menu with unrecognized titles is not reported as an unopened menu"
   const { document } = createWindow(
     '<button data-list-navigation-item="true"><span>Unrecognized row</span></button>',
   );
-  const rows = menuRows(Array.from(document.querySelectorAll("button")));
+  const rows = menuRows(Array.from(document.querySelectorAll("button")) as Element[]);
   expect(await worker().connectorMentionFailure(rows, 3))
     .toContain("menu opened with 1 visible row(s), but their titles could not be recognized");
   expect(await worker().connectorMentionFailure(menuRows([]), 3))
