@@ -185,12 +185,10 @@ const CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR = [
   '[data-content-search-unit-key$=":assistant"]',
 ].join(", ");
 
-/** Resolve the measured fallback identity to its outer container; retain legacy turn IDs. */
+/** Resolve either legacy turn IDs or unit keys without guessing their value format. */
 export function chatGptTurnIdentitySelector(identity: string): string {
-  const attribute = /^fallback-turn-[0-9]+:[0-9]+:(?:user|assistant)$/.test(identity)
-    ? "data-content-search-unit-key"
-    : "data-turn-id";
-  return `[${attribute}=${JSON.stringify(identity)}]`;
+  const quotedIdentity = JSON.stringify(identity);
+  return `[data-turn-id=${quotedIdentity}], [data-content-search-unit-key=${quotedIdentity}]`;
 }
 
 function chatGptTurnLocator(page: Page, identity: string): Locator {
