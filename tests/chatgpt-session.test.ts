@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import {
+  CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
+  CHATGPT_EFFORT_SLIDER_SELECTOR,
+  CHATGPT_USER_TURN_SELECTOR,
   activateChatGptEffortMenu,
   detectChatGptAccountCapabilities,
 } from "../src/chatgpt-session";
@@ -18,12 +21,48 @@ test("composer and effort selectors exclude unrelated editable fields and menu b
     <div data-testid="prompt-textarea" id="composer-testid"></div>
     <div id="prompt-textarea"></div>
     <div contenteditable="true" data-lexical-editor="true" id="composer-lexical"></div>
+    <div contenteditable="true" data-composer-markdown id="composer-markdown"></div>
+    <div class="ProseMirror" contenteditable="true" role="textbox" id="composer-prosemirror"></div>
     <button aria-haspopup="menu" data-tone="neutral" id="effort"></button>
     <button aria-haspopup="menu" data-testid="model-switcher-dropdown-button" id="model"></button>
+    <button data-composer-navigation-target="reasoning" aria-haspopup="menu" id="reasoning"></button>
+    <button data-codex-intelligence-trigger="true" id="codex-intelligence"></button>
   </form></body>`);
   const matches = (selector: string) => Array.from(document.querySelectorAll(selector)).map(element => element.id);
-  expect(matches(CHATGPT_COMPOSER_SELECTOR)).toEqual(["composer-testid", "prompt-textarea", "composer-lexical"]);
-  expect(matches(CHATGPT_EFFORT_CONTROL_SELECTOR)).toEqual(["effort", "model"]);
+  expect(matches(CHATGPT_COMPOSER_SELECTOR)).toEqual([
+    "composer-testid", "prompt-textarea", "composer-lexical", "composer-markdown", "composer-prosemirror",
+  ]);
+  expect(matches(CHATGPT_EFFORT_CONTROL_SELECTOR)).toEqual(["effort", "model", "reasoning", "codex-intelligence"]);
+});
+
+test("effort slider selectors match both measured and legacy container structures", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  const document = createDocument(`<body>
+    <div data-model-reasoning-effort-slider id="legacy-slider"><span role="slider" id="legacy-input"></span></div>
+    <div data-reasoning-slider="true" id="new-slider"><span role="slider" id="new-input"></span></div>
+    <div data-reasoning-slider="false" id="unrelated"><span role="slider" id="unrelated-input"></span></div>
+  </body>`);
+  const matches = (selector: string) => Array.from(document.querySelectorAll(selector)).map(element => element.id);
+  expect(matches(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR)).toEqual(["legacy-slider", "new-slider"]);
+  expect(matches(CHATGPT_EFFORT_SLIDER_SELECTOR)).toEqual(["legacy-input", "new-input"]);
+  expect(CHATGPT_EFFORT_MENU_SELECTOR.match(/\\[data-reasoning-slider\\]/g)).toHaveLength(3);
+});
+
+test("conversation selectors recognize measured role-specific message structures", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  const document = createDocument(`<body>
+    <div data-content-search-unit-key="chat:assistant">
+      <div data-markdown-text-style="assistant-message" id="assistant-message"></div>
+      <div data-markdown-text-tone="assistant-message" id="wrong-assistant-attribute"></div>
+    </div>
+    <div data-content-search-unit-key="chat:user">
+      <div data-user-message-bubble="true" id="user-message"></div>
+      <div data-user-message-bubble="false" id="wrong-user-attribute"></div>
+    </div>
+  </body>`);
+  const matches = (selector: string) => Array.from(document.querySelectorAll(selector)).map(element => element.id);
+  expect(matches(CHATGPT_ASSISTANT_TURN_SELECTOR)).toEqual(["assistant-message"]);
+  expect(matches(CHATGPT_USER_TURN_SELECTOR)).toEqual(["user-message"]);
 });
 
 test("effort activation binds the owned menu after the control opens", async () => {
