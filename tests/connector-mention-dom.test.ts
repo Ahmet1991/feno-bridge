@@ -44,7 +44,7 @@ test("legacy connector menu preserves its newline-delimited title", async () => 
   const row = document.querySelector(".__menu-item")!;
   // Legacy ChatGPT's layout separated the title from the description in innerText.
   Object.defineProperty(row, "innerText", {
-    value: "Codex Native2\\nAutomatic ChatGPT Web bridge to the active local Codex task",
+    value: "Codex Native2\nAutomatic ChatGPT Web bridge to the active local Codex task",
   });
   const titles = await worker().connectorMentionRowTitles(menuRows([row]));
   expect(titles).toEqual(["Codex Native2"]);
