@@ -8,6 +8,7 @@ import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { isHeavyChatGptStage } from "../src/adapters/chatgpt-web/browser-worker";
+import { chatGptTurnIdentitySelector } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptPromptPrefixLadder } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptTurnProgressWatchdog } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
@@ -4904,3 +4905,82 @@ test("the prompt prefix ladder reports how much two turns actually share", () =>
   expect(chatGptPromptPrefixLadder("B".repeat(5_000)).split(",").length).toBe(2);
 });
 
+
+test("legacy IDs and measured unit keys remain distinct turn identities", async () => {
+  type TurnNode = {
+    attrs: Record<string, string>;
+    parentElement: { closest(selector: string): TurnNode | null } | null;
+    getAttribute(name: string): string | null;
+  };
+  const node = (attrs: Record<string, string>, parent?: TurnNode): TurnNode => ({
+    attrs,
+    parentElement: parent ? { closest: () => parent } : null,
+    getAttribute(name) { return this.attrs[name] ?? null; },
+  });
+  const oldUser = node({ "data-turn-id-container": "old-user" });
+  const oldUserChild = node({
+    "data-turn-id-container": "old-user", "data-turn-id": "old-user",
+    "data-testid": "conversation-turn-0", "data-turn": "user",
+  }, oldUser);
+  const oldAssistant = node({ "data-turn-id-container": "old-assistant" });
+  const oldAssistantChild = node({
+    "data-turn-id-container": "old-assistant", "data-turn-id": "old-assistant",
+    "data-testid": "conversation-turn-1", "data-turn": "assistant",
+  }, oldAssistant);
+  const modernUser = node({
+    "data-content-search-unit-key": "fallback-turn-0:0:user",
+    "data-chatgpt-search-message-ids": "same-uuid same-uuid another-uuid",
+  });
+  const modernAssistant = node({
+    "data-content-search-unit-key": "fallback-turn-0:2:assistant",
+    "data-chatgpt-search-message-ids": "another-uuid another-uuid",
+  });
+  const modernAssistantChild = node({
+    "data-content-search-unit-key": "fallback-turn-0:2:assistant",
+  }, modernAssistant);
+  const context = createContext({
+    performance: { timeOrigin: 1 },
+    document: {
+      documentElement: {},
+      querySelectorAll(selector: string) {
+        if (selector === "[data-turn-id-container]") {
+          return [oldUser, oldUserChild, oldAssistant, oldAssistantChild];
+        }
+        if (selector === "[data-content-search-unit-key]") {
+          return [modernUser, modernAssistant, modernAssistantChild];
+        }
+        if (selector === '[data-content-search-unit-key$=":user"]') return [modernUser];
+        if (selector === '[data-content-search-unit-key$=":assistant"]') {
+          return [modernAssistant, modernAssistantChild].filter(element => !element.parentElement);
+        }
+        if (selector.includes("conversation-turn-")) {
+          return selector.includes('="user"') ? [oldUserChild]
+            : selector.includes('="assistant"') ? [oldAssistantChild] : [];
+        }
+        return [];
+      },
+    },
+    MutationObserver: class { observe() {} },
+  });
+  const page = {
+    evaluate: async (callback: Function, options: unknown) => runInContext(`(${callback.toString()})`, context)(options),
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    submissionDomState(page: Page): Promise<{
+      turnIdentities: string[];
+      userIdentities: string[];
+      responseIdentities: string[];
+    }>;
+  };
+  const state = await worker.submissionDomState(page);
+  expect(state.turnIdentities).toEqual([
+    "old-user", "old-assistant", "fallback-turn-0:0:user", "fallback-turn-0:2:assistant",
+  ]);
+  expect(state.userIdentities).toEqual(["old-user", "fallback-turn-0:0:user"]);
+  expect(state.responseIdentities).toEqual(["old-assistant", "fallback-turn-0:2:assistant"]);
+  expect(chatGptTurnIdentitySelector("old-assistant")).toBe('[data-turn-id="old-assistant"]');
+  expect(chatGptTurnIdentitySelector("fallback-turn-0:2:assistant"))
+    .toBe('[data-content-search-unit-key="fallback-turn-0:2:assistant"]');
+  expect(chatGptTurnIdentitySelector("fallback-turn-0:0:user"))
+    .toBe('[data-content-search-unit-key="fallback-turn-0:0:user"]');
+});
