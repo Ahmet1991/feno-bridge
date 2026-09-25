@@ -1,4 +1,10 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { defaultConfig } from "../src/config";
+import { LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
 import { buildSelectorHealthReport, formatSelectorHealthReport, SELECTOR_SPECS } from "../src/selector-health";
 
 const { createWindow } = require("@mixmark-io/domino");
@@ -77,4 +83,97 @@ test("malformed launcher observations cannot be reported as healthy", () => {
   expect(() => buildSelectorHealthReport("https://chatgpt.com/", [
     { ...valid[0], visible: valid[0].matches + 1 }, ...valid.slice(1),
   ], sampled)).toThrow("invalid measurements");
+});
+
+test("browser selectors CLI returns JSON and a nonzero exit status for stale composer DOM", async () => {
+  const root = mkdtempSync(join(tmpdir(), "feno-selector-health-cli-"));
+  const home = join(root, "home");
+  const descriptorPath = join(home, "runtime", "launcher-browser.json");
+  const helperScript = join(root, "helper.cjs");
+  let html = [
+    '<div id="prompt-textarea"></div>',
+    '<button data-codex-intelligence-trigger="true"></button>',
+  ].join("");
+  let active = false;
+  const control = createServer(async (request, response) => {
+    if (request.url !== "/v1/session/selectors"
+      || request.headers.authorization !== "Bearer " + "s".repeat(48)) {
+      response.writeHead(401);
+      response.end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    if (active) {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "ChatGPT browser is running Codex turn abc123" }));
+      return;
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const sampledMeasurements = measure(html);
+    const measurements = body.selectors.map((spec: { name: string }) =>
+      sampledMeasurements.find(item => item.name === spec.name)
+        ?? { name: spec.name, matches: 0, visible: 0 });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ url: "https://chatgpt.com/?temporary-chat=true", measurements }));
+  });
+  await new Promise<void>((ok, fail) => {
+    control.once("error", fail);
+    control.listen(0, "127.0.0.1", ok);
+  });
+  try {
+    const address = control.address();
+    if (!address || typeof address === "string") throw new Error("Test server has no port");
+    mkdirSync(join(home, "runtime"), { recursive: true });
+    writeFileSync(helperScript, "module.exports = {};\n");
+    writeFileSync(descriptorPath, JSON.stringify({
+      version: 3,
+      kind: "codex-web-gpt-launcher",
+      profile: "production",
+      pid: process.pid,
+      endpoint: "http://127.0.0.1:48150",
+      control: { endpoint: "http://127.0.0.1:" + address.port, token: "s".repeat(48) },
+      helper: { executable: process.execPath, script: helperScript },
+      partition: "persist:codex-web-gpt-chatgpt",
+      idleUrl: LAUNCHER_BROWSER_IDLE_URL,
+      surfaceId: "a".repeat(32),
+      surfaceTargets: { ["a".repeat(32)]: "native-target" },
+      createdAt: new Date().toISOString(),
+    }), { mode: 0o600 });
+    writeFileSync(join(home, "config.json"), JSON.stringify({
+      ...defaultConfig("browser-only"),
+      browserHost: "launcher",
+      browserHostDescriptorPath: descriptorPath,
+    }));
+    const run = async (args: string[]) => {
+      const child = Bun.spawn([process.execPath, resolve(import.meta.dir, "../src/cli.ts"), "browser", "selectors", ...args], {
+        env: { ...process.env, CODEX_CHATGPT_WEB_HOME: home },
+        stdout: "pipe", stderr: "pipe",
+      });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+      ]);
+      return { exitCode, stdout, stderr };
+    };
+    const healthy = await run(["--json"]);
+    expect(healthy.exitCode).toBe(0);
+    expect(healthy.stderr).toBe("");
+    expect(JSON.parse(healthy.stdout)).toMatchObject({ ok: true, exitCode: 0 });
+    expect(JSON.parse(healthy.stdout).selectors).toHaveLength(13);
+
+    html = '<textarea data-new-composer="true"></textarea>';
+    const stale = await run([]);
+    expect(stale.exitCode).not.toBe(0);
+    expect(stale.stdout).toContain("composer");
+    expect(stale.stdout).toContain("BAYAT");
+    expect(stale.stdout).toContain("DURUM GEREKTİRİR");
+
+    active = true;
+    const refused = await run([]);
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.stderr).toContain("running Codex turn abc123");
+  } finally {
+    await new Promise<void>(ok => control.close(() => ok()));
+    rmSync(root, { recursive: true, force: true });
+  }
 });
