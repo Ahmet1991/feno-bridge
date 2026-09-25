@@ -796,7 +796,7 @@ test("connector preflight retries once after reloading a clean Temporary Chat", 
     getByText: () => ({}),
     locator: (selector: string) => {
       if (selector === "body") return { press: async () => {} };
-      if (selector === '.__menu-item[tabindex="0"]') return menuRows;
+      if (selector.includes('__menu-item')) return menuRows;
       return controls;
     },
   } as any;
@@ -1603,10 +1603,10 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   };
   const selectedComposer = {
     locator: (selector: string) => {
-      expect(selector).toBe('[data-id^="plugin:"][data-keyword]');
+      expect(selector).toBe('[data-id^="plugin:"][data-keyword], [app-mention-display-name]');
       return {
-        filter: (options: { hasText: string; visible: boolean }) => {
-          expect(options).toEqual({ hasText: "Codex Native2", visible: true });
+        filter: (options: { visible: boolean }) => {
+          expect(options).toEqual({ visible: true });
           return selectedConnector;
         },
       };
@@ -1653,6 +1653,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   const resolved = await selectConnector.call({
     config: { appName: "Codex Native2" },
     connectorIsSelected: async () => connectorSelected,
+    connectorMentionRowTitles: async () => ["Codex Native2"],
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => {
       activeComposerCalls += 1;
@@ -1712,6 +1713,7 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   await expect(selectConnector.call({
     config: { appName: "Codex Native2 DEV" },
     connectorIsSelected: async () => selected,
+    connectorMentionRowTitles: async () => ["Codex Native2 DEV"],
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => selected ? selectedComposer : initialComposer,
   }, page)).resolves.toBe(selectedComposer);
@@ -1783,7 +1785,7 @@ test.each([false, true])("cached personalization selects the connector without r
     activeComposer: async () => composer,
     connectorIsSelected: async () => selected,
     selectedConnectorControl: () => ({ waitFor: async () => {} }),
-    connectorMentionRowTitles: async () => [],
+    connectorMentionRowTitles: async (rows: unknown) => rows === appResult ? ["Codex Native2"] : [],
     clearChatGptComposerState: async () => { clearCount += 1; },
     personalizationSessionKey: async () => "stable-session",
     personalizationProofCache: cache,
@@ -1870,7 +1872,7 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
   await selectConnector.call({
     config: { appName: "Codex Native2" },
     connectorIsSelected: async () => selected,
-    connectorMentionRowTitles: async () => [],
+    connectorMentionRowTitles: async (rows: unknown) => rows === appResult ? ["Codex Native2"] : [],
     selectedConnectorControl: () => selectedConnector,
     activeComposer: async () => {
       activeComposerCalls += 1;
@@ -1966,7 +1968,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
     activeComposer: async () => selected ? selectedComposer : initialComposer,
     connectorIsSelected: async () => selected,
     connectorMentionFailure: prototype.connectorMentionFailure,
-    connectorMentionRowTitles: prototype.connectorMentionRowTitles,
+    connectorMentionRowTitles: async () => catalogFresh ? ["Codex Native2"] : ["Another connector"],
     clearChatGptComposerState: async () => { await initialComposer.fill(); },
     selectedConnectorControl: () => selectedConnector,
     selectConnector: prototype.selectConnector,
@@ -2264,6 +2266,7 @@ test("a retained tool-capable prompt verifies the real connector selection befor
   await attachPrompt.call({
     config: { appName: "Codex Native2" },
     selectConnector,
+    connectorMentionRowTitles: async () => ["Codex Native2"],
     insertPromptText,
     connectorIsSelected: async () => selected,
     selectedConnectorControl: () => selectedConnector,
@@ -2547,6 +2550,7 @@ test("an abort after connector activation removes the selected pill before retur
     config: { appName: CHATGPT_CONNECTOR_NAME },
     activeComposer: async () => composer,
     connectorIsSelected: async () => connectorSelected,
+    connectorMentionRowTitles: async () => [CHATGPT_CONNECTOR_NAME],
     clearChatGptComposerState: prototype.clearChatGptComposerState,
   }, page, async (checkpoint: string) => {
     if (checkpoint === "connector-choice-activated") controller.abort();
