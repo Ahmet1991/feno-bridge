@@ -4,7 +4,7 @@ import { Writable } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { stdin, stdout } from "node:process";
+import { stderr, stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
 import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
 import {
@@ -371,6 +371,7 @@ async function setupCommand(args: string[]): Promise<void> {
   const result = await setup(options);
   stdout.write(`Setup complete: ${result.mode}\n`);
   stdout.write(`Config: ${result.configPath}\n`);
+  if (result.capabilityRefreshWarning) stderr.write(`Warning: ${result.capabilityRefreshWarning}\n`);
   if (result.connectorSetupRequired) {
     stdout.write("One account-level step remains: attach the tunnel to the ChatGPT connector named in config.\n");
     stdout.write("Open: https://chatgpt.com/#settings/Plugins\n");

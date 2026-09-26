@@ -146,12 +146,12 @@ class BrowserControlServer {
       const host = this.getBrowserHost();
       if (!host) throw new Error("browser host is not ready");
       if (isSelectorInspect) {
-        if (!Array.isArray(body?.selectors) || body.selectors.length !== 13
+        if (!Array.isArray(body?.selectors) || body.selectors.length < 1 || body.selectors.length > 64
           || body.selectors.some(spec => !spec || typeof spec !== "object"
             || typeof spec.name !== "string" || spec.name.length < 1 || spec.name.length > 128
             || typeof spec.selector !== "string" || spec.selector.length < 1 || spec.selector.length > 4096
             || typeof spec.required !== "boolean")) {
-          throw new Error("Selector inspection requires thirteen named selectors");
+          throw new Error("Selector inspection requires between 1 and 64 named selectors");
         }
         const inspected = await host.inspectSelectors(body.selectors);
         writeJson(response, 200, inspected);

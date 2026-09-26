@@ -7,6 +7,7 @@ import {
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
+  CHATGPT_SEND_BUTTON_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
 } from "./chatgpt-session";
@@ -23,6 +24,8 @@ export const SELECTOR_SPECS: readonly SelectorSpec[] = [
   { name: "effort item", selector: CHATGPT_EFFORT_ITEM_SELECTOR, required: false },
   { name: "effort slider container", selector: CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR, required: false },
   { name: "effort slider", selector: CHATGPT_EFFORT_SLIDER_SELECTOR, required: false },
+  // Situational: an empty composer shows voice input in place of Send.
+  { name: "send button", selector: CHATGPT_SEND_BUTTON_SELECTOR, required: false },
   { name: "stop button", selector: CHATGPT_STOP_BUTTON_SELECTOR, required: false },
   { name: "completion action", selector: CHATGPT_COMPLETION_ACTION_SELECTOR, required: false },
   { name: "assistant turn", selector: CHATGPT_ASSISTANT_TURN_SELECTOR, required: false },
@@ -30,6 +33,8 @@ export const SELECTOR_SPECS: readonly SelectorSpec[] = [
   { name: "data-turn-id", selector: "[data-turn-id]", required: false },
   { name: "data-turn-id-container", selector: "[data-turn-id-container]", required: false },
   { name: "data-content-search-unit-key", selector: "[data-content-search-unit-key]", required: false },
+  { name: "data-turn-key", selector: "[data-turn-key]", required: false },
+  { name: "data-conversation-role", selector: "[data-conversation-role]", required: false },
 ];
 
 export type SelectorHealthRow = SelectorMeasurement & {

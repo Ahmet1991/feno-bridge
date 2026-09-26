@@ -7,6 +7,7 @@ import { atomicWriteFile } from "./config";
 import {
   assertAuthenticatedChatGptPage,
   assertTemporaryChatPage,
+  CHATGPT_COMPOSER_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   detectChatGptAccountCapabilities,
 } from "./chatgpt-session";
@@ -415,7 +416,8 @@ export async function loginToChatGpt(
       timeout: 60_000,
     });
     const composer = page.getByRole("textbox", { name: "Chat with ChatGPT" }).or(
-      page.locator('[data-testid="prompt-textarea"], [contenteditable="true"][data-lexical-editor="true"]'),
+      // The shared contract, so a composer rename never reports itself as an expired login.
+      page.locator(CHATGPT_COMPOSER_SELECTOR),
     ).first();
     try {
       await composer.waitFor({ state: "visible", timeout: options.timeoutMs ?? 60_000 });

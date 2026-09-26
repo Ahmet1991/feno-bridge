@@ -46,7 +46,9 @@ test("selector inspection endpoint uses existing host, authenticates and surface
   });
   try {
     assert.equal((await send({ selectors }, "Bearer wrong")).status, 401);
-    assert.equal((await send({ selectors: selectors.slice(1) })).status, 400);
+    assert.equal((await send({ selectors: [] })).status, 400);
+    const oversized = Array.from({ length: 65 }, (_, index) => ({ ...selectors[0], name: "oversized-" + index }));
+    assert.equal((await send({ selectors: oversized })).status, 400);
     const inspected = await send({ selectors });
     assert.equal(inspected.status, 200);
     const body = await inspected.json();
