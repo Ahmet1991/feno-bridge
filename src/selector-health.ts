@@ -7,6 +7,7 @@ import {
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
+  CHATGPT_FILE_UPLOAD_INPUT_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
@@ -26,6 +27,7 @@ export const SELECTOR_SPECS: readonly SelectorSpec[] = [
   { name: "effort slider", selector: CHATGPT_EFFORT_SLIDER_SELECTOR, required: false },
   // Situational: an empty composer shows voice input in place of Send.
   { name: "send button", selector: CHATGPT_SEND_BUTTON_SELECTOR, required: false },
+  { name: "file upload input", selector: CHATGPT_FILE_UPLOAD_INPUT_SELECTOR, required: false },
   { name: "stop button", selector: CHATGPT_STOP_BUTTON_SELECTOR, required: false },
   { name: "completion action", selector: CHATGPT_COMPLETION_ACTION_SELECTOR, required: false },
   { name: "assistant turn", selector: CHATGPT_ASSISTANT_TURN_SELECTOR, required: false },

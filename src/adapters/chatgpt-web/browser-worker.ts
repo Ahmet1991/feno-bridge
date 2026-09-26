@@ -59,6 +59,7 @@ import {
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
+  CHATGPT_FILE_UPLOAD_INPUT_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
@@ -3219,12 +3220,19 @@ export class ChatGptBrowserWorker {
         return !parent || identity(parent, true) !== identity(element, true);
       });
       const turnIdentities = identities(containers, true);
+      // The unit-key rows of the role selectors match the user bubble and the answer body, which
+      // carry no identity themselves (measured 26.09). Their unit key is the closest ancestor.
+      const identityOwner = (element: Element): Element => (
+        element.getAttribute("data-turn-id")?.trim() || element.getAttribute("data-content-search-unit-key")?.trim()
+          ? element
+          : element.closest?.("[data-turn-id], [data-content-search-unit-key]") ?? element
+      );
       const userIdentities = identities([...new Set([
-        ...document.querySelectorAll(options.userTurnSelector),
+        ...[...document.querySelectorAll(options.userTurnSelector)].map(identityOwner),
         ...document.querySelectorAll('[data-content-search-unit-key$=":user"]'),
       ])]);
       const responseIdentities = identities([...new Set([
-        ...document.querySelectorAll(options.assistantTurnSelector),
+        ...[...document.querySelectorAll(options.assistantTurnSelector)].map(identityOwner),
         ...document.querySelectorAll('[data-content-search-unit-key$=":assistant"]'),
       ])]);
       const knownTurns = new Set(turnIdentities);
@@ -4404,7 +4412,7 @@ export class ChatGptBrowserWorker {
     const acceptanceReserveMs = Math.min(60_000, Math.floor(budgetMs / 2));
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
-    const input = page.locator('input[data-testid="upload-photos-input"]');
+    const input = page.locator(CHATGPT_FILE_UPLOAD_INPUT_SELECTOR);
     await input.waitFor({
       state: "attached",
       timeout: Math.min(20_000, remainingMs(acceptanceReserveMs)),
@@ -4520,6 +4528,25 @@ export class ChatGptBrowserWorker {
       // The measured unit-key outer assistant container holds the entire response.
       // Multiple assistant-message bodies can coexist while streaming: do not select one.
       const unitKeyAnswer = root.matches('[data-content-search-unit-key$=":assistant"]');
+      // Measured 26.09: the unit opens with a visually hidden heading ("ChatGPT said:" in the UI
+      // language) that innerText, textContent and innerHTML all include. It is never answer text.
+      const answerHeadingSelector = ".sr-only, :is(h1, h2, h3, h4, h5, h6)[data-conversation-role]";
+      const answerHeadings = (candidate: HTMLElement): HTMLElement[] => [...candidate.children]
+        .filter((child): child is HTMLElement => child instanceof HTMLElement && child.matches(answerHeadingSelector));
+      const answerVisibleText = (candidate: HTMLElement): string => {
+        let text = candidate.innerText.trim();
+        for (const heading of answerHeadings(candidate)) {
+          const label = heading.innerText.trim();
+          if (label && text.startsWith(label)) text = text.slice(label.length).trimStart();
+        }
+        return text;
+      };
+      const answerHtml = (candidate: HTMLElement): string => {
+        if (answerHeadings(candidate).length === 0) return candidate.innerHTML;
+        const copy = candidate.cloneNode(true) as HTMLElement;
+        for (const heading of answerHeadings(copy)) heading.remove();
+        return copy.innerHTML;
+      };
       const allMarkdownRoots = unitKeyAnswer
         ? [root].filter(renderedInDom)
         : [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
@@ -4573,6 +4600,10 @@ export class ChatGptBrowserWorker {
         for (const widget of Array.from(content.querySelectorAll(
           ".chart-widget-container, [data-code-block-preview-pane], button, script, style, svg, img, picture, source",
         ))) widget.remove();
+        // A unit-key answer opens with a visually hidden "ChatGPT said:" heading; it is not answer text.
+        for (const heading of Array.from(content.children)) {
+          if (heading.matches(".sr-only, :is(h1, h2, h3, h4, h5, h6)[data-conversation-role]")) heading.remove();
+        }
         return content;
       };
       // ChatGPT may merge adjacent `.markdown` roots or virtualize an earlier prefix while a streamed
@@ -4860,8 +4891,8 @@ export class ChatGptBrowserWorker {
         key: observerKey,
         snapshot: {
           responsePresent: true,
-          visibleText: renderedRoots.map(candidate => candidate.innerText.trim()).filter(Boolean).join("\n\n"),
-          fullHtml: renderedRoots.map(candidate => candidate.innerHTML).join(""),
+          visibleText: renderedRoots.map(answerVisibleText).filter(Boolean).join("\n\n"),
+          fullHtml: renderedRoots.map(answerHtml).join(""),
           markdownSegments,
           completionActionVisible: completionAction !== undefined,
           stoppedThinkingVisible,

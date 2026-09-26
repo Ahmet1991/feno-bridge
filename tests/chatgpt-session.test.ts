@@ -7,6 +7,7 @@ import {
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
+  CHATGPT_FILE_UPLOAD_INPUT_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
@@ -84,6 +85,18 @@ test("send and stop resolve the composer's primary slot without localized labels
   expect(matches(form(true), CHATGPT_SEND_BUTTON_SELECTOR)).toEqual([]);
   expect(matches(form(false), CHATGPT_STOP_BUTTON_SELECTOR)).toEqual([]);
   expect(matches(form(false), CHATGPT_SEND_BUTTON_SELECTOR)).toEqual(["send"]);
+});
+
+test("the upload input resolves only the unfiltered composer file input", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  // Measured 26.09: no data-testid; three multiple-file inputs, only one without an accept filter.
+  const document = createDocument(`<body><form data-chatgpt-composer>
+    <input type="file" multiple accept="image/*,video/*" id="media">
+    <input type="file" multiple accept="image/*" id="images">
+    <input type="file" multiple id="files">
+  </form><input type="file" multiple id="outside"></body>`);
+  expect(Array.from(document.querySelectorAll(CHATGPT_FILE_UPLOAD_INPUT_SELECTOR)).map(element => element.id))
+    .toEqual(["files"]);
 });
 
 test("conversation selectors recognize measured role-specific message structures", () => {

@@ -15,7 +15,7 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_FILE_UPLOAD_INPUT_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptPersonalizationProofCache } from "../src/adapters/chatgpt-web/personalization-proof-cache";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
@@ -172,6 +172,59 @@ test("submission DOM tracks logical identities and retains virtualized history i
   turns.push({ ...turns[3]!, index: 20 });
   observers.forEach(notify => notify());
   await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
+});
+
+test("submission evidence resolves unit-key identities from the bubble and answer body", async () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const window = createWindow("<body><main id=\"thread\"></main></body>");
+  const prototypes = [window.document.querySelectorAll("div"), window.document.body.children].map(Object.getPrototypeOf);
+  for (const prototype of prototypes) Object.defineProperty(prototype, Symbol.iterator, {
+    configurable: true, value: Array.prototype[Symbol.iterator],
+  });
+  const observers: (() => void)[] = [];
+  const context = createContext({
+    performance: { timeOrigin: 1 },
+    document: window.document,
+    getComputedStyle: () => ({ visibility: "visible" }),
+    MutationObserver: class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe() {}
+    },
+  });
+  const page = {
+    evaluate: async (callback: Function, options: unknown) => runInContext(`(${callback.toString()})`, context)(options),
+    locator: () => ({}),
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    captureSubmissionBaseline(page: Page): Promise<{ initialTurnIdentities: string[] }>;
+    currentSubmissionEvidence(page: Page, baseline: unknown): Promise<string | undefined>;
+    submissionDomState(page: Page, cache: unknown): Promise<{ userIdentities: string[]; responseIdentities: string[] }>;
+  };
+  try {
+    const baseline = await worker.captureSubmissionBaseline(page);
+    expect([...baseline.initialTurnIdentities]).toEqual([]);
+    // Measured 26.09: one [data-turn-key] group; the bubble and the answer body sit inside their
+    // own unit keys and carry no identity of their own.
+    window.document.getElementById("thread")!.innerHTML = `<div data-turn-key="k1">
+      <div data-content-search-turn-key="t1">
+        <div data-chatgpt-search-unit-key="s1"><div data-content-search-unit-key="c1:0:user">
+          <div data-user-message-bubble="true">prompt</div>
+        </div></div>
+        <span data-chatgpt-agent-turn-start></span>
+        <div data-content-search-unit-key="c1:2:assistant">
+          <h4 class="sr-only" data-conversation-role="assistant">ChatGPT dedi:</h4>
+          <div><div data-markdown-text-style="assistant-message">18</div></div>
+        </div>
+      </div>
+    </div>`;
+    observers.forEach(notify => notify());
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    const state = await worker.submissionDomState(page, (baseline as unknown as { domCache: unknown }).domCache);
+    expect([...state.userIdentities]).toEqual(["c1:0:user"]);
+    expect([...state.responseIdentities]).toEqual(["c1:2:assistant"]);
+  } finally {
+    for (const prototype of prototypes) delete prototype[Symbol.iterator];
+  }
 });
 
 test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
@@ -348,7 +401,8 @@ test("grouped exchanges read completion from the assistant footer beside its uni
     <div data-content-search-turn-key="t1">
       <div data-chatgpt-agent-turn-start></div>
       <div data-content-search-unit-key="c:2:assistant" id="assistant-unit">
-        <div data-conversation-role="assistant"><div data-markdown-text-style="assistant-message">ANSWER</div></div>
+        <h4 class="sr-only m-0 select-none" data-conversation-role="assistant">ChatGPT dedi:</h4>
+        <div data-chatgpt-selection-message-id="m1"><div data-markdown-text-style="assistant-message">ANSWER</div></div>
       </div>
       ${assistantFooter ? '<div class="turn-action-controls"><button id="assistant-copy">Kopyala</button></div>' : ""}
     </div>
@@ -375,6 +429,7 @@ test("grouped exchanges read completion from the assistant footer beside its uni
       };
       const snapshot = await worker.responseDomSnapshot(locator, {});
       expect(evaluationErrors).toEqual([]);
+      // The visually hidden "ChatGPT said:" heading is part of textContent, never of the answer.
       expect(snapshot.visibleText).toBe("ANSWER");
       // The user's footer precedes the answer and must never read as its completion.
       expect(snapshot.completionActionVisible).toBe(assistantFooter);
@@ -2802,7 +2857,7 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   };
   const page = {
     locator: (selector: string) => {
-      if (selector === 'input[data-testid="upload-photos-input"]') return input;
+      if (selector === CHATGPT_FILE_UPLOAD_INPUT_SELECTOR) return input;
       if (selector === '[role="alert"]') {
         return { allInnerTexts: async () => [] };
       }
