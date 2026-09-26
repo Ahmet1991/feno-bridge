@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { describeCauseChain } from "../src/adapters/chatgpt-web/index";
+import { describeCauseChain } from "../src/lib/errors";
 
 test("an error with no cause describes itself", () => {
   expect(describeCauseChain(new TypeError("page closed"))).toBe("TypeError: page closed");
