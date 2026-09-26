@@ -3220,12 +3220,19 @@ export class ChatGptBrowserWorker {
         return !parent || identity(parent, true) !== identity(element, true);
       });
       const turnIdentities = identities(containers, true);
+      // The unit-key rows of the role selectors match the user bubble and the answer body, which
+      // carry no identity themselves (measured 26.09). Their unit key is the closest ancestor.
+      const identityOwner = (element: Element): Element => (
+        element.getAttribute("data-turn-id")?.trim() || element.getAttribute("data-content-search-unit-key")?.trim()
+          ? element
+          : element.closest?.("[data-turn-id], [data-content-search-unit-key]") ?? element
+      );
       const userIdentities = identities([...new Set([
-        ...document.querySelectorAll(options.userTurnSelector),
+        ...[...document.querySelectorAll(options.userTurnSelector)].map(identityOwner),
         ...document.querySelectorAll('[data-content-search-unit-key$=":user"]'),
       ])]);
       const responseIdentities = identities([...new Set([
-        ...document.querySelectorAll(options.assistantTurnSelector),
+        ...[...document.querySelectorAll(options.assistantTurnSelector)].map(identityOwner),
         ...document.querySelectorAll('[data-content-search-unit-key$=":assistant"]'),
       ])]);
       const knownTurns = new Set(turnIdentities);
