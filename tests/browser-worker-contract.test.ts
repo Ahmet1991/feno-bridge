@@ -219,6 +219,8 @@ test("submission evidence resolves unit-key identities from the bubble and answe
     </div>`;
     observers.forEach(notify => notify());
     expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    // The acknowledging user turn is remembered for later rebinding after activity.
+    expect((baseline as unknown as { acceptedUserIdentity?: string }).acceptedUserIdentity).toBe("c1:0:user");
     const state = await worker.submissionDomState(page, (baseline as unknown as { domCache: unknown }).domCache);
     expect([...state.userIdentities]).toEqual(["c1:0:user"]);
     expect([...state.responseIdentities]).toEqual(["c1:2:assistant"]);
@@ -308,6 +310,57 @@ test("assistant tracking accepts a replacement turn during proven MCP continuati
       "conversation-turn-assistant-3",
     ],
   });
+});
+
+test("assistant tracking accepts the submitted user turn remounting after activity", async () => {
+  // Measured 26.09 (trace 406f83307ff5): tool activity unmounted the user turn, the binding was
+  // taken on a temporary assistant, and the same user turn returned with the final answer.
+  const finalLocator = { id: "assistant-final" };
+  const page = { locator: () => finalLocator } as unknown as Page;
+  const workerFor = (users: string[]) => Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    submissionDomState: async () => ({
+      userTurnCount: users.length,
+      assistantTurnCount: 1,
+      visibleStopButtonCount: 0,
+      turnIdentities: [...users, "fallback-turn-0:2:assistant"],
+      userIdentities: users,
+      responseIdentities: ["fallback-turn-0:2:assistant"],
+    }),
+  }) as unknown as {
+    reconcileAssistantTurnBinding(
+      page: Page,
+      baseline: { initialTurnIdentities: string[]; domCache: object; acceptedUserIdentity?: string },
+      binding: { identity: string; locator: { count(): Promise<number> }; acceptedTurnIdentities: string[] },
+    ): Promise<{ identity: string; locator: unknown; acceptedTurnIdentities: readonly string[] }>;
+  };
+  const binding = () => ({
+    identity: "temporary-assistant",
+    locator: { count: async () => 0 },
+    acceptedTurnIdentities: ["temporary-assistant"],
+  });
+  const own = "fallback-turn-0:0:user";
+
+  for (const acceptedUserIdentity of [own, undefined]) {
+    const worker = workerFor([own]);
+    await expect(worker.reconcileAssistantTurnBinding(
+      page,
+      { initialTurnIdentities: [], domCache: {}, ...(acceptedUserIdentity ? { acceptedUserIdentity } : {}) },
+      binding(),
+    )).resolves.toEqual({
+      identity: "fallback-turn-0:2:assistant",
+      locator: finalLocator,
+      acceptedTurnIdentities: [own, "fallback-turn-0:2:assistant"],
+    });
+  }
+  // A different user turn, or a second one, is still foreign.
+  const foreign = workerFor(["someone-else:0:user"]);
+  await expect(foreign.reconcileAssistantTurnBinding(
+    page, { initialTurnIdentities: [], domCache: {}, acceptedUserIdentity: own }, binding(),
+  )).rejects.toThrow("opened another user turn");
+  const second = workerFor([own, "fallback-turn-0:4:user"]);
+  await expect(second.reconcileAssistantTurnBinding(
+    page, { initialTurnIdentities: [], domCache: {}, acceptedUserIdentity: own }, binding(),
+  )).rejects.toThrow("opened another user turn");
 });
 
 test("response caching rechecks CSS visibility without requiring a DOM mutation", async () => {
