@@ -15,7 +15,7 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_FILE_UPLOAD_INPUT_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptPersonalizationProofCache } from "../src/adapters/chatgpt-web/personalization-proof-cache";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
@@ -348,7 +348,8 @@ test("grouped exchanges read completion from the assistant footer beside its uni
     <div data-content-search-turn-key="t1">
       <div data-chatgpt-agent-turn-start></div>
       <div data-content-search-unit-key="c:2:assistant" id="assistant-unit">
-        <div data-conversation-role="assistant"><div data-markdown-text-style="assistant-message">ANSWER</div></div>
+        <h4 class="sr-only m-0 select-none" data-conversation-role="assistant">ChatGPT dedi:</h4>
+        <div data-chatgpt-selection-message-id="m1"><div data-markdown-text-style="assistant-message">ANSWER</div></div>
       </div>
       ${assistantFooter ? '<div class="turn-action-controls"><button id="assistant-copy">Kopyala</button></div>' : ""}
     </div>
@@ -375,6 +376,7 @@ test("grouped exchanges read completion from the assistant footer beside its uni
       };
       const snapshot = await worker.responseDomSnapshot(locator, {});
       expect(evaluationErrors).toEqual([]);
+      // The visually hidden "ChatGPT said:" heading is part of textContent, never of the answer.
       expect(snapshot.visibleText).toBe("ANSWER");
       // The user's footer precedes the answer and must never read as its completion.
       expect(snapshot.completionActionVisible).toBe(assistantFooter);
@@ -2802,7 +2804,7 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   };
   const page = {
     locator: (selector: string) => {
-      if (selector === 'input[data-testid="upload-photos-input"]') return input;
+      if (selector === CHATGPT_FILE_UPLOAD_INPUT_SELECTOR) return input;
       if (selector === '[role="alert"]') {
         return { allInnerTexts: async () => [] };
       }
