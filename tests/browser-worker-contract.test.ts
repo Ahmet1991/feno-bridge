@@ -1793,6 +1793,57 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   expect(keys).toEqual(["ArrowDown", "ArrowDown", "Enter"]);
 });
 
+test("connector selection follows aria-current in the list-navigation mention menu", async () => {
+  // Measured 26.09: rows are button[data-list-navigation-item]; the keyboard highlight is
+  // aria-current="true" (no data-highlighted) and starts on the first row, "Codex Zero Risk".
+  const keys: string[] = [];
+  let current = 0;
+  let selected = false;
+  const titles = ["Codex Zero Risk", "Codex Native2", "OpenAI Platform"];
+  const selectedConnector = { waitFor: async () => {} };
+  const appResult = {
+    waitFor: async () => {},
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "aria-current" && titles[current] === "Codex Native2"
+      ? "true"
+      : null,
+  };
+  const menuRows = {
+    evaluateAll: async () => [],
+    filter: (options: { visible?: boolean }) => options.visible
+      ? { count: async () => titles.length }
+      : appResult,
+  };
+  const initialComposer = {
+    fill: async () => {},
+    focus: async () => {},
+    pressSequentially: async () => {},
+    press: async (key: string) => {
+      keys.push(key);
+      if (key === "ArrowDown") current = Math.min(current + 1, titles.length - 1);
+      if (key === "Enter") selected = true;
+    },
+  };
+  const selectedComposer = { selected: true };
+  const page = {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({ exactConnectorLabel: true }),
+    locator: () => menuRows,
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown): Promise<unknown>;
+  }).selectConnector;
+
+  await expect(selectConnector.call({
+    config: { appName: "Codex Native2" },
+    connectorIsSelected: async () => selected,
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+    selectedConnectorControl: () => selectedConnector,
+    activeComposer: async () => selected ? selectedComposer : initialComposer,
+  }, page)).resolves.toBe(selectedComposer);
+  expect(keys).toEqual(["ArrowDown", "Enter"]);
+});
+
 test("repeated connector verification reuses its selected pill before clearing the composer", async () => {
   let fillCalls = 0;
   const selectedComposer = {
