@@ -1532,6 +1532,8 @@ interface ChatGptSubmissionBaseline {
   responseTurns: Locator;
   initialTurnIdentities: readonly string[];
   domCache: ChatGptSubmissionDomCache;
+  /** The user turn that acknowledged this submission, once observed. */
+  acceptedUserIdentity?: string;
 }
 
 interface ChatGptSubmissionObservationRecovery {
@@ -3275,6 +3277,10 @@ export class ChatGptBrowserWorker {
     signal?: AbortSignal,
   ): Promise<ChatGptSubmissionEvidence | undefined> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
+    // Remember the user turn this submission created: activity can unmount it before the
+    // assistant binding is taken, and its later return must not read as a foreign turn.
+    const newUsers = state.userIdentities.filter(identity => !baseline.initialTurnIdentities.includes(identity));
+    if (newUsers.length === 1) baseline.acceptedUserIdentity ??= newUsers[0];
     return chatGptSubmissionEvidence({
       initialTurnIdentities: baseline.initialTurnIdentities,
       userIdentities: state.userIdentities,
@@ -3451,8 +3457,16 @@ export class ChatGptBrowserWorker {
     }
     const state = await this.submissionDomState(page, baseline.domCache, signal);
     const acceptedTurns = new Set(binding.acceptedTurnIdentities);
-    const hasNewUserTurn = state.userIdentities.some(identity => !acceptedTurns.has(identity));
-    if (hasNewUserTurn && !allowMcpContinuationUserTurn) {
+    const newUsers = state.userIdentities.filter(identity => !acceptedTurns.has(identity));
+    const hasNewUserTurn = newUsers.length > 0;
+    // Measured 26.09: thinking and tool activity unmount the submitted user turn and remount it
+    // when the answer settles, so a binding taken meanwhile never saw it. That return is our own
+    // turn: the one that acknowledged Send, or else the only user turn new since the baseline.
+    const sinceBaseline = state.userIdentities.filter(identity => !baseline.initialTurnIdentities.includes(identity));
+    const submittedUser = baseline.acceptedUserIdentity
+      ?? (sinceBaseline.length === 1 ? sinceBaseline[0] : undefined);
+    const ownUserReturned = newUsers.length === 1 && newUsers[0] === submittedUser;
+    if (hasNewUserTurn && !allowMcpContinuationUserTurn && !ownUserReturned) {
       throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
     }
     const acceptedTurnIdentities = hasNewUserTurn
