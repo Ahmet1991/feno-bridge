@@ -15,7 +15,7 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptPersonalizationProofCache } from "../src/adapters/chatgpt-web/personalization-proof-cache";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
@@ -315,6 +315,73 @@ test("response caching rechecks CSS visibility without requiring a DOM mutation"
     }
   } finally {
     for (const prototype of prototypes) delete prototype[Symbol.iterator];
+    if (originalInnerText) Object.defineProperty(dom.HTMLElement.prototype, "innerText", originalInnerText);
+    else delete dom.HTMLElement.prototype.innerText;
+  }
+});
+
+test("grouped exchanges read completion from the assistant footer beside its unit key", async () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const dom = createWindow();
+  const originalInnerText = Object.getOwnPropertyDescriptor(dom.HTMLElement.prototype, "innerText");
+  Object.defineProperty(dom.HTMLElement.prototype, "innerText", {
+    configurable: true, get() { return this.textContent; },
+  });
+  const prototypes = [dom.document.querySelectorAll("div"), dom.document.body.children].map(Object.getPrototypeOf);
+  for (const prototype of prototypes) Object.defineProperty(prototype, Symbol.iterator, {
+    configurable: true, value: Array.prototype[Symbol.iterator],
+  });
+  // Domino also predates ParentNode.append, which the Markdown serializer uses on nested bodies.
+  const hadAppend = Object.prototype.hasOwnProperty.call(dom.HTMLElement.prototype, "append");
+  if (!("append" in dom.HTMLElement.prototype)) Object.defineProperty(dom.HTMLElement.prototype, "append", {
+    configurable: true,
+    value(this: HTMLElement, ...nodes: Node[]) { for (const node of nodes) this.appendChild(node); },
+  });
+  // Measured 26.09 (temporary chat, Turkish UI): one [data-turn-key] group holds both roles.
+  // The user's footer lives inside the user's unit key; the assistant's footer is a SIBLING of
+  // the assistant's unit key, so searching only the answer body never sees completion.
+  const exchange = (assistantFooter: boolean) => `<div data-turn-key="k1">
+    <div class="group/user-message" data-content-search-unit-key="c:0:user">
+      <div data-user-message-bubble="true">prompt</div>
+      <div class="turn-action-controls"><button id="user-copy">Mesajı kopyala</button></div>
+    </div>
+    <div data-content-search-turn-key="t1">
+      <div data-chatgpt-agent-turn-start></div>
+      <div data-content-search-unit-key="c:2:assistant" id="assistant-unit">
+        <div data-conversation-role="assistant"><div data-markdown-text-style="assistant-message">ANSWER</div></div>
+      </div>
+      ${assistantFooter ? '<div class="turn-action-controls"><button id="assistant-copy">Kopyala</button></div>' : ""}
+    </div>
+  </div>`;
+  try {
+    for (const assistantFooter of [false, true]) {
+      const window = createWindow(exchange(assistantFooter));
+      const context = createContext({
+        document: window.document, HTMLElement: window.HTMLElement, Element: window.Element, Node: window.Node,
+        NodeFilter: window.NodeFilter, performance: { timeOrigin: 1 },
+        getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+        MutationObserver: class { observe() {} },
+      });
+      const evaluationErrors: string[] = [];
+      const locator = {
+        evaluate: async (callback: Function, options: unknown) => {
+          try { return runInContext(`(${callback.toString()})`, context)(window.document.getElementById("assistant-unit"), options); }
+          catch (error) { evaluationErrors.push((error as Error).stack ?? String(error)); throw error; }
+        },
+        page: () => ({ isClosed: () => false }),
+      };
+      const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+        responseDomSnapshot(locator: unknown, cache: object): Promise<{ visibleText: string; completionActionVisible: boolean }>;
+      };
+      const snapshot = await worker.responseDomSnapshot(locator, {});
+      expect(evaluationErrors).toEqual([]);
+      expect(snapshot.visibleText).toBe("ANSWER");
+      // The user's footer precedes the answer and must never read as its completion.
+      expect(snapshot.completionActionVisible).toBe(assistantFooter);
+    }
+  } finally {
+    for (const prototype of prototypes) delete prototype[Symbol.iterator];
+    if (!hadAppend) delete (dom.HTMLElement.prototype as { append?: unknown }).append;
     if (originalInnerText) Object.defineProperty(dom.HTMLElement.prototype, "innerText", originalInnerText);
     else delete dom.HTMLElement.prototype.innerText;
   }
@@ -979,7 +1046,10 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     press: async () => { sendPresses += 1; },
   };
   const composer = {
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: (selector: string) => {
+      expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
+      return sendButton;
+    } }),
   };
   worker.activeComposer = async () => composer;
 
@@ -1101,7 +1171,10 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     },
   };
   worker.activeComposer = async () => ({
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: (selector: string) => {
+      expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
+      return sendButton;
+    } }),
   });
   worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
 
@@ -2644,16 +2717,21 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     getByRole: (role: string, options: { name: string; exact: boolean }) => {
       expect(role).toBe("group");
       expect(options).toEqual({ name: "codex-input-image-1.png", exact: true });
-      return {
+      const tile: { or: (other: unknown) => typeof tile; waitFor: (state: { state: string; timeout: number }) => Promise<void> } = {
+        or: () => tile,
         waitFor: async (state: { state: string; timeout: number }) => {
           expect(state).toEqual({ state: "visible", timeout: 60_000 });
           calls.push(["fileTile", options.name]);
         },
       };
+      return tile;
     },
-    getByTestId: (testId: string) => {
-      expect(testId).toBe("send-button");
-      return send;
+    locator: (selector: string) => {
+      if (selector === CHATGPT_SEND_BUTTON_SELECTOR) return send;
+      expect(selector).toBe(
+        '.composer-attachment-surface:is(button, [role="button"])[aria-label="codex-input-image-1.png"]',
+      );
+      return {};
     },
   };
   const composer = {

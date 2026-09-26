@@ -9,7 +9,7 @@ import * as tunnel from "../src/tunnel";
 import * as tunnelService from "../src/tunnel-service";
 import * as browserHost from "../src/launcher-browser-host";
 import * as browserLogin from "../src/browser-login";
-import { launcherCapabilityProbeRequired, setup, setupDevProfile, setupProxyIsReady } from "../src/setup";
+import { inspectLauncherCapabilities, launcherCapabilityProbeRequired, setup, setupDevProfile, setupProxyIsReady } from "../src/setup";
 
 const config = {
   mode: "browser-only" as const,
@@ -55,6 +55,47 @@ test("launcher setup refreshes account capabilities only when missing or explici
     ...verifiedLauncher,
     browserInteractionMode: "manual",
   } as never, false, "automatic")).toBe(true);
+});
+
+test("a failed capability refresh keeps the measured model list instead of failing setup", async () => {
+  const stored = {
+    browserHost: "launcher",
+    browserInteractionMode: "automatic",
+    browserHostDescriptorPath: "launcher-browser.json",
+    solAvailable: true,
+    extraHighAvailable: false,
+    proAvailable: false,
+  } as never;
+  const calls: boolean[] = [];
+  const inspect = spyOn(browserHost, "inspectLauncherBrowserHost").mockImplementation(async (_path, options) => {
+    calls.push(options?.detectCapabilities === true);
+    if (options?.detectCapabilities) throw new Error("locator.waitFor: Timeout 70000ms exceeded.");
+    return { url: "https://chatgpt.com/?temporary-chat=true" };
+  });
+  try {
+    const kept = await inspectLauncherCapabilities(stored, stored, true, "production");
+    expect(calls).toEqual([true, false]);
+    expect(kept).toMatchObject({ solAvailable: true, extraHighAvailable: false, proAvailable: false });
+    expect(kept.refreshWarning).toContain("Timeout 70000ms");
+
+    // Nothing measured yet: a failed first probe must fail, never default to a model list.
+    calls.length = 0;
+    const unmeasured = { ...(stored as object), solAvailable: undefined } as never;
+    await expect(inspectLauncherCapabilities(unmeasured, unmeasured, false, "production"))
+      .rejects.toThrow("Timeout 70000ms");
+    expect(calls).toEqual([true]);
+
+    calls.length = 0;
+    inspect.mockImplementation(async (_path, options) => {
+      calls.push(options?.detectCapabilities === true);
+      return { url: "https://chatgpt.com/?temporary-chat=true", solAvailable: true, extraHighAvailable: true, proAvailable: false };
+    });
+    const refreshed = await inspectLauncherCapabilities(stored, stored, true, "production");
+    expect(calls).toEqual([true]);
+    expect(refreshed).toEqual({ solAvailable: true, extraHighAvailable: true, proAvailable: false });
+  } finally {
+    inspect.mockRestore();
+  }
 });
 
 for (const development of [false, true]) for (const interaction of ["manual", "automatic"] as const) {

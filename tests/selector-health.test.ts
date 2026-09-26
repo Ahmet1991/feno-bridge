@@ -159,7 +159,7 @@ test("browser selectors CLI returns JSON and a nonzero exit status for stale com
     expect(healthy.exitCode).toBe(0);
     expect(healthy.stderr).toBe("");
     expect(JSON.parse(healthy.stdout)).toMatchObject({ ok: true, exitCode: 0 });
-    expect(JSON.parse(healthy.stdout).selectors).toHaveLength(13);
+    expect(JSON.parse(healthy.stdout).selectors).toHaveLength(SELECTOR_SPECS.length);
 
     html = '<textarea data-new-composer="true"></textarea>';
     const stale = await run([]);

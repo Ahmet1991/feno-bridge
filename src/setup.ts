@@ -71,6 +71,8 @@ export interface SetupResult {
   tunnelReady: boolean | null;
   codexRestartRequired: true;
   connectorSetupRequired: boolean;
+  /** Set when a capability refresh failed and the stored model list was kept. */
+  capabilityRefreshWarning?: string;
 }
 
 interface PreparedSetup {
@@ -311,27 +313,48 @@ function baseConfig(
   return config;
 }
 
-async function inspectLauncherCapabilities(
+export async function inspectLauncherCapabilities(
   config: AppConfig,
   existing: AppConfig | undefined,
   refreshAccountCapabilities: boolean,
   expectedProfile: "production" | "development",
-): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean }> {
-  const detectCapabilities = launcherCapabilityProbeRequired(
+): Promise<{ solAvailable: boolean; extraHighAvailable: boolean; proAvailable: boolean; refreshWarning?: string }> {
+  let detectCapabilities = launcherCapabilityProbeRequired(
     existing,
     refreshAccountCapabilities,
     config.browserInteractionMode,
   );
-  const inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
-    detectCapabilities,
-    expectedProfile,
-  });
+  // True only when the probe runs because a refresh was requested: the stored list was measured
+  // before and is still complete. ChatGPT reshapes its model controls without notice, so losing
+  // that re-measurement must not fail the setup and take the working Codex route down with it.
+  const storedCapabilitiesUsable = detectCapabilities
+    && !launcherCapabilityProbeRequired(existing, false, config.browserInteractionMode);
+  let refreshWarning: string | undefined;
+  let inspected: Awaited<ReturnType<typeof inspectLauncherBrowserHost>>;
+  try {
+    inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
+      detectCapabilities,
+      expectedProfile,
+    });
+  } catch (error) {
+    if (!storedCapabilitiesUsable) throw error;
+    refreshWarning = "ChatGPT's model list could not be re-measured, so the stored one was kept. "
+      + "Run Repair once ChatGPT has finished loading to retry. "
+      + `Cause: ${error instanceof Error ? error.message : String(error)}`;
+    // The session itself is still verified; only the capability probe is skipped.
+    inspected = await inspectLauncherBrowserHost(config.browserHostDescriptorPath!, {
+      detectCapabilities: false,
+      expectedProfile,
+    });
+    detectCapabilities = false;
+  }
   return {
     solAvailable: detectCapabilities ? inspected.solAvailable === true : existing!.solAvailable,
     extraHighAvailable: detectCapabilities
       ? inspected.extraHighAvailable === true
       : existing!.extraHighAvailable === true,
     proAvailable: detectCapabilities ? inspected.proAvailable === true : existing!.proAvailable,
+    ...(refreshWarning ? { refreshWarning } : {}),
   };
 }
 
@@ -507,6 +530,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
   let solAvailable: boolean | undefined = config.solAvailable;
   let extraHighAvailable: boolean | undefined = config.extraHighAvailable;
   let proAvailable: boolean | undefined = config.proAvailable;
+  let capabilityRefreshWarning: string | undefined;
   if (config.browserInteractionMode === "manual") {
     // The generic manual route is independent of account capabilities. The launcher may open the
     // authenticated surface, but setup must not inspect its model selector or infer availability.
@@ -521,6 +545,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     solAvailable = capabilities.solAvailable;
     extraHighAvailable = capabilities.extraHighAvailable;
     proAvailable = capabilities.proAvailable;
+    capabilityRefreshWarning = capabilities.refreshWarning;
   } else {
     const stored = storedBrowserLoginCapabilities(config);
     solAvailable = stored.solAvailable;
@@ -636,6 +661,7 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     tunnelReady,
     codexRestartRequired: true,
     connectorSetupRequired: config.mode === "full",
+    ...(capabilityRefreshWarning ? { capabilityRefreshWarning } : {}),
   };
 }
 

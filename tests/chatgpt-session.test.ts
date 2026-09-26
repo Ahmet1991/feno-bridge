@@ -7,6 +7,8 @@ import {
   CHATGPT_EFFORT_MENU_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   CHATGPT_EFFORT_SLIDER_SELECTOR,
+  CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_USER_TURN_SELECTOR,
   activateChatGptEffortMenu,
   detectChatGptAccountCapabilities,
@@ -35,17 +37,53 @@ test("composer and effort selectors exclude unrelated editable fields and menu b
   expect(matches(CHATGPT_EFFORT_CONTROL_SELECTOR)).toEqual(["effort", "model", "reasoning", "codex-intelligence"]);
 });
 
-test("effort slider selectors match both measured and legacy container structures", () => {
+test("effort slider selectors resolve one container in the measured nested picker", () => {
   const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  // Measured 26.09: the reasoning row CONTAINS the power slider. Matching both would resolve two
+  // nested containers, and Playwright's strict waitFor rejects that before any slider is read.
   const document = createDocument(`<body>
     <div data-model-reasoning-effort-slider id="legacy-slider"><span role="slider" id="legacy-input"></span></div>
-    <div data-reasoning-slider="true" id="new-slider"><span role="slider" id="new-input"></span></div>
-    <div data-reasoning-slider="false" id="unrelated"><span role="slider" id="unrelated-input"></span></div>
+    <div role="menu">
+      <div role="menuitem" data-reasoning-slider="true" id="reasoning-row">
+        <div data-menu-row-content>
+          <div data-model-picker-power-slider id="power-slider">
+            <div data-orientation="horizontal" aria-disabled="false">
+              <span data-selected="true"></span><span data-selected="true"></span><span data-selected="true"></span>
+              <span role="slider" aria-valuemin="0" aria-valuemax="2" aria-valuenow="2" id="power-input"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </body>`);
   const matches = (selector: string) => Array.from(document.querySelectorAll(selector)).map(element => element.id);
-  expect(matches(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR)).toEqual(["legacy-slider", "new-slider"]);
-  expect(matches(CHATGPT_EFFORT_SLIDER_SELECTOR)).toEqual(["legacy-input", "new-input"]);
+  expect(matches(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR)).toEqual(["legacy-slider", "power-slider"]);
+  expect(matches(CHATGPT_EFFORT_SLIDER_SELECTOR)).toEqual(["legacy-input", "power-input"]);
+  const row = document.getElementById("reasoning-row")!;
+  expect(Array.from(row.querySelectorAll(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR)).map(element => element.id))
+    .toEqual(["power-slider"]);
+  expect(row.matches(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR)).toBe(false);
   expect(CHATGPT_EFFORT_MENU_SELECTOR.split("[data-reasoning-slider]")).toHaveLength(4);
+});
+
+test("send and stop resolve the composer's primary slot without localized labels", () => {
+  const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+  // Measured 26.09 in a Turkish UI: no data-testid; Send and Stop share the primary slot styling.
+  const form = (generating: boolean) => `<form data-chatgpt-composer>
+    <button type="button" class="h-token-button-composer" id="attach" aria-label="Dosya ve daha fazlasını ekle"></button>
+    <button type="button" class="h-(--spacing-token-button-composer)" id="model" data-codex-intelligence-trigger="true"></button>
+    <button type="button" class="h-token-button-composer" id="dictate" aria-label="Dikte et"></button>
+    ${generating
+      ? '<button type="button" class="size-token-button-composer bg-composer-primary" id="stop" aria-label="Kapat"></button>'
+      : '<button type="submit" class="size-token-button-composer bg-composer-primary" id="send" aria-label="Gönder"></button>'}
+  </form>`;
+  const matches = (html: string, selector: string) => Array.from(createDocument(`<body>${html}</body>`)
+    .querySelectorAll(selector)).map(element => element.id);
+  // The stop label above is deliberately not "Durdur": the structural row alone must find it.
+  expect(matches(form(true), CHATGPT_STOP_BUTTON_SELECTOR)).toEqual(["stop"]);
+  expect(matches(form(true), CHATGPT_SEND_BUTTON_SELECTOR)).toEqual([]);
+  expect(matches(form(false), CHATGPT_STOP_BUTTON_SELECTOR)).toEqual([]);
+  expect(matches(form(false), CHATGPT_SEND_BUTTON_SELECTOR)).toEqual(["send"]);
 });
 
 test("conversation selectors recognize measured role-specific message structures", () => {
@@ -194,6 +232,7 @@ test("effort activation fails closed when neither event exposes a structural sur
 
 test("a complete authenticated composer with no effort selector is Luna-only", async () => {
   const effortButton = {
+    filter() { return this; },
     last() { return this; },
     isVisible: async () => false,
   };
@@ -222,6 +261,7 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
 test("a transient effort control does not turn a Luna-only account into Sol", async () => {
   let visibilityReads = 0;
   const effortButton = {
+    filter() { return this; },
     last() { return this; },
     isVisible: async () => {
       visibilityReads += 1;
