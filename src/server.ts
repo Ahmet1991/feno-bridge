@@ -21,7 +21,7 @@ import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
 import { AsyncEventQueue } from "./event-queue";
 import { readJsonRequestBody } from "./http-body";
-import { httpStatusFromTerminalError } from "./lib/errors";
+import { describeCauseChain, httpStatusFromTerminalError } from "./lib/errors";
 import { createHash } from "node:crypto";
 import { augmentNativeModelCatalog } from "./model-catalog";
 import {
@@ -379,8 +379,19 @@ interface ModelCatalogFailure {
 }
 
 function modelCatalogFailure(stage: ModelCatalogFailure["stage"], error: unknown): ModelCatalogFailure {
-  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-  return { stage, ...(typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? { code } : {}) };
+  if (!error || typeof error !== "object") return { stage };
+  // Fetch can wrap the network error. Keep only bounded codes, never free-form
+  // messages, URLs or paths from either layer in the health snapshot.
+  for (const source of [error, "cause" in error ? error.cause : undefined]) {
+    const code = source && typeof source === "object" && "code" in source ? source.code : undefined;
+    if (typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code)) return { stage, code };
+  }
+  const name = "name" in error ? error.name : undefined;
+  // AbortError identifies cancellation, not who initiated it. The upstream request
+  // can also be cancelled by the server, so do not blame the Codex client here.
+  if (name === "AbortError") return { stage, code: "ABORT_ERR" };
+  if (name === "TimeoutError") return { stage, code: "ETIMEDOUT" };
+  return { stage };
 }
 
 export async function modelsRequest(
@@ -619,6 +630,18 @@ export async function responseRequest(
         queue.push(event);
       });
     } catch (error) {
+      // Every error an adapter throws funnels through here and is reduced to its own message. The
+      // `cause` each wrap site attaches dies at this line, so a turn that fails deep in the browser
+      // stack surfaces as one sentence with no record anywhere of what actually went wrong.
+      //
+      // Written to stderr, which the launcher captures into launcher.jsonl under its usual
+      // redaction, rather than into the event: the operator needs the chain and the model does not.
+      // The traceId ties it to the browser.turn_started / browser.turn_ended records already there.
+      if (error instanceof Error && error.cause !== undefined) {
+        console.error(
+          `[bridge] turn failed (traceId=${traceId ?? "unknown"}): ${describeCauseChain(error)}`,
+        );
+      }
       const event: AdapterEvent = { type: "error", message: error instanceof Error ? error.message : String(error) };
       options.onAdapterEvent?.(event);
       queue.push(event);

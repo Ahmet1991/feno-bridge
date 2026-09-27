@@ -6,6 +6,7 @@ import { defaultConfig } from "../src/config";
 import { createTunnelConfig, mcpCommand } from "../src/tunnel";
 import { tunnelServiceDefinition } from "../src/tunnel-service";
 import { existingFullSetupCredentials, tunnelWorkerRuntimeChanged } from "../src/setup";
+import { restoreTestHomes } from "./support/isolate-homes";
 
 const roots: string[] = [];
 
@@ -46,7 +47,7 @@ function parsePinnedTunnelCommand(command: string): string[] {
 }
 
 afterEach(() => {
-  delete process.env.CODEX_CHATGPT_WEB_HOME;
+  restoreTestHomes();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
