@@ -71,7 +71,8 @@ export function formatBlockClaimEvidence(
   const { completed, failed } = counts;
   const observed = completed === 0
     ? "Bu turda köprü üzerinden hiç araç çağrısı yapılmadı."
-    : `Bu turda ${completed} araç çağrısı tamamlandı, ${failed} tanesi hata döndürdü.`;
+    : `Bu turda köprüye ulaşan ${completed} araç çağrısı tamamlandı, ${failed} tanesi hata döndürdü.`
+      + " ChatGPT'nin köprüye hiç ulaştırmadığı bir çağrı bu sayıma girmez.";
   const missing = counts.windowCaptureNeverReached
     ? ` Pencere hazırlandı ama ekran görüntüsü çağrısı (${WINDOW_CAPTURE}) köprüye hiç ulaşmadı.`
     : "";

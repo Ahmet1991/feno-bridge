@@ -1534,6 +1534,72 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
   }
 });
 
+test("a running generation keeps the assistant wait open past the DOM grace", async () => {
+  // Measured 26.09: while ChatGPT thinks or runs tools, only its Stop control is visible; the
+  // assistant unit mounts when answer text starts. A long think must not read as a missing turn.
+  type Baseline = { initialTurnIdentities: string[]; domCache: Record<string, unknown> };
+  const assistantLocator = { id: "assistant" };
+  const page = {
+    isClosed: () => false,
+    locator: (selector: string) => selector.includes("fallback-turn-0:2:assistant")
+      ? assistantLocator
+      : { filter() { return this; }, last() { return this; }, isVisible: async () => false },
+  } as unknown as Page;
+  const realDateNow = Date.now;
+  try {
+    for (const scenario of ["answers-after-long-think", "stops-without-answer", "turn-deadline"] as const) {
+      let now = 1_000;
+      Date.now = () => now;
+      const worker = ChatGptBrowserWorker.forProvider({
+        adapter: "chatgpt-web",
+        baseUrl: `browser://assistant-thinking-${scenario}-${Math.random()}`,
+        chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      }) as unknown as {
+        waitForNewAssistantTurn(page: Page, baseline: Baseline, deadline: number | undefined): Promise<{
+          identity: string; locator: unknown;
+        }>;
+        submissionDomState(): Promise<unknown>;
+        waitForTurnDomOrExternalProgress(): Promise<void>;
+      };
+      let waits = 0;
+      worker.submissionDomState = async () => {
+        const thinking = waits < 3;
+        const answered = scenario === "answers-after-long-think" && !thinking;
+        return {
+          userTurnCount: 1,
+          assistantTurnCount: answered ? 1 : 0,
+          visibleStopButtonCount: thinking ? 1 : 0,
+          turnIdentities: ["fallback-turn-0:0:user", ...(answered ? ["fallback-turn-0:2:assistant"] : [])],
+          userIdentities: ["fallback-turn-0:0:user"],
+          responseIdentities: answered ? ["fallback-turn-0:2:assistant"] : [],
+        };
+      };
+      worker.waitForTurnDomOrExternalProgress = async () => {
+        waits += 1;
+        now += CHATGPT_RESPONSE_DOM_GRACE_MS + 1;
+      };
+      const result = worker.waitForNewAssistantTurn(
+        page,
+        { initialTurnIdentities: [], domCache: {} },
+        scenario === "turn-deadline" ? now + 2 * CHATGPT_RESPONSE_DOM_GRACE_MS : undefined,
+      );
+      if (scenario === "answers-after-long-think") {
+        // Three graces of thinking, then the answer: bound, not failed.
+        await expect(result).resolves.toMatchObject({ identity: "fallback-turn-0:2:assistant", locator: assistantLocator });
+        expect(waits).toBe(3);
+      } else if (scenario === "stops-without-answer") {
+        // Generation ended and no answer mounted within a grace: still a missing turn.
+        await expect(result).rejects.toThrow("did not expose its assistant turn");
+      } else {
+        // A live Stop control never outlasts the turn's own deadline.
+        await expect(result).rejects.toThrow("ChatGPT web turn timed out");
+      }
+    }
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
 test("a failed stale-browser disconnect prevents the replacement connection", async () => {
   let replacementAttempts = 0;
   const disconnectFailure = new Error("stale CDP transport did not close");

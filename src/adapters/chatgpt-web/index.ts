@@ -28,7 +28,7 @@ import {
 } from "./capacity";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, chatGptTurnTokenInstruction, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
+import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
 import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
 import { falseBlockCorrection, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
 import {
@@ -1502,8 +1502,7 @@ export function createChatGptWebAdapter(
                   // A buffered structured answer has no room for a correction, so running the turn
                   // would spend a browser round on text this turn could never emit.
                   && !bufferStructuredOutput
-                  // The correction turn registers a handle of its own, which needs the environment
-                  // this turn's tools were registered against.
+                  // Only a turn that registered tools has a ledger worth setting against the claim.
                   && correctionEnvironment !== undefined
                   && session.conversationKey() !== undefined
                   && !falseBlockRecoveredSessions.has(session)
@@ -1528,77 +1527,10 @@ export function createChatGptWebAdapter(
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
                 }
-                if (correcting && correctionEnvironment) {
-                  // Once per session: a model that repeats the claim after being shown the record
-                  // is not going to be talked out of it, and a loop would cost real browser turns.
-                  falseBlockRecoveredSessions.add(session);
-                  // A handle of its own. Holding the finished turn's token open was not enough and
-                  // could never have been: `commitBrowserCompletion` retires a channel the moment
-                  // the browser turn completes, so by the time a correction runs that token is dead
-                  // whether or not it was revoked — which is exactly what the 22 Sep claim log shows
-                  // (`valid=false, retiredTurn=…` on the same hash that was valid moments earlier).
-                  const correctionToken = await broker.register(
-                    correctionEnvironment,
-                    timeoutMs === undefined ? undefined : timeoutMs + 60_000,
-                    traceId,
-                  );
-                  // The retained conversation still holds the history and the tool contract, so this
-                  // prompt carries only the correction and the new handle — handed over in the same
-                  // sentence an ordinary turn uses, which is why that sentence is shared rather than
-                  // written out a second time here.
-                  const prepareCorrection = async () => ({
-                    text: `${falseBlockCorrection(ledger)}\n\n${chatGptTurnTokenInstruction(correctionToken)}`,
-                    images: [],
-                    release: () => {},
-                  });
-                  let corrected: string | undefined;
-                  let failure: string | undefined;
-                  try {
-                    // Keeps this turn's tool environment. The correction is still not an instruction
-                    // to proceed — some stops are right — but a model that decides to carry on must
-                    // be able to.
-                    //
-                    // Its own stream is suppressed — the first answer already reached the client and
-                    // the integrity comparison above is bound to it, so this answer is appended from
-                    // the resolved value instead of joining that stream.
-                    corrected = await worker.run({
-                      traceId,
-                      modelId: parsed.modelId,
-                      reasoning: parsed.options.reasoning,
-                      capabilities: turnCapabilities,
-                      // Its answer is appended, not streamed, so a late ChatGPT edit is harmless.
-                      streamsToCodex: false,
-                      prepare: prepareCorrection,
-                      prepareResume: prepareCorrection,
-                      conversationKey: session.conversationKey(),
-                      requireRetainedConversation: true,
-                      abortSignal: incoming.abortSignal,
-                      onTextDelta: () => {},
-                    });
-                  } catch (error) {
-                    // Best effort throughout: the turn already has an answer, and a correction that
-                    // fails must not take it down with it.
-                    failure = error instanceof Error ? error.message : String(error);
-                  } finally {
-                    await broker.revoke(correctionToken);
-                  }
-                  // Whether this works is a claim about a model, so it is counted rather than
-                  // assumed. The second figure is deliberately not named "still claims a block": on
-                  // 22 Sep a corrected answer that withdrew the claim — "bunu kesin bir güvenlik
-                  // engeli olarak sunmam doğru değildi" — matched the detector, because withdrawing
-                  // a claim means naming it. It says what it measures, a mention, and reading it as
-                  // a failure would have scored a success as one.
-                  console.warn(
-                    `[chatgpt-web] false block claim correction sent`
-                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
-                    + ` answered=${corrected !== undefined}`
-                    + ` secondAnswerMentionsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
-                    + (failure !== undefined ? ` failure=${JSON.stringify(failure)}` : ""),
-                  );
-                  if (corrected !== undefined && corrected.trim().length > 0) {
-                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${corrected}`], buffer));
-                  }
-                }
+                // Deliver a tool's image before any correction: the image is content this turn owes the
+                // user, the correction is best effort, and a failed correction releases the retained
+                // conversation the delivery needs (26.09: "retained ChatGPT conversation is no longer
+                // available" right after a stalled correction).
                 const pendingImages = unshownImagesBySession.get(session) ?? [];
                 let delivered: string | undefined;
                 if (completedOutcome.type === "final"
@@ -1651,6 +1583,63 @@ export function createChatGptWebAdapter(
                   if (delivered !== undefined && delivered.trim().length > 0) {
                     unshownImagesBySession.delete(session);
                     emitRoundBatch(buffer => emitTextDeltas([`\n\n${delivered}`], buffer));
+                  }
+                }
+                if (correcting && correctionEnvironment) {
+                  // Once per session: a model that repeats the claim after being shown the record
+                  // is not going to be talked out of it, and a loop would cost real browser turns.
+                  falseBlockRecoveredSessions.add(session);
+                  // Tool-less, like the image delivery below. A correction cannot run tools: its answer
+                  // is not streamed to Codex, so no Codex request is waiting to execute a call it makes.
+                  // 26.09 (trace 5cf96a1718c2): with a live handle the model called tool_search, the
+                  // broker queued it with waiters=0, ChatGPT waited on the result and the turn failed
+                  // after the DOM grace — taking the pending image delivery down with it.
+                  const prepareCorrection = async () => ({
+                    text: falseBlockCorrection(ledger),
+                    images: [],
+                    release: () => {},
+                  });
+                  let corrected: string | undefined;
+                  let failure: string | undefined;
+                  try {
+                    // Its own stream is suppressed — the first answer already reached the client and
+                    // the integrity comparison above is bound to it, so this answer is appended from
+                    // the resolved value instead of joining that stream.
+                    corrected = await worker.run({
+                      traceId,
+                      modelId: parsed.modelId,
+                      reasoning: parsed.options.reasoning,
+                      capabilities: { ...turnCapabilities, localToolsEnabled: false },
+                      nativeConnector: true,
+                      // Its answer is appended, not streamed, so a late ChatGPT edit is harmless.
+                      streamsToCodex: false,
+                      prepare: prepareCorrection,
+                      prepareResume: prepareCorrection,
+                      conversationKey: session.conversationKey(),
+                      requireRetainedConversation: true,
+                      abortSignal: incoming.abortSignal,
+                      onTextDelta: () => {},
+                    });
+                  } catch (error) {
+                    // Best effort throughout: the turn already has an answer, and a correction that
+                    // fails must not take it down with it.
+                    failure = error instanceof Error ? error.message : String(error);
+                  }
+                  // Whether this works is a claim about a model, so it is counted rather than
+                  // assumed. The second figure is deliberately not named "still claims a block": on
+                  // 22 Sep a corrected answer that withdrew the claim — "bunu kesin bir güvenlik
+                  // engeli olarak sunmam doğru değildi" — matched the detector, because withdrawing
+                  // a claim means naming it. It says what it measures, a mention, and reading it as
+                  // a failure would have scored a success as one.
+                  console.warn(
+                    `[chatgpt-web] false block claim correction sent`
+                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
+                    + ` answered=${corrected !== undefined}`
+                    + ` secondAnswerMentionsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
+                    + (failure !== undefined ? ` failure=${JSON.stringify(failure)}` : ""),
+                  );
+                  if (corrected !== undefined && corrected.trim().length > 0) {
+                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${corrected}`], buffer));
                   }
                 }
                 // Only for images still unshown: a delivered one is no longer unseen, and saying it
