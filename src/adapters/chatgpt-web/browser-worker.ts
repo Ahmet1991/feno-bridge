@@ -931,6 +931,39 @@ const chatGptExpiredSessionAlert = (page: Page): Locator => page
   .filter({ hasText: /Your session has expired|你的工作階段已過期|您的工作階段已過期|你的会话已过期|您的会话已过期/i })
   .last();
 
+/** Length of the page's text, or undefined when it cannot be read; a measure of how far the conversation has grown. */
+export async function chatGptPageTextChars(page: Page): Promise<number | undefined> {
+  try {
+    const chars = await page.evaluate(() => document.body?.textContent?.length ?? 0);
+    return typeof chars === "number" ? chars : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What ChatGPT itself displayed when a turn died, for the failure message. Alert text is ChatGPT's own
+ * UI copy (an error or limit notice), not conversation content, and it is bounded and redacted anyway.
+ * 27.09: a 50-minute turn died with a 53-character alert on a 572,693-character page, and diagnostics,
+ * which record counts only, could not say what ChatGPT had shown. Never throws: it only decorates an
+ * error that is already on its way out.
+ */
+export async function chatGptFailureContext(page: Page): Promise<string> {
+  const parts: string[] = [];
+  try {
+    const alerts = (await page.locator('[role="alert"]').allInnerTexts())
+      .map(value => redactChatGptUiDiagnostic(value.replace(/\s+/g, " ").trim()).slice(0, 160))
+      .filter(Boolean)
+      .slice(0, 3);
+    if (alerts.length > 0) parts.push(`ChatGPT showed: ${alerts.map(alert => JSON.stringify(alert)).join(" | ")}`);
+  } catch {
+    // Best effort: the failure itself is what matters.
+  }
+  const pageChars = await chatGptPageTextChars(page);
+  if (pageChars !== undefined) parts.push(`page ${pageChars} chars`);
+  return parts.length > 0 ? ` (${parts.join("; ")})` : "";
+}
+
 export async function throwIfChatGptSessionFailureAlert(page: Page): Promise<void> {
   if (await chatGptExpiredSessionAlert(page).isVisible().catch(() => false)) {
     throw new ChatGptWebAdapterError(
@@ -3439,7 +3472,10 @@ export class ChatGptBrowserWorker {
       // observation can prove it is still missing; the explicit turn deadline remains above.
       if (Date.now() >= responseDeadline
         && !chatGptExternalProgressSuppressesDomHealth(progress, Date.now())) {
-        throw new Error("ChatGPT accepted the message but did not expose its assistant turn in the DOM");
+        throw new Error(
+          "ChatGPT accepted the message but did not expose its assistant turn in the DOM"
+          + await chatGptFailureContext(observationPage),
+        );
       }
       await this.waitForTurnDomOrExternalProgress(
         observationPage,
@@ -5973,9 +6009,13 @@ export class ChatGptBrowserWorker {
         atomicWriteFile(this.config.storageStatePath, `${JSON.stringify(state)}\n`);
       }
       await diagnostics.capture(page, "turn-completed");
+      // Page size per turn: whether long retained conversations are what kills late turns is a
+      // question for this number over time, not for a guess made from one failure.
+      const pageChars = await chatGptPageTextChars(page);
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} completed`
-        + ` (markdownChars=${finalText.length}, domFullScans=${responseDomCache.fullScans ?? 0}, domCacheHits=${responseDomCache.cacheHits ?? 0})`,
+        + ` (markdownChars=${finalText.length}, domFullScans=${responseDomCache.fullScans ?? 0}, domCacheHits=${responseDomCache.cacheHits ?? 0}`
+        + `${pageChars === undefined ? "" : `, pageChars=${pageChars}`})`,
       );
       return finalText;
     } catch (error) {
