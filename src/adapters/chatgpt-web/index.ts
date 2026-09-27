@@ -30,7 +30,7 @@ import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGpt
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
 import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
-import { falseBlockCorrection, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
+import { falseBlockCorrection, quotesChatGptPlatformRefusal, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
 import {
   callObservesWindow,
   isPolicyStop,
@@ -1498,7 +1498,7 @@ export function createChatGptWebAdapter(
                 const ledger = toolCallLedger.summary();
                 // Bound here so the narrowing survives into the correction block below.
                 const correctionEnvironment = environment;
-                const correcting = completedOutcome.type === "final"
+                const correctionEligible = completedOutcome.type === "final"
                   // A buffered structured answer has no room for a correction, so running the turn
                   // would spend a browser round on text this turn could never emit.
                   && !bufferStructuredOutput
@@ -1507,6 +1507,9 @@ export function createChatGptWebAdapter(
                   && session.conversationKey() !== undefined
                   && !falseBlockRecoveredSessions.has(session)
                   && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
+                const skipForPlatformRefusal = correctionEligible
+                  && quotesChatGptPlatformRefusal(completedOutcome.answer);
+                const correcting = correctionEligible && !skipForPlatformRefusal;
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
@@ -1526,6 +1529,12 @@ export function createChatGptWebAdapter(
                     + ` windowCaptureNeverReached=${ledger.windowCaptureNeverReached}`,
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
+                }
+                if (skipForPlatformRefusal) {
+                  console.warn(
+                    `[chatgpt-web] false block claim correction skipped reason=chatgpt_platform_refusal`
+                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`,
+                  );
                 }
                 // Deliver a tool's image before any correction: the image is content this turn owes the
                 // user, the correction is best effort, and a failed correction releases the retained
