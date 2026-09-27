@@ -81,6 +81,52 @@ test("converts Obsidian aliases and headings but preserves code examples and emb
   ].join("\n"));
 });
 
+test("preserves standalone Codex plan markers in paragraphs and list continuations", () => {
+  expect(chatGptHtmlToMarkdown([
+    "<p>&lt;proposed_plan&gt;</p>",
+    "<h2>Plan</h2>",
+    "<ul><li><p>Keep snake_case.</p><p>&lt;/proposed_plan&gt;</p></li></ul>",
+  ].join(""))).toBe([
+    "<proposed_plan>", "", "## Plan", "", "- Keep snake\\_case.", "  ", "  </proposed_plan>",
+  ].join("\n"));
+  expect(chatGptHtmlToMarkdown("<p>&lt;proposed_plan&gt;<br>Step<br>&lt;/proposed_plan&gt;</p>"))
+    .toBe("<proposed_plan>  \nStep  \n</proposed_plan>");
+});
+
+test("preserving plan markers does not rewrite mentions or literal code", () => {
+  expect(chatGptHtmlToMarkdown([
+    "<p>Mention &lt;proposed_plan&gt; and &lt;/proposed_plan&gt; inline.</p>",
+    "<p><code>&lt;proposed_plan&gt;</code> <code>&lt;/proposed_plan&gt;</code></p>",
+    "<pre><code>&lt;proposed\\_plan&gt;\n&lt;/proposed\\_plan&gt;</code></pre>",
+  ].join(""))).toBe([
+    "Mention <proposed\\_plan> and </proposed\\_plan> inline.", "",
+    "`<proposed_plan>` `</proposed_plan>`", "",
+    "```", "<proposed\\_plan>", "</proposed\\_plan>", "```",
+  ].join("\n"));
+});
+
+test("restores Markdown escapes inside the observed Codex memory citation block", () => {
+  const observedBroken = String.raw`<oai-mem-citation> <citation\_entries> MEMORY.md:748-748|note=\[Windows Computer Use route and observe act verify workflow\] </citation\_entries> <rollout\_ids> 01a0c8cc-8e2c-7172-9345-60146e6d1ce9 </rollout\_ids> </oai-mem-citation>`;
+  const sourceText = observedBroken
+    .replaceAll(String.raw`\_`, "_")
+    .replaceAll(String.raw`\[`, "[")
+    .replaceAll(String.raw`\]`, "]");
+  const source = `<p>${sourceText.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</p>`;
+  expect(chatGptHtmlToMarkdown(source)).toBe(
+    "<oai-mem-citation> <citation_entries> MEMORY.md:748-748|note=[Windows Computer Use route and observe act verify workflow] </citation_entries> <rollout_ids> 01a0c8cc-8e2c-7172-9345-60146e6d1ce9 </rollout_ids> </oai-mem-citation>",
+  );
+});
+
+test("memory citation restoration leaves inline and fenced code untouched", () => {
+  expect(chatGptHtmlToMarkdown([
+    "<p><code>&lt;oai-mem-citation&gt; &lt;citation\\_entries&gt; \\[x\\] &lt;/citation\\_entries&gt; &lt;/oai-mem-citation&gt;</code></p>",
+    "<pre><code>&lt;oai-mem-citation&gt;\n&lt;citation\\_entries&gt; \\[x\\] &lt;/citation\\_entries&gt;\n&lt;/oai-mem-citation&gt;</code></pre>",
+  ].join(""))).toBe([
+    "`<oai-mem-citation> <citation\\_entries> \\[x\\] </citation\\_entries> </oai-mem-citation>`", "",
+    "```", "<oai-mem-citation>", "<citation\\_entries> \\[x\\] </citation\\_entries>", "</oai-mem-citation>", "```",
+  ].join("\n"));
+});
+
 
 function segment(key: string, text: string, sourceStart: number): ChatGptMarkdownSegment {
   return {

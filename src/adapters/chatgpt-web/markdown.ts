@@ -21,6 +21,15 @@ turndown.addRule("removeSvg", {
   filter: node => node.nodeName === "SVG",
   replacement: () => "",
 });
+turndown.addRule("preserveCodexPlanBlockTags", {
+  filter: "p",
+  replacement: content => {
+    // Codex recognizes these standalone control lines verbatim. Restore only paragraph text:
+    // a post-conversion replacement would also rewrite literal escapes in fenced code.
+    const paragraph = content.replace(/^([ \t]*)<(\/?)proposed\\_plan>([ \t]*)$/gm, "$1<$2proposed_plan>$3");
+    return `\n\n${paragraph}\n\n`;
+  },
+});
 turndown.addRule("linkInlineFilePaths", {
   filter: node => inlineFilePath(node) !== undefined,
   replacement: (_content, node) => {
@@ -129,9 +138,68 @@ function linkObsidianWikiLinks(markdown: string): string {
   }).join("\n");
 }
 
+const OAI_MEMORY_CITATION_OPEN = "<oai-mem-citation>";
+const OAI_MEMORY_CITATION_CLOSE = "</oai-mem-citation>";
+const MARKDOWN_ESCAPED_PUNCTUATION = /[!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~]/;
+
+function restoreCodexMemoryCitationEscapes(markdown: string): string {
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+  let inCitation = false;
+
+  return markdown.split("\n").map(line => {
+    const fenceRun = line.match(/^ {0,3}(`{3,}|~{3,})/)?.[1];
+    if (fence) {
+      const closingRun = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)?.[1];
+      if (closingRun?.[0] === fence.marker && closingRun.length >= fence.length) fence = undefined;
+      return line;
+    }
+    if (fenceRun) {
+      fence = { marker: fenceRun[0] as "`" | "~", length: fenceRun.length };
+      return line;
+    }
+
+    let result = "";
+    let inlineCodeTicks = 0;
+    for (let index = 0; index < line.length;) {
+      if (line[index] === "`") {
+        let end = index + 1;
+        while (line[end] === "`") end += 1;
+        const ticks = end - index;
+        inlineCodeTicks = inlineCodeTicks === 0 ? ticks : ticks === inlineCodeTicks ? 0 : inlineCodeTicks;
+        result += line.slice(index, end);
+        index = end;
+        continue;
+      }
+      if (inlineCodeTicks === 0 && line.startsWith(OAI_MEMORY_CITATION_OPEN, index)) {
+        inCitation = true;
+        result += OAI_MEMORY_CITATION_OPEN;
+        index += OAI_MEMORY_CITATION_OPEN.length;
+        continue;
+      }
+      if (inlineCodeTicks === 0 && line.startsWith(OAI_MEMORY_CITATION_CLOSE, index)) {
+        inCitation = false;
+        result += OAI_MEMORY_CITATION_CLOSE;
+        index += OAI_MEMORY_CITATION_CLOSE.length;
+        continue;
+      }
+      if (inlineCodeTicks === 0 && inCitation && line[index] === "\\"
+        && index + 1 < line.length && MARKDOWN_ESCAPED_PUNCTUATION.test(line[index + 1]!)) {
+        result += line[index + 1];
+        index += 2;
+        continue;
+      }
+      result += line[index];
+      index += 1;
+    }
+    return result;
+  }).join("\n");
+}
+
 export function chatGptHtmlToMarkdown(html: string): string {
   if (!html.trim()) return "";
-  return linkObsidianWikiLinks(preserveObsidianWikiLinks(turndown.turndown(html))).trim();
+  return restoreCodexMemoryCitationEscapes(
+    linkObsidianWikiLinks(preserveObsidianWikiLinks(turndown.turndown(html))),
+  ).trim();
 }
 
 export interface ChatGptMarkdownSegment {

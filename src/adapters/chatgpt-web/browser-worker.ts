@@ -4623,6 +4623,21 @@ export class ChatGptBrowserWorker {
         for (const widget of Array.from(content.querySelectorAll(
           ".chart-widget-container, [data-code-block-preview-pane], button, script, style, svg, img, picture, source",
         ))) widget.remove();
+        // The new renderer wraps code in DIVs, including a localized toolbar that can
+        // disappear on completion. Project only the code into PRE before fingerprinting
+        // and Markdown conversion; otherwise the toolbar changes the committed text and
+        // Turndown collapses code newlines as if they were ordinary inline whitespace.
+        const codeBlockSelector = 'pre, [data-markdown-copy="code-block"]';
+        for (const block of Array.from(content.querySelectorAll(codeBlockSelector))) {
+          if (block.parentElement?.closest(codeBlockSelector)) continue;
+          const codes = block.querySelectorAll("code");
+          if (codes.length !== 1) continue;
+          const code = codes[0]!.cloneNode(true);
+          const pre = block.tagName === "PRE" ? block : content.ownerDocument.createElement("pre");
+          block.textContent = "";
+          pre.appendChild(code);
+          if (pre !== block) block.appendChild(pre);
+        }
         // A unit-key answer opens with a visually hidden "ChatGPT said:" heading; it is not answer text.
         for (const heading of Array.from(content.children)) {
           if (heading.matches(".sr-only, :is(h1, h2, h3, h4, h5, h6)[data-conversation-role]")) heading.remove();
