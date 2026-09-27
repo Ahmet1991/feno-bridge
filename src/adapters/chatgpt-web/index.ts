@@ -1498,7 +1498,7 @@ export function createChatGptWebAdapter(
                 const ledger = toolCallLedger.summary();
                 // Bound here so the narrowing survives into the correction block below.
                 const correctionEnvironment = environment;
-                const correcting = completedOutcome.type === "final"
+                const correctionEligible = completedOutcome.type === "final"
                   // A buffered structured answer has no room for a correction, so running the turn
                   // would spend a browser round on text this turn could never emit.
                   && !bufferStructuredOutput
@@ -1506,8 +1506,10 @@ export function createChatGptWebAdapter(
                   && correctionEnvironment !== undefined
                   && session.conversationKey() !== undefined
                   && !falseBlockRecoveredSessions.has(session)
-                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger)
-                  && !quotesChatGptPlatformRefusal(completedOutcome.answer);
+                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
+                const skipForPlatformRefusal = correctionEligible
+                  && quotesChatGptPlatformRefusal(completedOutcome.answer);
+                const correcting = correctionEligible && !skipForPlatformRefusal;
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
@@ -1528,15 +1530,7 @@ export function createChatGptWebAdapter(
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
                 }
-                if (
-                  completedOutcome.type === "final"
-                  && !bufferStructuredOutput
-                  && correctionEnvironment !== undefined
-                  && session.conversationKey() !== undefined
-                  && !falseBlockRecoveredSessions.has(session)
-                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger)
-                  && quotesChatGptPlatformRefusal(completedOutcome.answer)
-                ) {
+                if (skipForPlatformRefusal) {
                   console.warn(
                     `[chatgpt-web] false block claim correction skipped reason=chatgpt_platform_refusal`
                     + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`,

@@ -4133,7 +4133,8 @@ test("an answer claiming a blocked call carries the bridge's own dispatch count"
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);
-  const claim = "Bu araç çağrısı güvenlik engeline takıldı.";
+  // The wording ChatGPT actually produced on 20 Sep, in a turn whose every call had returned.
+  const claim = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     const prepared = await turn.prepare();
     try {
