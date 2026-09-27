@@ -4239,6 +4239,9 @@ async function deliverWindowRecoveryFixtures(
     firstAnswer?: string;
     // Mirrors 26.09: a failed follow-up released the retained conversation for every later one.
     failCorrection?: boolean;
+    failContinuation?: boolean;
+    continuationAnswer?: string;
+    fallbackAnswer?: string;
     followUps?: Array<{ images: number; text: string }>;
   },
 ): Promise<BrokerToolResult[]> {
@@ -4268,8 +4271,22 @@ async function deliverWindowRecoveryFixtures(
     const prepared = await turn.prepare();
     try {
       const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
-      // A follow-up turn the adapter opened itself carries no turn token, because it compiles a
-      // fixed prompt rather than a tool environment. Answer it instead of failing the fixture.
+      // Image continuation is a real tool-capable turn, but this fixture only needs to prove that
+      // the image reached the next retained message. A separate seam test exercises a tool call
+      // from that continuation through the real HTTP waiter path.
+      if (prepared.images.length > 0 && options?.browserTurns) {
+        options.followUps?.push({ images: prepared.images.length, text: prepared.text });
+        if (conversationReleased) throw new Error("The retained ChatGPT conversation is no longer available.");
+        if (options.failContinuation && token) {
+          throw new Error("simulated image continuation failure");
+        }
+        const answer = token
+          ? (options.continuationAnswer ?? "Ekte gördüğüm pencere: Feno Bridge.")
+          : (options.fallbackAnswer ?? "Ekte gördüğüm pencere: Feno Bridge.");
+        turn.onTextDelta(answer);
+        return answer;
+      }
+      // Tool-less correction/fallback follow-ups intentionally carry no turn token.
       if (!token && options?.browserTurns) {
         options.followUps?.push({ images: prepared.images.length, text: prepared.text });
         if (conversationReleased) throw new Error("The retained ChatGPT conversation is no longer available.");
@@ -4392,8 +4409,8 @@ test("image-only broker output preserves the image and tells the model and user 
   expect(delivered?.content).toHaveLength(2);
   expect(delivered?.content[1]).toMatchObject({ type: "text" });
   const notice = (delivered?.content[1] as { text: string }).text;
-  expect(notice).toContain("not attached to the already-running ChatGPT browser turn");
-  expect(notice).toContain("Do not describe its contents");
+  expect(notice).toContain("will be shown to you in a new message");
+  expect(notice).toContain("do not guess");
   expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
     .toContain("1 image result(s) were returned by local tools but could not be attached");
 });
@@ -4590,7 +4607,7 @@ test("window recovery state survives continuation rounds until the bound screens
     });
     expect(delivered[2]!.content[1]).toMatchObject({ type: "text" });
     expect((delivered[2]!.content[1] as { text: string }).text)
-      .toContain("not attached to the already-running ChatGPT browser turn");
+      .toContain("will be shown to you in a new message");
     expect(warnings.some(line => line.includes("window recovery returned an image target=process:C:\\\\Feno.exe#4589948")))
       .toBeTrue();
   } finally {
@@ -4760,7 +4777,7 @@ test("a block claim the ledger contradicts is corrected by one retained, tool-le
     // queued it with no Codex request waiting (the answer is not streamed), ChatGPT waited on the
     // result and the turn failed after the DOM grace. A correction cannot run tools, so it has none.
     expect(correction.capabilities.localToolsEnabled).toBeFalse();
-    expect(correction.nativeConnector).toBeTrue();
+    expect(correction.nativeConnector).toBeFalse();
     expect(correctionToken).toBeUndefined();
     expect(correction.requireRetainedConversation).toBeTrue();
     expect(correction.conversationKey).toBe(turns[0]!.conversationKey!);
@@ -4802,6 +4819,79 @@ test("ChatGPT's own platform refusal skips correction while preserving bridge ev
   expect(text).toContain("[Feno Bridge] Bu turda köprüye ulaşan 1 araç çağrısı tamamlandı, 0 tanesi hata döndürdü.");
 });
 
+test("a failed image continuation requeues its image and uses the retained tool-less fallback", async () => {
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  try {
+    await deliverWindowRecoveryFixtures(
+      [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+      events,
+      {
+        retained: true,
+        browserTurns,
+        followUps,
+        failContinuation: true,
+        fallbackAnswer: "Fallback inspected the requeued image.",
+      },
+    );
+
+    expect(followUps.map(turn => turn.images)).toEqual([1, 1]);
+    expect(browserTurns).toHaveLength(3);
+    expect(browserTurns[1]!.capabilities.localToolsEnabled).toBeTrue();
+    expect(browserTurns[1]!.nativeConnector).toBeTrue();
+    expect(browserTurns[1]!.streamsToCodex).toBeTrue();
+    expect(browserTurns[2]!.capabilities.localToolsEnabled).toBeFalse();
+    expect(browserTurns[2]!.nativeConnector).toBeFalse();
+    expect(browserTurns[2]!.streamsToCodex).toBeFalse();
+
+    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+    expect(text).toContain("Fallback inspected the requeued image.");
+    expect(text).not.toContain("could not be attached");
+    expect(warnings.some(line => line.includes("image continuation phase=1 images=1")
+      && line.includes(" failed reason="))).toBeTrue();
+    expect(warnings.some(line => line.includes("image continuation chain phases=1 final=fallback"))).toBeTrue();
+  } finally {
+    warning.mockRestore();
+  }
+});
+
+test("the final image-continuation platform refusal skips the deferred false-block correction", async () => {
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  const refusal = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
+  try {
+    await deliverWindowRecoveryFixtures(
+      [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+      events,
+      {
+        retained: true,
+        browserTurns,
+        followUps,
+        firstAnswer: "Bu araç çağrısı güvenlik engeline takıldı.",
+        continuationAnswer: refusal,
+      },
+    );
+
+    expect(browserTurns).toHaveLength(2);
+    expect(followUps.map(turn => turn.images)).toEqual([1]);
+    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+    expect(text).toContain(refusal);
+    expect(warnings.some(line => line.includes("image continuation chain phases=1 final=without_images"))).toBeTrue();
+    expect(warnings.some(line => line.includes("false block claim correction skipped reason=chatgpt_platform_refusal"))).toBeTrue();
+    expect(warnings.some(line => line.includes("false block claim correction sent"))).toBeFalse();
+  } finally {
+    warning.mockRestore();
+  }
+});
+
 test("a tool image is delivered before a block-claim correction, which cannot take it down", async () => {
   // 26.09 (trace 5cf96a1718c2): the correction ran first, stalled, released the retained
   // conversation, and the screenshot delivery then failed with "no longer available".
@@ -4821,7 +4911,7 @@ test("a tool image is delivered before a block-claim correction, which cannot ta
     },
   );
 
-  // Delivery first (carries the image), correction second (tool-less, no image).
+  // Tool-capable image continuation first, deferred correction second (tool-less, no image).
   expect(followUps.map(turn => turn.images)).toEqual([1, 0]);
   expect(followUps[1]!.text).toContain("Bu cevapta araç çağırma");
   expect(browserTurns[2]!.capabilities.localToolsEnabled).toBeFalse();
@@ -4847,7 +4937,7 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   // The broker result is untouched: the image still rides on it, with the notice beside it.
   expect(delivered?.content[0]).toEqual({ type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" });
 
-  // One original turn and one delivery turn, never more.
+  // One original turn and one tool-capable continuation turn, never more for this fixture.
   expect(browserTurns).toHaveLength(2);
   const delivery = browserTurns[1]!;
   const prompt = await delivery.prepare();
@@ -4855,7 +4945,10 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   // Attachments are what makes this work, so the prompt must produce a real uploadable file.
   expect(chatGptPromptFilePayloads(prompt).map(file => file.mimeType)).toEqual(["image/jpeg"]);
   expect(prompt.text).toContain("ek olarak bağlandı");
-  expect(delivery.capabilities.localToolsEnabled).toBeFalse();
+  expect(prompt.text).toMatch(/turn_token turn_[A-Za-z0-9_-]+/);
+  expect(delivery.capabilities.localToolsEnabled).toBeTrue();
+  expect(delivery.nativeConnector).toBeTrue();
+  expect(delivery.streamsToCodex).toBeTrue();
   expect(delivery.requireRetainedConversation).toBeTrue();
   expect(delivery.conversationKey).toBe(browserTurns[0]!.conversationKey!);
   prompt.release();

@@ -271,8 +271,13 @@ export class ChatGptTurnSession {
   supersededError?: Error;
   readonly createdAt = Date.now();
   private lastTouchedAt = this.createdAt;
-  readonly browserOutcome: Promise<ChatGptBrowserOutcome>;
-  readonly physicalSettlement: Promise<void>;
+  private currentRuntime: ChatGptTurnRuntime;
+  private currentBrowserOutcome: Promise<ChatGptBrowserOutcome>;
+  private readonly runtimes = new Set<ChatGptTurnRuntime>();
+  private readonly scheduledCapabilityRetirements = new Set<ChatGptTurnRuntime>();
+  private readonly sessionAbort = new AbortController();
+  private currentPhase = 0;
+  private unsettledPhysicalRuntimes = 0;
   private readonly outstandingById = new Map<string, BrokerToolRequest>();
   private readonly deliveredResultIds = new Set<string>();
   private outstandingReasoning: string[] = [];
@@ -280,10 +285,8 @@ export class ChatGptTurnSession {
   private outstandingPrelude: AdapterEvent[] = [];
   private finalPrelude: AdapterEvent[] = [];
   private settledBrowserOutcome?: ChatGptBrowserOutcome;
-  private settledPhysical = false;
   private attachedConversationKey: string | undefined;
   private tail: Promise<void> = Promise.resolve();
-  private capabilityRetirementScheduled = false;
   private readonly rounds = new Map<string, {
     events: AdapterEvent[];
     reasoning: string[];
@@ -292,35 +295,70 @@ export class ChatGptTurnSession {
   }>();
 
   constructor(
-    readonly runtime: ChatGptTurnRuntime,
+    runtime: ChatGptTurnRuntime,
     readonly traceId?: string,
     readonly ownerKey?: string,
     readonly nativeTurnId?: string,
     readonly nativeThreadId?: string,
     readonly instruction?: string,
   ) {
+    this.currentRuntime = runtime;
+    this.currentBrowserOutcome = Promise.resolve({ type: "error", error: new Error("ChatGPT browser runtime was not initialized") });
     this.attachedConversationKey = runtime.conversationKey;
-    this.physicalSettlement = runtime.physicalSettlement.then(
-      () => { this.settledPhysical = true; },
-      error => {
-        this.settledPhysical = true;
-        throw error;
-      },
-    );
-    this.browserOutcome = runtime.browser
+    this.installRuntime(runtime, 0);
+  }
+
+  get runtime(): ChatGptTurnRuntime {
+    return this.currentRuntime;
+  }
+
+  get browserOutcome(): Promise<ChatGptBrowserOutcome> {
+    return this.currentBrowserOutcome;
+  }
+
+  get physicalSettlement(): Promise<void> {
+    return Promise.all([...this.runtimes].map(runtime => runtime.physicalSettlement)).then(() => undefined);
+  }
+
+  abortSignal(): AbortSignal {
+    return this.sessionAbort.signal;
+  }
+
+  phaseNumber(): number {
+    return this.currentPhase;
+  }
+
+  activateRuntime(runtime: ChatGptTurnRuntime, phase: number): void {
+    if (!Number.isInteger(phase) || phase <= this.currentPhase) {
+      throw new Error(`ChatGPT continuation phase must advance monotonically (current=${this.currentPhase}, next=${phase})`);
+    }
+    this.installRuntime(runtime, phase);
+    this.scheduleCapabilityRetirement(runtime);
+  }
+
+  private installRuntime(runtime: ChatGptTurnRuntime, phase: number): void {
+    this.currentRuntime = runtime;
+    this.currentPhase = phase;
+    this.settledBrowserOutcome = undefined;
+    this.runtimes.add(runtime);
+    this.unsettledPhysicalRuntimes += 1;
+    void runtime.physicalSettlement.finally(() => {
+      this.unsettledPhysicalRuntimes = Math.max(0, this.unsettledPhysicalRuntimes - 1);
+    }).catch(() => {});
+    this.currentBrowserOutcome = runtime.browser
       .then(answer => ({ type: "final", answer }) as ChatGptBrowserOutcome)
       .catch(error => ({ type: "error", error: error instanceof Error ? error : new Error(String(error)) }) as ChatGptBrowserOutcome)
       .then(outcome => {
-      this.settledBrowserOutcome = outcome;
-      return outcome;
-    });
+        if (this.currentRuntime === runtime) this.settledBrowserOutcome = outcome;
+        return outcome;
+      });
   }
 
   runExclusive<T>(task: () => Promise<T>): Promise<T> {
     this.touch();
     const run = this.tail.then(task);
     this.tail = run.then(() => undefined, () => undefined);
-    this.scheduleCapabilityRetirement();
+    this.scheduleCapabilityRetirement(this.currentRuntime);
     return run;
   }
 
@@ -356,7 +394,7 @@ export class ChatGptTurnSession {
 
   /** The client-visible browser result can settle before launcher/helper cleanup does. */
   isPhysicallySettled(): boolean {
-    return this.settledPhysical;
+    return this.unsettledPhysicalRuntimes === 0;
   }
 
   setOutstanding(requests: BrokerToolRequest[], reasoning: string[] = [], prelude: AdapterEvent[] = []): void {
@@ -457,19 +495,20 @@ export class ChatGptTurnSession {
   }
 
   cancel(reason?: Error): void {
-    this.runtime.cancel(reason);
+    if (!this.sessionAbort.signal.aborted) this.sessionAbort.abort(reason);
+    for (const runtime of this.runtimes) runtime.cancel(reason);
   }
 
-  private scheduleCapabilityRetirement(): void {
-    if (this.capabilityRetirementScheduled || !this.runtime.retireCapability) return;
-    this.capabilityRetirementScheduled = true;
+  private scheduleCapabilityRetirement(runtime: ChatGptTurnRuntime): void {
+    if (this.scheduledCapabilityRetirements.has(runtime) || !runtime.retireCapability) return;
+    this.scheduledCapabilityRetirements.add(runtime);
     // Register only after the first observer entered `runExclusive`. This ensures an immediately
     // completed mocked/real browser cannot revoke its token ahead of the browser-outcome branch.
     // At physical settlement, read the current tail so every tool-result/reconnect observer that
     // was already admitted finishes before the capability is retired.
-    void this.physicalSettlement
+    void runtime.physicalSettlement
       .then(() => this.tail)
-      .then(() => this.runtime.retireCapability!())
+      .then(() => runtime.retireCapability!())
       .catch(error => {
         console.error(
           `[chatgpt-web] failed to retire settled turn capability: ${error instanceof Error ? error.message : String(error)}`,

@@ -28,7 +28,7 @@ import {
 } from "./capacity";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
-import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
+import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, chatGptTurnTokenInstruction, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
 import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
 import { falseBlockCorrection, quotesChatGptPlatformRefusal, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
 import {
@@ -79,12 +79,25 @@ const callLedgerBySession = new WeakMap<ChatGptTurnSession, TurnCallLedger>();
  * them, which is the only way one reaches the model at all.
  */
 const unshownImagesBySession = new WeakMap<ChatGptTurnSession, ChatGptWebPromptImage[]>();
+const activeContinuationImagesBySession = new WeakMap<ChatGptTurnSession, ChatGptWebPromptImage[]>();
+const lastCompletedAnswerBySession = new WeakMap<ChatGptTurnSession, string>();
 /** Sessions already given one delivery turn, so a long tool round cannot spawn one per image. */
 const imagesDeliveredSessions = new WeakSet<ChatGptTurnSession>();
 /** Sessions already given one correction, so a repeated claim cannot cost a second browser turn. */
 const falseBlockRecoveredSessions = new WeakSet<ChatGptTurnSession>();
+/** A correction owed by an earlier streamed message, deferred until image continuation is done. */
+const pendingFalseBlockCorrectionSessions = new WeakSet<ChatGptTurnSession>();
 
-const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image, but it was not attached to the already-running ChatGPT browser turn. You have not visually inspected this image. Do not describe its contents or claim that you saw it. Tell the user that visual inspection requires a new turn with the image attached.";
+const MAX_IMAGE_CONTINUATION_PHASES = 4;
+
+const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that cannot be attached to the already-running ChatGPT message. The image will be shown to you in a new message after you finish this message. If you need to see it, do not guess; end this message with a short note.";
+
+function imageContinuationTraceId(parentTraceId: string, phase: number): string {
+  return createHash("sha256")
+    .update(`${parentTraceId}:image-continuation:${phase}`)
+    .digest("hex")
+    .slice(0, 12);
+}
 
 /**
  * What a delivery turn says. The images ride on this message as real attachments, which is the one
@@ -906,6 +919,135 @@ export function createChatGptWebAdapter(
     };
   };
 
+  const startImageContinuationRuntime = (
+    parsed: CodexParsedRequest,
+    environment: NonNullable<ReturnType<typeof extractChatGptTurnEnvironment>>,
+    session: ChatGptTurnSession,
+    turnCapabilities: ChatGptWebCapabilities,
+    phase: number,
+    images: ChatGptWebPromptImage[],
+  ): { runtime: ChatGptTurnRuntime; traceId: string } => {
+    const conversationKey = session.conversationKey();
+    if (!conversationKey) throw new Error("retained ChatGPT conversation is unavailable for image continuation");
+    const parentTrace = session.traceId ?? chatGptWebTraceId(provider, parsed);
+    const continuationTraceId = imageContinuationTraceId(parentTrace, phase);
+    const trace = new ChatGptTraceFeed();
+    const text = new ChatGptTextFeed();
+    const externalProgress = new ChatGptExternalTurnProgress();
+    const token = deferred<string>();
+    const phaseAbort = new AbortController();
+    const sessionSignal = session.abortSignal();
+    const abortFromSession = () => phaseAbort.abort(sessionSignal.reason);
+    if (sessionSignal.aborted) abortFromSession();
+    else sessionSignal.addEventListener("abort", abortFromSession, { once: true });
+    let tokenSettled = false;
+    let activeToken: string | undefined;
+    let browserOwnerSettled = false;
+    const prepareContinuation = async () => {
+      const turnToken = activeToken ?? await broker.register(
+        environment,
+        timeoutMs === undefined ? undefined : timeoutMs + 60_000,
+        continuationTraceId,
+      );
+      activeToken = turnToken;
+      if (!tokenSettled) {
+        tokenSettled = true;
+        token.resolve(turnToken);
+        const tokenHash = createHash("sha256").update(turnToken).digest("hex").slice(0, 12);
+        console.info(
+          `[chatgpt-web] image continuation token phase=${phase} length=${turnToken.length} sha256=${tokenHash}`,
+        );
+        void broker.waitForRetirement(turnToken).then(
+          () => {
+            if (browserOwnerSettled || phaseAbort.signal.aborted) return;
+            const retirement = new Error("Codex Native retired the image continuation binding before its tool work completed");
+            externalProgress.retire(retirement);
+            phaseAbort.abort(retirement);
+          },
+          error => {
+            if (browserOwnerSettled || phaseAbort.signal.aborted) return;
+            const failure = new Error("ChatGPT could not observe image continuation retirement", { cause: error });
+            externalProgress.retire(failure);
+            phaseAbort.abort(failure);
+          },
+        );
+      }
+      return {
+        text: `${DELIVERED_IMAGES_PROMPT}\n\n${chatGptTurnTokenInstruction(turnToken)}`,
+        images,
+        release: () => {},
+        requestImages: images.length,
+      };
+    };
+    const browserRun = worker.run({
+      traceId: continuationTraceId,
+      modelId: parsed.modelId,
+      reasoning: parsed.options.reasoning,
+      capabilities: { ...turnCapabilities, localToolsEnabled: true },
+      nativeConnector: true,
+      streamsToCodex: true,
+      prepare: prepareContinuation,
+      prepareResume: prepareContinuation,
+      retainConversation: true,
+      conversationKey,
+      requireRetainedConversation: true,
+      abortSignal: phaseAbort.signal,
+      onReasoningSummary: (value, continuation) => trace.push({
+        kind: "reasoning",
+        text: value,
+        ...(continuation ? { continuation: true } : {}),
+      }),
+      onCommentary: (value, continuation) => trace.push({
+        kind: "commentary",
+        text: value,
+        ...(continuation ? { continuation: true } : {}),
+      }),
+      onTextDelta: delta => text.push(delta),
+      externalProgress,
+      completionFence: {
+        begin: async () => broker.beginCompletionFence(await token.promise),
+        commit: async revision => broker.commitCompletionFence(await token.promise, revision),
+      },
+    }).finally(() => {
+      browserOwnerSettled = true;
+      sessionSignal.removeEventListener("abort", abortFromSession);
+    });
+    const browserTurn = cancellableBrowserTurn(browserRun, phaseAbort);
+    void browserTurn.browser.catch(error => {
+      if (tokenSettled) return;
+      tokenSettled = true;
+      token.reject(error instanceof Error ? error : new Error(String(error)));
+    });
+    return {
+      traceId: continuationTraceId,
+      runtime: {
+        mode: "tools",
+        token: token.promise,
+        externalProgress,
+        browser: browserTurn.browser,
+        physicalSettlement: browserTurn.physicalSettlement,
+        trace,
+        text,
+        usageInput: parsed,
+        conversationKey,
+        ...(session.runtime.releaseRetainedConversation
+          ? { releaseRetainedConversation: session.runtime.releaseRetainedConversation }
+          : {}),
+        retireCapability: async () => {
+          if (activeToken) await broker.revoke(activeToken);
+        },
+        cancel: (reason?: Error) => {
+          browserTurn.cancel(reason);
+          if (activeToken) {
+            void Promise.resolve(broker.revoke(activeToken, reason)).catch(error => {
+              console.error(`[chatgpt-web] failed to revoke cancelled image continuation token: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }
+        },
+      },
+    };
+  };
+
   return {
     name: "chatgpt-web",
     async runTurn(parsed, incoming, emit) {
@@ -1317,7 +1459,9 @@ export function createChatGptWebAdapter(
               return;
             }
             const settled = session.settledOutcome();
-            if (settled) {
+            const settledNeedsImageContinuation = settled !== undefined
+              && (session.phaseNumber() > 0 || (unshownImagesBySession.get(session) ?? []).length > 0);
+            if (settled && !settledNeedsImageContinuation) {
               if (settled.type === "error") throw settled.error;
               const trace = session.runtime.trace.drain();
               const completedTextDeltas = session.runtime.text.drain();
@@ -1488,17 +1632,26 @@ export function createChatGptWebAdapter(
                 : undefined;
               let nextTools = armNextTools();
               const browserOutcome = session.browserOutcome.then(outcome => ({ type: "browser" as const, outcome }));
-              const finishBrowserOutcome = async (completedOutcome: ChatGptBrowserOutcome): Promise<void> => {
+              let runImageContinuationBoundary: (() => Promise<void>) | undefined;
+              const finishBrowserOutcome = async (
+                observedOutcome: ChatGptBrowserOutcome,
+                activeRuntime: ChatGptTurnRuntime = session.runtime,
+                activeToken: string | undefined = turnToken,
+              ): Promise<void> => {
                 // Zero Risk completion and its owner-only empty-batch signal are resolved by the
                 // same broker transition. Drain once more so the accepted final answer cannot be
                 // overtaken by the terminal owner notification.
-                emitNewTrace(session.runtime.trace.drain());
-                emitNewText(session.runtime.text.drain());
+                emitNewTrace(activeRuntime.trace.drain());
+                emitNewText(activeRuntime.text.drain());
                 session.setFinalReasoning(roundReasoning);
+                const phase = session.phaseNumber();
+                const attachedPhaseImages = activeContinuationImagesBySession.get(session) ?? [];
+                let completedOutcome = observedOutcome;
                 const ledger = toolCallLedger.summary();
                 // Bound here so the narrowing survives into the correction block below.
                 const correctionEnvironment = environment;
-                const correctionEligible = completedOutcome.type === "final"
+                const correctionAnswer = completedOutcome.type === "final" ? completedOutcome.answer : undefined;
+                const correctionEligible = correctionAnswer !== undefined
                   // A buffered structured answer has no room for a correction, so running the turn
                   // would spend a browser round on text this turn could never emit.
                   && !bufferStructuredOutput
@@ -1506,17 +1659,46 @@ export function createChatGptWebAdapter(
                   && correctionEnvironment !== undefined
                   && session.conversationKey() !== undefined
                   && !falseBlockRecoveredSessions.has(session)
-                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
-                const skipForPlatformRefusal = correctionEligible
-                  && quotesChatGptPlatformRefusal(completedOutcome.answer);
-                const correcting = correctionEligible && !skipForPlatformRefusal;
-                if (turnToken) await broker.revoke(turnToken);
-                if (completedOutcome.type === "error") throw completedOutcome.error;
-                if (session.runtime.text.value() !== completedOutcome.answer) {
+                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(correctionAnswer), ledger);
+                const pendingFalseBlockCorrection = pendingFalseBlockCorrectionSessions.has(session);
+                const skipForPlatformRefusal = correctionAnswer !== undefined
+                  && (correctionEligible || pendingFalseBlockCorrection)
+                  && quotesChatGptPlatformRefusal(correctionAnswer);
+                const correcting = (correctionEligible || pendingFalseBlockCorrection)
+                  && !skipForPlatformRefusal;
+                if (activeToken) await broker.revoke(activeToken);
+                if (completedOutcome.type === "error") {
+                  if (phase === 0) throw completedOutcome.error;
+                  const reason = completedOutcome.error.message;
+                  console.warn(
+                    `[chatgpt-web] image continuation phase=${phase} images=${attachedPhaseImages.length}`
+                    + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)}`
+                    + ` failed reason=${JSON.stringify(reason)}`,
+                  );
+                  const pending = [...attachedPhaseImages, ...(unshownImagesBySession.get(session) ?? [])]
+                    .slice(-CHATGPT_MAX_INPUT_IMAGES);
+                  activeContinuationImagesBySession.delete(session);
+                  if (pending.length > 0) unshownImagesBySession.set(session, pending);
+                  const lastAnswer = lastCompletedAnswerBySession.get(session);
+                  if (lastAnswer === undefined) throw completedOutcome.error;
+                  completedOutcome = { type: "final", answer: lastAnswer };
+                }
+                if (completedOutcome.type !== "final") throw new Error("ChatGPT browser outcome was not finalized");
+                if (observedOutcome.type === "final" && activeRuntime.text.value() !== observedOutcome.answer) {
                   throw new Error("ChatGPT browser Markdown stream did not reproduce the completed answer");
                 }
-                structuredOutputValidator?.(completedOutcome.answer);
-                if (bufferStructuredOutput) {
+                if (observedOutcome.type === "final") {
+                  lastCompletedAnswerBySession.set(session, observedOutcome.answer);
+                  if (phase > 0) {
+                    console.warn(
+                      `[chatgpt-web] image continuation phase=${phase} images=${attachedPhaseImages.length}`
+                      + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)} completed`,
+                    );
+                    activeContinuationImagesBySession.delete(session);
+                  }
+                }
+                if (phase === 0) structuredOutputValidator?.(completedOutcome.answer);
+                if (phase === 0 && bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas([completedOutcome.answer], buffer));
                 }
                 // The answer itself is already verified above; this only adds what the bridge
@@ -1536,21 +1718,65 @@ export function createChatGptWebAdapter(
                     + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`,
                   );
                 }
+                const pendingImages = unshownImagesBySession.get(session) ?? [];
+                const continuationEnvironment = environment;
+                const continuationEligible = observedOutcome.type === "final"
+                  && !bufferStructuredOutput
+                  && pendingImages.length > 0
+                  && continuationEnvironment !== undefined
+                  && session.conversationKey() !== undefined
+                  && activeRuntime.mode === "tools"
+                  && phase < MAX_IMAGE_CONTINUATION_PHASES;
+                if (continuationEligible) {
+                  if (correcting) pendingFalseBlockCorrectionSessions.add(session);
+                  const nextPhase = phase + 1;
+                  const continuationImages = [...pendingImages];
+                  unshownImagesBySession.delete(session);
+                  try {
+                    const continuation = startImageContinuationRuntime(
+                      parsed,
+                      continuationEnvironment!,
+                      session,
+                      turnCapabilities,
+                      nextPhase,
+                      continuationImages,
+                    );
+                    activeContinuationImagesBySession.set(session, continuationImages);
+                    session.activateRuntime(continuation.runtime, nextPhase);
+                    console.warn(
+                      `[chatgpt-web] image continuation phase=${nextPhase} images=${continuationImages.length}`
+                      + ` trace=${continuation.traceId} started`,
+                    );
+                    if (!runImageContinuationBoundary) {
+                      throw new Error("image continuation boundary runner was not initialized");
+                    }
+                    await runImageContinuationBoundary();
+                    return;
+                  } catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    activeContinuationImagesBySession.delete(session);
+                    unshownImagesBySession.set(session, continuationImages.slice(-CHATGPT_MAX_INPUT_IMAGES));
+                    console.warn(
+                      `[chatgpt-web] image continuation phase=${nextPhase} images=${continuationImages.length}`
+                      + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, nextPhase)}`
+                      + ` failed reason=${JSON.stringify(reason)}`,
+                    );
+                  }
+                }
                 // Deliver a tool's image before any correction: the image is content this turn owes the
                 // user, the correction is best effort, and a failed correction releases the retained
                 // conversation the delivery needs (26.09: "retained ChatGPT conversation is no longer
                 // available" right after a stalled correction).
-                const pendingImages = unshownImagesBySession.get(session) ?? [];
                 let delivered: string | undefined;
+                let deliveredImageFallback = false;
                 if (completedOutcome.type === "final"
-                  && !bufferStructuredOutput
                   && pendingImages.length > 0
                   && session.conversationKey() !== undefined
                   && !imagesDeliveredSessions.has(session)) {
                   // The one path that gets a tool's image in front of the model: attachments are
                   // uploaded while a turn is being composed, so an image that arrived mid-generation
                   // needs a turn of its own. Once per session — a delivery turn per screenshot in a
-                  // long round would cost more browser turns than the work itself.
+                      // long round would cost more browser turns than the work itself.
                   imagesDeliveredSessions.add(session);
                   const prepareDelivery = async () => ({
                     text: DELIVERED_IMAGES_PROMPT,
@@ -1569,14 +1795,14 @@ export function createChatGptWebAdapter(
                       // the work on once it can finally see the image is a question about a model, so
                       // the log below counts it rather than the code assuming it.
                       capabilities: { ...turnCapabilities, localToolsEnabled: false },
-                      nativeConnector: true,
+                      nativeConnector: false,
                       // Same reason as the correction turn: this answer is appended, not streamed.
                       streamsToCodex: false,
                       prepare: prepareDelivery,
                       prepareResume: prepareDelivery,
                       conversationKey: session.conversationKey(),
                       requireRetainedConversation: true,
-                      abortSignal: incoming.abortSignal,
+                      abortSignal: session.abortSignal(),
                       onTextDelta: () => {},
                     });
                   } catch (error) {
@@ -1590,14 +1816,32 @@ export function createChatGptWebAdapter(
                     + (deliveryFailure !== undefined ? ` failure=${JSON.stringify(deliveryFailure)}` : ""),
                   );
                   if (delivered !== undefined && delivered.trim().length > 0) {
+                    deliveredImageFallback = true;
                     unshownImagesBySession.delete(session);
-                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${delivered}`], buffer));
+                    if (!bufferStructuredOutput) {
+                      emitRoundBatch(buffer => emitTextDeltas([`\n\n${delivered}`], buffer));
+                    }
                   }
+                }
+                if (phase > 0 && observedOutcome.type === "final" && pendingImages.length === 0) {
+                  console.warn(`[chatgpt-web] image continuation chain phases=${phase} final=without_images`);
+                } else if (phase > 0 && observedOutcome.type === "error") {
+                  console.warn(`[chatgpt-web] image continuation chain phases=${phase} final=fallback`);
+                } else if (pendingImages.length > 0 && !continuationEligible) {
+                  console.warn(
+                    `[chatgpt-web] image continuation chain phases=${phase}`
+                    + ` final=${phase >= MAX_IMAGE_CONTINUATION_PHASES
+                      ? "limit"
+                      : deliveredImageFallback
+                        ? "with_images"
+                        : "fallback"}`,
+                  );
                 }
                 if (correcting && correctionEnvironment) {
                   // Once per session: a model that repeats the claim after being shown the record
                   // is not going to be talked out of it, and a loop would cost real browser turns.
                   falseBlockRecoveredSessions.add(session);
+                  pendingFalseBlockCorrectionSessions.delete(session);
                   // Tool-less, like the image delivery below. A correction cannot run tools: its answer
                   // is not streamed to Codex, so no Codex request is waiting to execute a call it makes.
                   // 26.09 (trace 5cf96a1718c2): with a live handle the model called tool_search, the
@@ -1619,14 +1863,14 @@ export function createChatGptWebAdapter(
                       modelId: parsed.modelId,
                       reasoning: parsed.options.reasoning,
                       capabilities: { ...turnCapabilities, localToolsEnabled: false },
-                      nativeConnector: true,
+                      nativeConnector: false,
                       // Its answer is appended, not streamed, so a late ChatGPT edit is harmless.
                       streamsToCodex: false,
                       prepare: prepareCorrection,
                       prepareResume: prepareCorrection,
                       conversationKey: session.conversationKey(),
                       requireRetainedConversation: true,
-                      abortSignal: incoming.abortSignal,
+                      abortSignal: session.abortSignal(),
                       onTextDelta: () => {},
                     });
                   } catch (error) {
@@ -1665,6 +1909,97 @@ export function createChatGptWebAdapter(
                 ));
                 session.completeRound(roundKey);
                 chatGptWebTurnRetryPolicy.clear(retryKey);
+              };
+              runImageContinuationBoundary = async () => {
+                const continuationRuntime = session.runtime;
+                if (continuationRuntime.mode !== "tools") {
+                  throw new Error("Image continuation requires a tool-capable ChatGPT runtime");
+                }
+                if (!environment) {
+                  throw new Error("Image continuation lost its trusted Codex environment");
+                }
+                const continuationToken = await withAbort(continuationRuntime.token, incoming.abortSignal);
+                await broker.updateEnvironment(continuationToken, environment);
+                const continuationWaitAbort = new AbortController();
+                try {
+                  const continuationProgress = continuationRuntime.externalProgress;
+                  const nextContinuationTools = broker.nextToolBatch(
+                    continuationToken,
+                    continuationWaitAbort.signal,
+                  ).then(async requests => {
+                    if (requests.length > 0) {
+                      const revision = continuationProgress.recordToolBatch(requests.length);
+                      await continuationProgress.waitForToolBatchObservation(
+                        revision,
+                        continuationWaitAbort.signal,
+                      );
+                      continuationProgress.assertToolBatchActive(revision);
+                    }
+                    return { type: "tools" as const, requests };
+                  }).catch(error => continuationWaitAbort.signal.aborted
+                    ? new Promise<never>(() => {})
+                    : Promise.reject(error));
+                  const continuationBrowser = session.browserOutcome.then(outcome => ({
+                    type: "browser" as const,
+                    outcome,
+                  }));
+                  const waitForContinuationTrace = () => continuationRuntime.trace.wait(continuationWaitAbort.signal)
+                    .then(() => ({ type: "trace" as const }))
+                    .catch(error => continuationWaitAbort.signal.aborted
+                      ? new Promise<never>(() => {})
+                      : Promise.reject(error));
+                  const waitForContinuationText = () => continuationRuntime.text.wait(continuationWaitAbort.signal)
+                    .then(() => ({ type: "text" as const }))
+                    .catch(error => continuationWaitAbort.signal.aborted
+                      ? new Promise<never>(() => {})
+                      : Promise.reject(error));
+                  let nextTrace = waitForContinuationTrace();
+                  let nextText = waitForContinuationText();
+                  for (;;) {
+                    const next = await withAbort(Promise.race([
+                      nextContinuationTools,
+                      continuationBrowser,
+                      nextTrace,
+                      nextText,
+                    ]), incoming.abortSignal);
+                    if (next.type === "trace") {
+                      emitNewTrace(continuationRuntime.trace.drain());
+                      nextTrace = waitForContinuationTrace();
+                      continue;
+                    }
+                    if (next.type === "text") {
+                      emitNewText(continuationRuntime.text.drain());
+                      nextText = waitForContinuationText();
+                      continue;
+                    }
+                    emitNewTrace(continuationRuntime.trace.drain());
+                    emitNewText(continuationRuntime.text.drain());
+                    if (next.type === "browser") {
+                      await finishBrowserOutcome(next.outcome, continuationRuntime, continuationToken);
+                      return;
+                    }
+                    if (next.requests.length === 0) {
+                      throw new Error("ChatGPT image continuation returned an empty tool batch");
+                    }
+                    validateBatchTools(parsed, next.requests);
+                    session.setOutstanding(next.requests, roundReasoning, session.roundEvents(roundKey));
+                    emitRoundBatch(buffer => emitToolBatch(
+                      next.requests,
+                      estimateChatGptWebUsage(
+                        currentUsageInput(parsed),
+                        { reasoning: roundReasoning, toolRequests: next.requests },
+                        turnCapabilities,
+                        experimentalBiggerContext,
+                        experimentalSkillAttachments,
+                      ),
+                      buffer,
+                    ));
+                    session.completeRound(roundKey);
+                    return;
+                  }
+                } finally {
+                  continuationWaitAbort.abort();
+                }
               };
               const waitForTrace = () => session.runtime.trace.wait(toolWaitAbort.signal)
                 .then(() => ({ type: "trace" as const }))

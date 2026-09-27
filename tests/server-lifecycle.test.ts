@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chatGptWebTraceId } from "../src/adapters/chatgpt-web";
+import { chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
+import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, closeTurnBrokers, RemoteTurnBroker, TurnBroker } from "../src/adapters/chatgpt-web/turn-broker";
@@ -21,6 +22,482 @@ async function waitForTurnCount(turns: HttpTurnCounter, expected: number): Promi
   while (turns.count() !== expected && Date.now() < deadline) await Bun.sleep(5);
   expect(turns.count()).toBe(expected);
 }
+
+test("real HTTP image continuation keeps a Codex waiter, retires the old token, and resumes the same phase after function_call_output", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-image-cont-http-"));
+  const config = {
+    ...defaultConfig("full"),
+    port: 0,
+    brokerSocketPath: defaultBrokerEndpoint(root),
+    browserHost: "launcher" as const,
+    browserHostDescriptorPath: join(root, "launcher.json"),
+  };
+  const broker = TurnBroker.forSocket(config.brokerSocketPath);
+  await broker.listen();
+  const provider = providerConfig(config);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const infoLines: string[] = [];
+  const warnLines: string[] = [];
+  const info = spyOn(console, "info").mockImplementation((...args) => infoLines.push(args.join(" ")));
+  const warn = spyOn(console, "warn").mockImplementation((...args) => warnLines.push(args.join(" ")));
+  const tokens: string[] = [];
+  let continuationTrace = "";
+  let oldTokenRetirement = "";
+  let browserRuns = 0;
+
+  const invokeThroughBoundary = async (
+    turn: BrowserTurn,
+    bindingId: string,
+    step: string,
+  ) => {
+    const progress = turn.externalProgress;
+    if (!progress) throw new Error("HTTP seam browser turn has no progress transport");
+    const previousBatchRevision = progress.snapshot().lastToolBatchRevision;
+    // Yield once so the active /v1/responses request can arm broker.nextToolBatch first. The
+    // assertion below on the broker's real `waiters=1` log makes this ordering part of the test.
+    await Bun.sleep(0);
+    const invocation = callTurnBroker(config.brokerSocketPath, {
+      method: "invoke",
+      bindingId,
+      wireName: "js",
+      freeform: false,
+      arguments: { step },
+    }, 30_000);
+    let snapshot = progress.snapshot();
+    while (snapshot.lastToolBatchRevision <= previousBatchRevision) {
+      snapshot = await progress.waitForChange(snapshot.revision, turn.abortSignal);
+    }
+    await progress.acknowledgeToolBatch(snapshot.lastToolBatchRevision);
+    return invocation;
+  };
+
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserRuns += 1;
+    const prepared = await turn.prepare();
+    try {
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) throw new Error("HTTP seam browser prompt did not carry a turn token");
+      tokens.push(token);
+      if (browserRuns === 2) {
+        continuationTrace = turn.traceId;
+        expect(prepared.images).toHaveLength(1);
+        try {
+          await callTurnBroker(config.brokerSocketPath, { method: "claim", token: tokens[0]! });
+        } catch (error) {
+          oldTokenRetirement = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const claimed = await callTurnBroker<{ bindingId: string }>(config.brokerSocketPath, {
+        method: "claim",
+        token,
+      });
+      const result = await invokeThroughBoundary(
+        turn,
+        claimed.bindingId,
+        browserRuns === 1 ? "capture-image" : "click-12x12",
+      );
+      expect(result).toBeDefined();
+      const answer = browserRuns === 1 ? "I need the screenshot." : "12 × 12 = 144";
+      turn.onTextDelta(answer);
+      return answer;
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const server = startServer(config, {
+    adapterFactory: routedProvider => createChatGptWebAdapter(routedProvider, { broker }),
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const threadId = "thread_image_cont_http";
+  const turnId = "turn_image_cont_http";
+  const environment = `<environment_context>\n  <cwd>${root}</cwd>\n  <filesystem><workspace_roots><root>${root}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>\n</environment_context>`;
+  const baseInput: Array<Record<string, unknown>> = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: environment }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Inspect the screenshot and then click 12 × 12." }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+  ];
+  const requestBody = (input: Array<Record<string, unknown>>) => ({
+    model: "chatgpt-web/high",
+    stream: false,
+    prompt_cache_key: threadId,
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: turnId }),
+    },
+    input,
+    tools: [{
+      type: "function",
+      name: "js",
+      description: "Run the requested UI step",
+      parameters: { type: "object", properties: { step: { type: "string" } }, required: ["step"] },
+    }],
+  });
+  const post = async (input: Array<Record<string, unknown>>) => {
+    const response = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody(input)),
+    });
+    expect(response.status).toBe(200);
+    return await response.json() as { output?: Array<Record<string, unknown>> };
+  };
+  const functionCall = (response: { output?: Array<Record<string, unknown>> }) => {
+    const call = response.output?.find(item => item.type === "function_call");
+    if (!call || typeof call.call_id !== "string" || typeof call.name !== "string") {
+      throw new Error("HTTP seam response did not contain a function_call");
+    }
+    return call;
+  };
+
+  try {
+    const first = await post(baseInput);
+    const capture = functionCall(first);
+    const afterCapture = [
+      ...baseInput,
+      capture,
+      {
+        type: "function_call_output",
+        call_id: capture.call_id,
+        output: [{ type: "input_image", image_url: "data:image/png;base64,AAAA" }],
+      },
+    ];
+
+    const second = await post(afterCapture);
+    const click = functionCall(second);
+    expect(browserRuns).toBe(2);
+    expect(tokens).toHaveLength(2);
+    expect(tokens[1]).not.toBe(tokens[0]);
+    expect(oldTokenRetirement).toContain("which has already finished");
+    expect(continuationTrace).not.toBe("");
+    expect(infoLines.some(line => line.includes(`trace=${continuationTrace}`)
+      && line.includes("tool=js")
+      && line.includes("waiters=1"))).toBeTrue();
+
+    const third = await post([
+      ...afterCapture,
+      click,
+      { type: "function_call_output", call_id: click.call_id, output: "clicked calculator buttons" },
+    ]);
+    const finalText = JSON.stringify(third);
+    expect(finalText).toContain("12 × 12 = 144");
+    expect(finalText).not.toContain('"type":"function_call"');
+    expect(warnLines.some(line => line.includes("image continuation phase=1") && line.includes("completed"))).toBeTrue();
+    expect(warnLines.some(line => line.includes("image continuation chain phases=1 final=without_images"))).toBeTrue();
+    expect(infoLines.join("\n")).not.toContain(tokens[1]!);
+  } finally {
+    info.mockRestore();
+    warn.mockRestore();
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+    await closeTurnBrokers();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native Interrupt hook aborts an active image continuation through the session-lifetime signal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-image-cont-abort-"));
+  const config = {
+    ...defaultConfig("full"),
+    port: 0,
+    brokerSocketPath: defaultBrokerEndpoint(root),
+    browserHost: "launcher" as const,
+    browserHostDescriptorPath: join(root, "launcher.json"),
+  };
+  const broker = TurnBroker.forSocket(config.brokerSocketPath);
+  await broker.listen();
+  const worker = ChatGptBrowserWorker.forProvider(providerConfig(config));
+  const originalRun = worker.run.bind(worker);
+  let browserRuns = 0;
+  let continuationAborted = false;
+  let markContinuationStarted!: () => void;
+  const continuationStarted = new Promise<void>(resolve => { markContinuationStarted = resolve; });
+
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    browserRuns += 1;
+    const prepared = await turn.prepare();
+    try {
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) throw new Error("abort seam browser prompt did not carry a turn token");
+      if (browserRuns === 2) {
+        expect(prepared.images).toHaveLength(1);
+        markContinuationStarted();
+        return await new Promise<string>((_resolve, reject) => {
+          if (turn.abortSignal?.aborted) {
+            continuationAborted = true;
+            reject(turn.abortSignal.reason);
+            return;
+          }
+          turn.abortSignal?.addEventListener("abort", () => {
+            continuationAborted = true;
+            reject(turn.abortSignal!.reason);
+          }, { once: true });
+        });
+      }
+      const claimed = await callTurnBroker<{ bindingId: string }>(config.brokerSocketPath, {
+        method: "claim",
+        token,
+      });
+      const progress = turn.externalProgress!;
+      const previousBatchRevision = progress.snapshot().lastToolBatchRevision;
+      await Bun.sleep(0);
+      const invocation = callTurnBroker(config.brokerSocketPath, {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        wireName: "js",
+        freeform: false,
+        arguments: { step: "capture-image" },
+      }, 30_000);
+      let snapshot = progress.snapshot();
+      while (snapshot.lastToolBatchRevision <= previousBatchRevision) {
+        snapshot = await progress.waitForChange(snapshot.revision, turn.abortSignal);
+      }
+      await progress.acknowledgeToolBatch(snapshot.lastToolBatchRevision);
+      await invocation;
+      const answer = "I need the screenshot.";
+      turn.onTextDelta(answer);
+      return answer;
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const server = startServer(config, {
+    adapterFactory: routedProvider => createChatGptWebAdapter(routedProvider, { broker }),
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const threadId = "thread_image_cont_abort";
+  const turnId = "turn_image_cont_abort";
+  const environment = `<environment_context>\n  <cwd>${root}</cwd>\n  <filesystem><workspace_roots><root>${root}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>\n</environment_context>`;
+  const baseInput: Array<Record<string, unknown>> = [
+    {
+      type: "message", role: "user",
+      content: [{ type: "input_text", text: environment }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+    {
+      type: "message", role: "user",
+      content: [{ type: "input_text", text: "Inspect the screenshot." }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+  ];
+  const body = (input: Array<Record<string, unknown>>) => JSON.stringify({
+    model: "chatgpt-web/high",
+    stream: false,
+    prompt_cache_key: threadId,
+    client_metadata: { "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: turnId }) },
+    input,
+    tools: [{ type: "function", name: "js", parameters: { type: "object" } }],
+  });
+
+  try {
+    const firstResponse = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: body(baseInput),
+    });
+    const first = await firstResponse.json() as { output?: Array<Record<string, unknown>> };
+    const capture = first.output?.find(item => item.type === "function_call");
+    if (!capture || typeof capture.call_id !== "string") throw new Error("abort seam did not emit capture call");
+    const secondInput = [
+      ...baseInput,
+      capture,
+      {
+        type: "function_call_output",
+        call_id: capture.call_id,
+        output: [{ type: "input_image", image_url: "data:image/png;base64,AAAA" }],
+      },
+    ];
+    const secondResponse = fetch(`${endpoint}/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: body(secondInput),
+    });
+    await continuationStarted;
+    expect(browserRuns).toBe(2);
+
+    const interrupted = await fetch(`${endpoint}/admin/interrupt-turn`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.controlToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ threadId, turnId }),
+    });
+    expect(interrupted.status).toBe(200);
+    expect(await interrupted.json()).toMatchObject({
+      status: "ok",
+      cancelled_http_turns: 1,
+      cancelled_browser_turns: 1,
+    });
+    expect(continuationAborted).toBeTrue();
+    await secondResponse;
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+    await closeTurnBrokers();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("image continuation stops at four phases and uses a retained tool-less fallback for the remaining image", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cgw-image-cont-limit-"));
+  const config = {
+    ...defaultConfig("full"),
+    port: 0,
+    brokerSocketPath: defaultBrokerEndpoint(root),
+    browserHost: "launcher" as const,
+    browserHostDescriptorPath: join(root, "launcher.json"),
+  };
+  const broker = TurnBroker.forSocket(config.brokerSocketPath);
+  await broker.listen();
+  const worker = ChatGptBrowserWorker.forProvider(providerConfig(config));
+  const originalRun = worker.run.bind(worker);
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  let toolCapableRuns = 0;
+  let firstConversationKey: string | undefined;
+  let fallback: {
+    images: number;
+    localToolsEnabled: boolean;
+    nativeConnector: boolean | undefined;
+    streamsToCodex: boolean | undefined;
+    requireRetainedConversation: boolean | undefined;
+    conversationKey: string | undefined;
+  } | undefined;
+
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    if (firstConversationKey === undefined) firstConversationKey = turn.conversationKey;
+    const prepared = await turn.prepare();
+    try {
+      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
+      if (!token) {
+        fallback = {
+          images: prepared.images.length,
+          localToolsEnabled: turn.capabilities.localToolsEnabled,
+          nativeConnector: turn.nativeConnector,
+          streamsToCodex: turn.streamsToCodex,
+          requireRetainedConversation: turn.requireRetainedConversation,
+          conversationKey: turn.conversationKey,
+        };
+        const answer = "Fallback inspected the last image.";
+        turn.onTextDelta(answer);
+        return answer;
+      }
+      toolCapableRuns += 1;
+      const claimed = await callTurnBroker<{ bindingId: string }>(config.brokerSocketPath, {
+        method: "claim", token,
+      });
+      const progress = turn.externalProgress!;
+      const previousBatchRevision = progress.snapshot().lastToolBatchRevision;
+      await Bun.sleep(0);
+      const invocation = callTurnBroker(config.brokerSocketPath, {
+        method: "invoke",
+        bindingId: claimed.bindingId,
+        wireName: "js",
+        freeform: false,
+        arguments: { step: `phase-${toolCapableRuns}` },
+      }, 30_000);
+      let snapshot = progress.snapshot();
+      while (snapshot.lastToolBatchRevision <= previousBatchRevision) {
+        snapshot = await progress.waitForChange(snapshot.revision, turn.abortSignal);
+      }
+      await progress.acknowledgeToolBatch(snapshot.lastToolBatchRevision);
+      await invocation;
+      const answer = `phase ${toolCapableRuns} complete`;
+      turn.onTextDelta(answer);
+      return answer;
+    } finally {
+      prepared.release();
+    }
+  };
+
+  const server = startServer(config, {
+    adapterFactory: routedProvider => createChatGptWebAdapter(routedProvider, { broker }),
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  const threadId = "thread_image_cont_limit";
+  const turnId = "turn_image_cont_limit";
+  const environment = `<environment_context>\n  <cwd>${root}</cwd>\n  <filesystem><workspace_roots><root>${root}</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>\n</environment_context>`;
+  let input: Array<Record<string, unknown>> = [
+    {
+      type: "message", role: "user",
+      content: [{ type: "input_text", text: environment }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+    {
+      type: "message", role: "user",
+      content: [{ type: "input_text", text: "Keep inspecting screenshots." }],
+      internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    },
+  ];
+  const requestBody = () => ({
+    model: "chatgpt-web/high",
+    stream: false,
+    prompt_cache_key: threadId,
+    client_metadata: { "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: turnId }) },
+    input,
+    tools: [{ type: "function", name: "js", parameters: { type: "object" } }],
+  });
+  const post = async () => {
+    const response = await fetch(`${endpoint}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody()),
+    });
+    expect(response.status).toBe(200);
+    return await response.json() as { output?: Array<Record<string, unknown>> };
+  };
+
+  try {
+    for (let index = 0; index < 5; index += 1) {
+      const response = await post();
+      const call = response.output?.find(item => item.type === "function_call");
+      if (!call || typeof call.call_id !== "string") {
+        throw new Error(`limit seam did not emit function_call ${index + 1}`);
+      }
+      input = [
+        ...input,
+        call,
+        {
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: [{ type: "input_image", image_url: `data:image/png;base64,AAAA${index}` }],
+        },
+      ];
+    }
+
+    const final = await post();
+    expect(toolCapableRuns).toBe(5);
+    expect(JSON.stringify(final)).toContain("Fallback inspected the last image.");
+    expect(fallback).toEqual({
+      images: 1,
+      localToolsEnabled: false,
+      nativeConnector: false,
+      streamsToCodex: false,
+      requireRetainedConversation: true,
+      conversationKey: firstConversationKey,
+    });
+    expect(warnings.filter(line => line.includes("image continuation phase=") && line.includes(" started")))
+      .toHaveLength(4);
+    expect(warnings.some(line => line.includes("image continuation phase=5"))).toBeFalse();
+    expect(warnings.some(line => line.includes("image continuation chain phases=4 final=limit"))).toBeTrue();
+  } finally {
+    warning.mockRestore();
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await server.stop(true);
+    await closeTurnBrokers();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("HTTP turn tracking follows the response stream instead of Bun's global request count", async () => {
   const turns = new HttpTurnCounter();
