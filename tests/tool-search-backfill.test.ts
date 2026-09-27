@@ -9,6 +9,14 @@ const node: CodexTool = {
   parameters: { type: "object", properties: { code: { type: "string" } } },
 };
 
+const cua: CodexTool = {
+  name: "js", namespace: "mcp__cua_repl", description: "Control Chrome tabs",
+  parameters: { type: "object", properties: { code: { type: "string" } } },
+};
+
+const cuaHint = "[Feno Bridge] mcp__cua_repl__js is already directly callable in this turn; tool_search does not list direct tools. Call it by name.";
+const nodeHint = "[Feno Bridge] mcp__node_repl__js is already directly callable in this turn; tool_search does not list direct tools. Call it by name.";
+
 function searchRound(
   query: string,
   options: { limit?: number; offset?: number; results?: unknown[]; status?: string } = {},
@@ -54,6 +62,14 @@ test("empty search remains empty when the registry has no matching tool", () => 
   } finally { warn.mockRestore(); }
 });
 
+test("empty-search backfill does not add a redundant direct-tool hint when it loads that tool", () => {
+  const parsed = searchRound("mcp__cua_repl__js");
+  parsed.context.tools = [cua];
+  backfillEmptyToolSearchResults(parsed, [cua]);
+  expect(resultText(parsed)).toContain("mcp__cua_repl__js");
+  expect(resultText(parsed)).not.toContain("[Feno Bridge]");
+});
+
 test("nonempty native search preserves its content and ordering", () => {
   const results = [
     { type: "function", name: "second", description: "Second", parameters: {} },
@@ -66,6 +82,81 @@ test("nonempty native search preserves its content and ordering", () => {
   expect(parsed.context.messages).toEqual(initialMessages);
   expect(parsed.context.tools).toEqual(initialTools);
   expect(parsed.context.tools?.map(tool => tool.name)).toEqual(["second", "first"]);
+});
+
+test.each([
+  "node_repl js cua_repl browser Chrome calculator Windows screenshot click",
+  "cua_repl computer use browser createBrowserTab getAXState click",
+])("live query appends a direct-tool hint when tool_search cannot list the direct tool: %s", query => {
+  const parsed = searchRound(query, {
+    results: [{ type: "function", name: "calculator", description: "Calculator", parameters: {} }],
+  });
+  parsed.context.tools = [...(parsed.context.tools ?? []), cua];
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    backfillEmptyToolSearchResults(parsed, [cua]);
+    expect(resultText(parsed)).toContain(cuaHint);
+    expect(warn).toHaveBeenCalledWith(
+      `[chatgpt-web] tool_search direct tool hint query=${JSON.stringify(query)} tools=mcp__cua_repl__js`,
+    );
+  } finally { warn.mockRestore(); }
+});
+
+test("live query names every matching direct tool", () => {
+  const query = "node_repl js cua_repl browser Chrome calculator Windows screenshot click";
+  const parsed = searchRound(query, {
+    results: [{ type: "function", name: "calculator", description: "Calculator", parameters: {} }],
+  });
+  parsed.context.tools = [...(parsed.context.tools ?? []), node, cua];
+  backfillEmptyToolSearchResults(parsed, [node, cua]);
+  expect(resultText(parsed)).toContain(nodeHint);
+  expect(resultText(parsed)).toContain(cuaHint);
+});
+
+test("does not append a hint when the query does not name the direct tool", () => {
+  const parsed = searchRound("calculator Windows screenshot click", {
+    results: [{ type: "function", name: "calculator", description: "Calculator", parameters: {} }],
+  });
+  parsed.context.tools = [...(parsed.context.tools ?? []), cua];
+  backfillEmptyToolSearchResults(parsed, [cua]);
+  expect(resultText(parsed)).not.toContain("[Feno Bridge]");
+});
+
+test("does not append a hint when tool_search already returned the direct tool", () => {
+  const parsed = searchRound("cua_repl browser", {
+    results: [{ type: "function", name: "mcp__cua_repl__js", description: "Chrome", parameters: {} }],
+  });
+  parsed.context.tools = [cua];
+  backfillEmptyToolSearchResults(parsed, [cua]);
+  expect(resultText(parsed)).not.toContain("[Feno Bridge]");
+});
+
+test("does not append a hint for a tool that is not in context.tools", () => {
+  const parsed = searchRound("cua_repl browser", {
+    results: [{ type: "function", name: "calculator", description: "Calculator", parameters: {} }],
+  });
+  parsed.context.tools = undefined;
+  backfillEmptyToolSearchResults(parsed, [cua]);
+  expect(resultText(parsed)).not.toContain("[Feno Bridge]");
+});
+
+test("generic js and browser terms alone do not trigger a direct-tool hint", () => {
+  const parsed = searchRound("js browser Chrome screenshot click", {
+    results: [{ type: "function", name: "calculator", description: "Calculator", parameters: {} }],
+  });
+  parsed.context.tools = [...(parsed.context.tools ?? []), cua];
+  backfillEmptyToolSearchResults(parsed, [cua]);
+  expect(resultText(parsed)).not.toContain("[Feno Bridge]");
+});
+
+test("does not append the same direct-tool hint twice", () => {
+  const parsed = searchRound("cua_repl browser", {
+    results: [{ type: "function", name: "calculator", description: "Calculator", parameters: {} }],
+  });
+  parsed.context.tools = [...(parsed.context.tools ?? []), cua];
+  backfillEmptyToolSearchResults(parsed, [cua]);
+  backfillEmptyToolSearchResults(parsed, [cua]);
+  expect(resultText(parsed).split(cuaHint)).toHaveLength(2);
 });
 
 test("backfill applies the same offset and limit as the inventory", () => {

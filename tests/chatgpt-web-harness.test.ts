@@ -506,6 +506,74 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
+  test("tool_search direct-tool hint reaches the ChatGPT browser prompt through the adapter path", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-tool-search-direct-hint-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web",
+      baseUrl: `browser://chatgpt-tool-search-direct-hint-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const originalRun = worker.run.bind(worker);
+    const hint = "[Feno Bridge] mcp__cua_repl__js is already directly callable in this turn; tool_search does not list direct tools. Call it by name.";
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+      const prepared = await turn.prepare();
+      expect(prepared.text).toContain(hint);
+      const answer = "Direct tool hint reached ChatGPT";
+      turn.onTextDelta(answer);
+      return answer;
+    };
+    try {
+      const request = rawWireRequest(environmentXml);
+      const cuaTool: CodexTool = {
+        name: "js",
+        namespace: "mcp__cua_repl",
+        description: "Control Chrome tabs",
+        parameters: { type: "object", properties: { code: { type: "string" } } },
+      };
+      request.context.tools = [...(request.context.tools ?? []), cuaTool];
+      request.context.messages.push(
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "search_direct_hint", name: "tool_search", arguments: {
+            query: "cua_repl computer use browser createBrowserTab getAXState click",
+          } }],
+          timestamp: 3,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "search_direct_hint",
+          toolName: "tool_search",
+          content: "Tool search loaded these tools — they are now in your available tools. Call one by its EXACT name: calculator.",
+          isError: false,
+          timestamp: 4,
+        },
+      );
+      const raw = request._rawBody as { input: Array<Record<string, unknown>> };
+      raw.input.push(
+        {
+          type: "tool_search_call",
+          call_id: "search_direct_hint",
+          execution: "client",
+          arguments: { query: "cua_repl computer use browser createBrowserTab getAXState click" },
+        },
+        {
+          type: "tool_search_output",
+          call_id: "search_direct_hint",
+          status: "completed",
+          tools: [{ type: "function", name: "calculator", description: "Calculator", parameters: {} }],
+        },
+      );
+
+      const events: AdapterEvent[] = [];
+      await createChatGptWebAdapter(provider).runTurn!(request, { headers: new Headers() }, event => events.push(event));
+      expect(events.at(-1)).toMatchObject({ type: "done" });
+    } finally {
+      (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
   test("keeps sequential native messages in one retained MCP conversation until compaction", async () => {
     const socketPath = brokerTestEndpoint(`cgw-retained-messages-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
