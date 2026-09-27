@@ -92,6 +92,47 @@ test("captured DIL smoke response reaches Markdown delivery and stable completio
   }
 });
 
+test("reported code-block containers preserve code while their localized toolbar changes", async () => {
+  const code = '  first = "kod"\n\n  print(first)\n  # ```\n';
+  for (const block of ["div", "pre"]) {
+    for (const label of ["Düz metin", "Plain text", "Code"]) {
+      const html = (toolbar: string, value = code) => `<section id="turn"><div class="markdown">
+          <p data-start="0" data-end="10">Example</p>
+          <div data-start="12" data-end="100"><${block} data-markdown-copy="code-block">
+            ${toolbar}<div><code class="language-python whitespace-pre block"><span>${value}</span></code></div>
+          </${block}></div>
+          <p data-start="102" data-end="120">Done.</p>
+        </div></section>`;
+      const during = await snapshot(html(`<div>${label}<button>Copy</button></div>`));
+      const after = await snapshot(html(""));
+      expect(during.markdownSegments.some(segment => segment.text.includes(label))).toBeFalse();
+      expect(during.markdownSegments.map(segment => segment.html).join("\n")).toContain("<pre");
+      expect(after.markdownSegments.map(segment => segment.html).join("\n")).toContain("<pre");
+      const buffer = new ChatGptMarkdownBuffer(markdown => markdown, 0);
+      buffer.observe(during.markdownSegments, 0);
+      buffer.observe(after.markdownSegments, 1000);
+      expect(buffer.currentSnapshotIsConsistent()).toBeTrue();
+      expect(buffer.finish().markdown).toBe(`Example\n\n\`\`\`python\n${code}\`\`\`\n\nDone.`);
+
+      const changed = await snapshot(html("", code.replace("print(first)", "print(other)")));
+      buffer.observe(changed.markdownSegments, 2000);
+      expect(() => buffer.finish()).toThrow("ChatGPT changed a completed text block");
+    }
+  }
+});
+
+test("ordinary prose, inline code and legacy fenced code keep their meaning", async () => {
+  const response = await snapshot(`<section id="turn" data-turn="assistant">
+    <div data-message-author-role="assistant"><div class="markdown">
+      <p>Code: <code>/tmp/file.ts</code></p>
+      <pre data-start="30" data-end="80"><code class="language-text">/tmp/file.ts\n\n[[note]]\n\`\`\`\nend</code></pre>
+      <p>Done.</p>
+    </div></div></section>`);
+  const buffer = new ChatGptMarkdownBuffer();
+  buffer.observe(response.markdownSegments, 0);
+  expect(buffer.finish().markdown).toBe("Code: [/tmp/file.ts](</tmp/file.ts>)\n\n````text\n/tmp/file.ts\n\n[[note]]\n```\nend\n````\n\nDone.");
+});
+
 test("DIL response extraction preserves ownership, commentary and completion boundaries", async () => {
   for (const html of [
     smokeHtml.replace('data-message-author-role="assistant"', 'data-message-author-role="user"'),
