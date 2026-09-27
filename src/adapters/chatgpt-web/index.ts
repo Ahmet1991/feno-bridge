@@ -30,7 +30,7 @@ import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGpt
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
 import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
-import { falseBlockCorrection, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
+import { falseBlockCorrection, quotesChatGptPlatformRefusal, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
 import {
   callObservesWindow,
   isPolicyStop,
@@ -1506,7 +1506,8 @@ export function createChatGptWebAdapter(
                   && correctionEnvironment !== undefined
                   && session.conversationKey() !== undefined
                   && !falseBlockRecoveredSessions.has(session)
-                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger);
+                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger)
+                  && !quotesChatGptPlatformRefusal(completedOutcome.answer);
                 if (turnToken) await broker.revoke(turnToken);
                 if (completedOutcome.type === "error") throw completedOutcome.error;
                 if (session.runtime.text.value() !== completedOutcome.answer) {
@@ -1526,6 +1527,20 @@ export function createChatGptWebAdapter(
                     + ` windowCaptureNeverReached=${ledger.windowCaptureNeverReached}`,
                   );
                   emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
+                }
+                if (
+                  completedOutcome.type === "final"
+                  && !bufferStructuredOutput
+                  && correctionEnvironment !== undefined
+                  && session.conversationKey() !== undefined
+                  && !falseBlockRecoveredSessions.has(session)
+                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(completedOutcome.answer), ledger)
+                  && quotesChatGptPlatformRefusal(completedOutcome.answer)
+                ) {
+                  console.warn(
+                    `[chatgpt-web] false block claim correction skipped reason=chatgpt_platform_refusal`
+                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`,
+                  );
                 }
                 // Deliver a tool's image before any correction: the image is content this turn owes the
                 // user, the correction is best effort, and a failed correction releases the retained

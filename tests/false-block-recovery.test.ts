@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { claimsBlockedToolCall } from "../src/adapters/chatgpt-web/block-claim-evidence";
-import { falseBlockCorrection, shouldRecoverFalseBlockClaim } from "../src/adapters/chatgpt-web/false-block-recovery";
+import {
+  falseBlockCorrection,
+  quotesChatGptPlatformRefusal,
+  shouldRecoverFalseBlockClaim,
+} from "../src/adapters/chatgpt-web/false-block-recovery";
 
 const claim = (answer: string) => claimsBlockedToolCall(answer);
 
@@ -24,6 +28,20 @@ test("a claim is corrected even when nothing reached the bridge, because the wor
   expect(falseBlockCorrection({ completed: 0, failed: 0 })).not.toContain("engellenmedin");
 });
 
+test("ChatGPT's observed Turkish platform refusal is recognized through wrappers and Markdown", () => {
+  const refusal = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
+  expect(quotesChatGptPlatformRefusal(refusal)).toBeTrue();
+  expect(quotesChatGptPlatformRefusal(`Script error: \`${refusal}\``)).toBeTrue();
+  expect(quotesChatGptPlatformRefusal(
+    "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için \\*\\*OpenAI\\*\\* tarafından engellendi.",
+  )).toBeTrue();
+});
+
+test("other block wording is not mistaken for ChatGPT's platform refusal", () => {
+  expect(quotesChatGptPlatformRefusal("Bu araç çağrısı güvenlik engeline takıldı.")).toBeFalse();
+  expect(quotesChatGptPlatformRefusal("Bu araç çağrısı güvenlik katmanı tarafından reddedildi.")).toBeFalse();
+});
+
 test("a real tool error is never contradicted", () => {
   expect(shouldRecoverFalseBlockClaim(claim(FOUR_CALL_CLAIM), { completed: 4, failed: 1 })).toBeFalse();
   expect(shouldRecoverFalseBlockClaim(claim(NO_CALL_CLAIM), { completed: 0, failed: 2 })).toBeFalse();
@@ -36,6 +54,8 @@ test("an answer that claims nothing is left alone", () => {
 
 test("the correction states the record and never pushes the model to act", () => {
   const text = falseBlockCorrection({ completed: 4, failed: 0 });
+  expect(text).toContain("Bu not kullanıcıdan değil, köprünün otomatik kayıt kontrolünden geliyor; kullanıcı bir itirazda bulunmadı.");
+  expect(text).toContain("'Haklısın' deme, özür dileme; yalnız kaydı düzelt.");
   expect(text).toContain("köprüye ulaşan 4 araç çağrısı tamamlandı");
   expect(text).toContain("köprüden dönen hiçbir araç çıktısında yok");
   // ChatGPT can refuse a call before it reaches the connector and show that refusal itself; the

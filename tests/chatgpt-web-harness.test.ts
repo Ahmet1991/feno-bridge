@@ -4133,8 +4133,7 @@ test("an answer claiming a blocked call carries the bridge's own dispatch count"
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);
-  // The wording ChatGPT actually produced on 20 Sep, in a turn whose every call had returned.
-  const claim = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
+  const claim = "Bu araç çağrısı güvenlik engeline takıldı.";
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     const prepared = await turn.prepare();
     try {
@@ -4778,6 +4777,30 @@ test("a block claim the ledger contradicts is corrected by one retained, tool-le
   }
 });
 
+test("ChatGPT's own platform refusal skips correction while preserving bridge evidence", async () => {
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  const refusal = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
+  await deliverWindowRecoveryFixtures(
+    [{ wireName: "js", code: "nodeRepl.write('done')", content: "ok" }],
+    events,
+    {
+      retained: true,
+      browserTurns,
+      followUps,
+      firstAnswer: refusal,
+    },
+  );
+
+  // The fixture keeps the successful tool round in one browser turn. A correction would add one.
+  expect(browserTurns).toHaveLength(1);
+  expect(followUps).toHaveLength(0);
+  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+  expect(text).toContain(refusal);
+  expect(text).toContain("[Feno Bridge] Bu turda köprüye ulaşan 1 araç çağrısı tamamlandı, 0 tanesi hata döndürdü.");
+});
+
 test("a tool image is delivered before a block-claim correction, which cannot take it down", async () => {
   // 26.09 (trace 5cf96a1718c2): the correction ran first, stalled, released the retained
   // conversation, and the screenshot delivery then failed with "no longer available".
@@ -4793,7 +4816,7 @@ test("a tool image is delivered before a block-claim correction, which cannot ta
       browserTurns,
       followUps,
       failCorrection: true,
-      firstAnswer: "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.",
+      firstAnswer: "Bu araç çağrısı güvenlik engeline takıldı.",
     },
   );
 
