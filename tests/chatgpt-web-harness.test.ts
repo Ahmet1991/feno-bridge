@@ -4242,6 +4242,7 @@ async function deliverWindowRecoveryFixtures(
     failContinuation?: boolean;
     continuationAnswer?: string;
     fallbackAnswer?: string;
+    structuredOutput?: boolean;
     followUps?: Array<{ images: number; text: string }>;
   },
 ): Promise<BrokerToolResult[]> {
@@ -4319,6 +4320,19 @@ async function deliverWindowRecoveryFixtures(
   };
 
   const initial = rawWireRequest(environmentXml);
+  if (options?.structuredOutput) {
+    initial.options.outputFormat = {
+      type: "json_schema",
+      name: "window_recovery_result",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        required: ["ok"],
+        additionalProperties: false,
+      },
+    };
+  }
   initial.context.tools = [
     ...(initial.context.tools ?? []),
     { name: "js", description: "Control a native window", parameters: { type: "object" } },
@@ -4817,6 +4831,34 @@ test("ChatGPT's own platform refusal skips correction while preserving bridge ev
   const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
   expect(text).toContain(refusal);
   expect(text).toContain("[Feno Bridge] Bu turda köprüye ulaşan 1 araç çağrısı tamamlandı, 0 tanesi hata döndürdü.");
+});
+
+test("structured-output turns do not open image continuation or delivery turns for unshown tool images", async () => {
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  await deliverWindowRecoveryFixtures(
+    [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+    events,
+    {
+      retained: true,
+      browserTurns,
+      followUps,
+      structuredOutput: true,
+      firstAnswer: '{"ok":true}',
+    },
+  );
+
+  expect(browserTurns).toHaveLength(1);
+  expect(followUps).toHaveLength(0);
+  const text = events
+    .filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => (
+      event.type === "text_delta" && event.phase === "final_answer"
+    ))
+    .map(event => event.text)
+    .join("");
+  expect(text).toBe('{"ok":true}');
 });
 
 test("a failed image continuation requeues its image and uses the retained tool-less fallback", async () => {

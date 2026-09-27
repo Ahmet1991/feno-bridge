@@ -1770,13 +1770,14 @@ export function createChatGptWebAdapter(
                 let delivered: string | undefined;
                 let deliveredImageFallback = false;
                 if (completedOutcome.type === "final"
+                  && !bufferStructuredOutput
                   && pendingImages.length > 0
                   && session.conversationKey() !== undefined
                   && !imagesDeliveredSessions.has(session)) {
                   // The one path that gets a tool's image in front of the model: attachments are
                   // uploaded while a turn is being composed, so an image that arrived mid-generation
                   // needs a turn of its own. Once per session — a delivery turn per screenshot in a
-                      // long round would cost more browser turns than the work itself.
+                  // long round would cost more browser turns than the work itself.
                   imagesDeliveredSessions.add(session);
                   const prepareDelivery = async () => ({
                     text: DELIVERED_IMAGES_PROMPT,
@@ -1818,9 +1819,7 @@ export function createChatGptWebAdapter(
                   if (delivered !== undefined && delivered.trim().length > 0) {
                     deliveredImageFallback = true;
                     unshownImagesBySession.delete(session);
-                    if (!bufferStructuredOutput) {
-                      emitRoundBatch(buffer => emitTextDeltas([`\n\n${delivered}`], buffer));
-                    }
+                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${delivered}`], buffer));
                   }
                 }
                 if (phase > 0 && observedOutcome.type === "final" && pendingImages.length === 0) {
