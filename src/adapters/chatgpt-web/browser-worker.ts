@@ -3387,6 +3387,15 @@ export class ChatGptBrowserWorker {
         continue;
       }
       recoveryAttempts = 0;
+      // Measured 26.09: the assistant unit mounts only when answer text starts streaming; thinking
+      // and tool activity show nothing but the running Stop control. While ChatGPT is generating,
+      // its turn is alive, so keep waiting within the turn's own deadline rather than the DOM grace.
+      if (state.visibleStopButtonCount > 0) {
+        responseDeadline = Math.min(
+          deadline ?? Number.POSITIVE_INFINITY,
+          Math.max(responseDeadline, Date.now() + graceMs),
+        );
+      }
       // A tool batch can arrive while the DOM probe is in flight. Read progress again before
       // acknowledging its boundary; the pre-probe snapshot can otherwise leave the broker waiting
       // despite this exact iteration having successfully observed the page.

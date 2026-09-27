@@ -39,7 +39,8 @@ test("a blocked-call claim is recognised in the wordings ChatGPT actually produc
 
 test("the evidence line reports what the bridge dispatched, including the none case", () => {
   expect(formatBlockClaimEvidence({ completed: 6, failed: 0 }))
-    .toBe("\n\n---\n[Feno Bridge] Bu turda 6 araç çağrısı tamamlandı, 0 tanesi hata döndürdü.");
+    .toBe("\n\n---\n[Feno Bridge] Bu turda köprüye ulaşan 6 araç çağrısı tamamlandı, 0 tanesi hata döndürdü."
+      + " ChatGPT'nin köprüye hiç ulaştırmadığı bir çağrı bu sayıma girmez.");
   expect(formatBlockClaimEvidence({ completed: 4, failed: 2 }))
     .toContain("4 araç çağrısı tamamlandı, 2 tanesi hata döndürdü");
   expect(formatBlockClaimEvidence({ completed: 0, failed: 0 }))

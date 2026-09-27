@@ -23,11 +23,16 @@ export function falseBlockCorrection(counts: { completed: number; failed: number
     // The bridge cannot see a refusal that never reached it, so this says what it observed rather
     // than claiming nothing refused the call.
     ? "bu turda köprüye hiçbir araç çağrısı ulaşmadı"
-    : `bu turda ${counts.completed} araç çağrısı tamamlandı ve hiçbiri hata döndürmedi`;
-  return `Kayda göre ${observed}, ve bildirdiğin engel metni hiçbir araç çıktısından gelmedi.`
-    + " Devam edebiliyorsan devam et."
-    + " Devam etmemeyi seçiyorsan gerekçeni kendi sözlerinle söyle;"
-    + " olmayan bir sistem hatasını gerekçe gösterme.";
+    : `bu turda köprüye ulaşan ${counts.completed} araç çağrısı tamamlandı ve hiçbiri hata döndürmedi`;
+  // The bridge cannot see a call ChatGPT refused before it reached the connector, and ChatGPT shows
+  // such a refusal to the model in its own words. Say so, instead of pushing the model to withdraw a
+  // refusal that may be real. This turn has no tools (its answer cannot reach Codex), so it must not
+  // invite work that needs one.
+  return `Kayda göre ${observed}; bildirdiğin engel metni köprüden dönen hiçbir araç çıktısında yok.`
+    + " Köprü, ChatGPT'nin kendisine hiç ulaştırmadığı bir çağrıyı göremez:"
+    + " bu metni ChatGPT'nin kendisi gösterdiyse aynen koru ve ChatGPT tarafından geldiğini belirt."
+    + " Değilse olmayan bir sistem hatasını gerekçe gösterme; durmayı seçtiysen gerekçeni kendi sözlerinle söyle."
+    + " Bu cevapta araç çağırma.";
 }
 
 /**

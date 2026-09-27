@@ -4233,7 +4233,14 @@ async function deliverWindowRecoveryFixtures(
   completedEvents?: AdapterEvent[],
   // A retained conversation is what a follow-up turn needs to speak into, so only a fixture that
   // asks for one gets the launcher descriptor that produces a conversation key.
-  options?: { retained?: boolean; browserTurns?: BrowserTurn[] },
+  options?: {
+    retained?: boolean;
+    browserTurns?: BrowserTurn[];
+    firstAnswer?: string;
+    // Mirrors 26.09: a failed follow-up released the retained conversation for every later one.
+    failCorrection?: boolean;
+    followUps?: Array<{ images: number; text: string }>;
+  },
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
   const provider: CodexProviderConfig = {
@@ -4255,6 +4262,7 @@ async function deliverWindowRecoveryFixtures(
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);
   const delivered: BrokerToolResult[] = [];
+  let conversationReleased = false;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     options?.browserTurns?.push(turn);
     const prepared = await turn.prepare();
@@ -4263,6 +4271,12 @@ async function deliverWindowRecoveryFixtures(
       // A follow-up turn the adapter opened itself carries no turn token, because it compiles a
       // fixed prompt rather than a tool environment. Answer it instead of failing the fixture.
       if (!token && options?.browserTurns) {
+        options.followUps?.push({ images: prepared.images.length, text: prepared.text });
+        if (conversationReleased) throw new Error("The retained ChatGPT conversation is no longer available.");
+        if (options.failCorrection && prepared.images.length === 0) {
+          conversationReleased = true;
+          throw new Error("ChatGPT accepted the message but did not expose its assistant turn in the DOM");
+        }
         const answer = "Ekte gördüğüm pencere: Feno Bridge.";
         turn.onTextDelta(answer);
         return answer;
@@ -4279,8 +4293,9 @@ async function deliverWindowRecoveryFixtures(
         }, 30_000)
       ))));
       delivered.push(...results);
-      turn.onTextDelta("Window recovery fixture complete");
-      return "Window recovery fixture complete";
+      const answer = options?.firstAnswer ?? "Window recovery fixture complete";
+      turn.onTextDelta(answer);
+      return answer;
     } finally {
       prepared.release();
     }
@@ -4692,7 +4707,7 @@ test("the evidence line counts every round of a turn and names the capture that 
   }
 });
 
-test("a block claim the ledger contradicts is corrected by one retained turn that keeps its tools", async () => {
+test("a block claim the ledger contradicts is corrected by one retained, tool-less turn", async () => {
   const socketPath = brokerTestEndpoint(`cgw-false-block-${process.pid}-${Date.now()}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -4712,23 +4727,13 @@ test("a block claim the ledger contradicts is corrected by one retained turn tha
   const prompts: string[] = [];
   let firstToken: string | undefined;
   let correctionToken: string | undefined;
-  let tokenLiveDuringCorrection: boolean | undefined;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     turns.push(turn);
     const prepared = await (turns.length === 1 ? turn.prepare() : turn.prepareResume!());
     prompts.push(prepared.text);
     const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
-    if (turns.length === 1) {
-      firstToken = token;
-    } else {
-      correctionToken = token;
-      // The whole point of the fix: the finished turn's handle is retired by its own completion,
-      // so the correction has to arrive with a new one that can actually be claimed.
-      tokenLiveDuringCorrection = token === undefined
-        ? false
-        : await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token })
-          .then(() => true, () => false);
-    }
+    if (turns.length === 1) firstToken = token;
+    else correctionToken = token;
     prepared.release();
     // The first answer is the fabrication this repairs; the second is what the model said once it
     // was shown the record, quoted from the 21 Sep measurement.
@@ -4751,15 +4756,16 @@ test("a block claim the ledger contradicts is corrected by one retained turn tha
     expect(turns).toHaveLength(2);
     const correction = turns[1]!;
     expect(firstToken).toBeDefined();
-    expect(tokenLiveDuringCorrection).toBeTrue();
-    expect(correction.capabilities.localToolsEnabled).toBeTrue();
+    // 26.09 (trace 5cf96a1718c2): a correction with a live handle called tool_search, the broker
+    // queued it with no Codex request waiting (the answer is not streamed), ChatGPT waited on the
+    // result and the turn failed after the DOM grace. A correction cannot run tools, so it has none.
+    expect(correction.capabilities.localToolsEnabled).toBeFalse();
+    expect(correction.nativeConnector).toBeTrue();
+    expect(correctionToken).toBeUndefined();
     expect(correction.requireRetainedConversation).toBeTrue();
     expect(correction.conversationKey).toBe(turns[0]!.conversationKey!);
-    // A handle of its own, and a different one: reusing the finished turn's token is what did not
-    // work, because its completion retires the channel whether or not the token was revoked.
-    expect(correctionToken).toBeDefined();
-    expect(correctionToken).not.toBe(firstToken);
-    expect(prompts[1]).toContain("hiçbir araç çıktısından gelmedi");
+    expect(prompts[1]).toContain("köprüden dönen hiçbir araç çıktısında yok");
+    expect(prompts[1]).toContain("Bu cevapta araç çağırma");
 
     const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
     expect(text).toContain("Bu araç OpenAI'ın güvenlik kontrolleri");
@@ -4770,6 +4776,38 @@ test("a block claim the ledger contradicts is corrected by one retained turn tha
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     await TurnBroker.forSocket(socketPath).close();
   }
+});
+
+test("a tool image is delivered before a block-claim correction, which cannot take it down", async () => {
+  // 26.09 (trace 5cf96a1718c2): the correction ran first, stalled, released the retained
+  // conversation, and the screenshot delivery then failed with "no longer available".
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  await deliverWindowRecoveryFixtures(
+    [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+    events,
+    {
+      retained: true,
+      browserTurns,
+      followUps,
+      failCorrection: true,
+      firstAnswer: "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.",
+    },
+  );
+
+  // Delivery first (carries the image), correction second (tool-less, no image).
+  expect(followUps.map(turn => turn.images)).toEqual([1, 0]);
+  expect(followUps[1]!.text).toContain("Bu cevapta araç çağırma");
+  expect(browserTurns[2]!.capabilities.localToolsEnabled).toBeFalse();
+
+  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+  // The image reached the model although the correction failed afterwards.
+  expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
+  expect(text).not.toContain("could not be attached");
+  expect(text).toContain("köprüye ulaşan 1 araç çağrısı tamamlandı");
+  expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
 });
 
 test("an image a tool returned mid-turn is delivered by a follow-up turn that attaches it", async () => {

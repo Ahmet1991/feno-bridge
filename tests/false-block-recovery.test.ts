@@ -36,8 +36,15 @@ test("an answer that claims nothing is left alone", () => {
 
 test("the correction states the record and never pushes the model to act", () => {
   const text = falseBlockCorrection({ completed: 4, failed: 0 });
-  expect(text).toContain("4 araç çağrısı tamamlandı");
-  expect(text).toContain("hiçbir araç çıktısından gelmedi");
+  expect(text).toContain("köprüye ulaşan 4 araç çağrısı tamamlandı");
+  expect(text).toContain("köprüden dönen hiçbir araç çıktısında yok");
+  // ChatGPT can refuse a call before it reaches the connector and show that refusal itself; the
+  // bridge cannot see it, so the correction must allow the model to keep a real refusal verbatim.
+  expect(text).toContain("ChatGPT'nin kendisine hiç ulaştırmadığı bir çağrıyı göremez");
+  expect(text).toContain("aynen koru");
+  // The correction turn has no tools (26.09: a tool call from it could never be executed).
+  expect(text).toContain("Bu cevapta araç çağırma");
+  expect(text.toLowerCase()).not.toContain("devam et");
   // Leaving the decision alone is the point: the session that produced the four-call claim was
   // about to submit someone's identity details, where stopping was the right call and only the
   // invented error was wrong. A correction that pushed would be worse than the fabrication.
