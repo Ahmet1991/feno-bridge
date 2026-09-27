@@ -25,10 +25,11 @@ import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "../src/chatgpt-web-models";
+import { restoreTestHomes } from "./support/isolate-homes";
 
 const roots: string[] = [];
 afterEach(() => {
-  delete process.env.CODEX_CHATGPT_WEB_HOME;
+  restoreTestHomes();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

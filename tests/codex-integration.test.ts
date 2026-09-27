@@ -29,6 +29,7 @@ import {
   snapshotFile,
   writeFilesWithCompensation,
 } from "../src/codex-integration-shared";
+import { restoreTestHomes } from "./support/isolate-homes";
 
 const roots: string[] = [];
 
@@ -56,8 +57,7 @@ function fixture(): { root: string; codexHome: string; appHome: string } {
 }
 
 afterEach(() => {
-  delete process.env.CODEX_HOME;
-  delete process.env.CODEX_CHATGPT_WEB_HOME;
+  restoreTestHomes();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
