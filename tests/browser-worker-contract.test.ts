@@ -980,6 +980,8 @@ test("connector preflight retries once after reloading a clean Temporary Chat", 
     activeComposer: async () => composer,
     clearChatGptComposerState: async () => { composerText = ""; },
     connectorIsSelected: async () => reloaded,
+    // A selected connector proves an empty composer only when no earlier request came with it.
+    attachedPromptText: async () => composerText,
   });
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown): Promise<unknown>;
