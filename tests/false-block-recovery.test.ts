@@ -56,7 +56,10 @@ test("the correction states the record and never pushes the model to act", () =>
   const text = falseBlockCorrection({ completed: 4, failed: 0 });
   expect(text).toContain("Bu not kullanıcıdan değil, köprünün otomatik kayıt kontrolünden geliyor; kullanıcı bir itirazda bulunmadı.");
   expect(text).toContain("'Haklısın' deme, özür dileme; yalnız kaydı düzelt.");
-  expect(text).toContain("köprüye ulaşan 4 araç çağrısı tamamlandı");
+  expect(text).toContain("köprüye ulaşan 4 araç çağrısı tamamlandı ve sonuçlarıyla döndü");
+  // A returned result is not a successful one: the bridge cannot see a failure Codex reports as
+  // plain output, so it must not tell the model that none failed.
+  expect(text).not.toContain("hiçbiri hata");
   expect(text).toContain("köprüden dönen hiçbir araç çıktısında yok");
   // ChatGPT can refuse a call before it reaches the connector and show that refusal itself; the
   // bridge cannot see it, so the correction must allow the model to keep a real refusal verbatim.

@@ -40,7 +40,9 @@ export function falseBlockCorrection(counts: { completed: number; failed: number
     // The bridge cannot see a refusal that never reached it, so this says what it observed rather
     // than claiming nothing refused the call.
     ? "bu turda köprüye hiçbir araç çağrısı ulaşmadı"
-    : `bu turda köprüye ulaşan ${counts.completed} araç çağrısı tamamlandı ve hiçbiri hata döndürmedi`;
+    // Returned, not succeeded: Codex sends a call's output without an error flag, so a failed call
+    // (28.09: "Computer Use native pipe is unavailable") looks the same here as a successful one.
+    : `bu turda köprüye ulaşan ${counts.completed} araç çağrısı tamamlandı ve sonuçlarıyla döndü`;
   // The bridge cannot see a call ChatGPT refused before it reached the connector, and ChatGPT shows
   // such a refusal to the model in its own words. Say so, instead of pushing the model to withdraw a
   // refusal that may be real. This turn has no tools (its answer cannot reach Codex), so it must not

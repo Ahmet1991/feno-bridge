@@ -1,12 +1,14 @@
 /**
  * ChatGPT sometimes ends a turn by saying a tool call was blocked when no call was blocked, and
  * repeated instructions in AGENTS.md did not stop it. The bridge cannot know what a model intended,
- * but it does know exactly how many local tool calls a turn dispatched and how many returned an
- * error, so it states those two numbers next to the claim instead of arguing with it.
+ * but it does know exactly how many local tool calls a turn dispatched and got a result back for,
+ * so it states that number next to the claim instead of arguing with it.
  *
- * The counts prove only what this bridge saw. A refusal upstream of the bridge never reaches the
- * broker at all, so "0 failed" is evidence that these calls succeeded, not proof that nothing was
- * ever refused. The wording keeps that distinction.
+ * The count proves only what this bridge saw. A refusal upstream of the bridge never reaches the
+ * broker at all, and a returned result is not a successful one: Codex sends a function call's output
+ * without an error flag. On 28.09 a node_repl call that failed with "Computer Use native pipe is
+ * unavailable" arrived as plain output text, and the line still said "0 tanesi hata döndürdü". So the
+ * line names failures only when a result really was marked as one, and never claims there were none.
  */
 // Missing a claim costs more than an extra informational line, so these lean broad. They cover the
 // wordings observed on 19-20 Sep, including "güvenlik engeline takıldı", which no "engellendi"
@@ -76,12 +78,15 @@ export function formatBlockClaimEvidence(
   counts: { completed: number; failed: number; windowCaptureNeverReached?: boolean },
 ): string {
   const { completed, failed } = counts;
+  const marked = failed > 0 ? `; ${failed} tanesi hata olarak işaretlendi` : "";
   const observed = completed === 0
     ? "Bu turda köprü üzerinden hiç araç çağrısı yapılmadı."
-    : `Bu turda köprüye ulaşan ${completed} araç çağrısı tamamlandı, ${failed} tanesi hata döndürdü.`
-      + " ChatGPT'nin köprüye hiç ulaştırmadığı bir çağrı bu sayıma girmez.";
+    : `Bu turda köprüye ulaşan ${completed} araç çağrısı Codex'te çalıştı ve sonucuyla döndü${marked}.`
+      + " Başarılı olup olmadıklarını araç çıktıları söyler; ChatGPT'nin köprüye hiç ulaştırmadığı bir çağrı"
+      + " bu sayıma girmez.";
+  // "Set up" means the setup call was made, not that it worked: its result may have been an error.
   const missing = counts.windowCaptureNeverReached
-    ? ` Pencere hazırlandı ama ekran görüntüsü çağrısı (${WINDOW_CAPTURE}) köprüye hiç ulaşmadı.`
+    ? ` Pencere hazırlama çağrısı yapıldı ama ekran görüntüsü çağrısı (${WINDOW_CAPTURE}) köprüye hiç ulaşmadı.`
     : "";
   return `\n\n---\n[Feno Bridge] ${observed}${missing}`;
 }

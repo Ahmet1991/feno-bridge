@@ -4797,7 +4797,7 @@ test("the evidence line counts every round of a turn and names the capture that 
       .map(event => event.text)
       .join("");
     expect(answer).toContain(claim);
-    expect(answer).toContain("2 araç çağrısı tamamlandı");
+    expect(answer).toContain("2 araç çağrısı Codex'te çalıştı");
     expect(answer).toContain("get_window_state");
     expect(answer).toContain("köprüye hiç ulaşmadı");
   } finally {
@@ -4898,7 +4898,7 @@ test("ChatGPT's own platform refusal skips correction while preserving bridge ev
   expect(followUps).toHaveLength(0);
   const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
   expect(text).toContain(refusal);
-  expect(text).toContain("[Feno Bridge] Bu turda köprüye ulaşan 1 araç çağrısı tamamlandı, 0 tanesi hata döndürdü.");
+  expect(text).toContain("[Feno Bridge] Bu turda köprüye ulaşan 1 araç çağrısı Codex'te çalıştı ve sonucuyla döndü.");
 });
 
 test("structured-output turns do not open image continuation or delivery turns for unshown tool images", async () => {
@@ -5030,7 +5030,7 @@ test("a tool image is delivered before a block-claim correction, which cannot ta
   // The image reached the model although the correction failed afterwards.
   expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
   expect(text).not.toContain("could not be attached");
-  expect(text).toContain("köprüye ulaşan 1 araç çağrısı tamamlandı");
+  expect(text).toContain("köprüye ulaşan 1 araç çağrısı Codex'te çalıştı");
   expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
 });
 
