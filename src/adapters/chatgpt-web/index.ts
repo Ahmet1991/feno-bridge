@@ -32,6 +32,7 @@ import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebC
 import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, chatGptTurnTokenInstruction, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
 import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
 import { falseBlockCorrection, quotesChatGptPlatformRefusal, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
+import type { ChatGptToolRecordEvidence } from "./tool-record-evidence";
 import {
   callObservesWindow,
   isPolicyStop,
@@ -90,6 +91,8 @@ const imagesDeliveredSessions = new WeakSet<ChatGptTurnSession>();
 const falseBlockRecoveredSessions = new WeakSet<ChatGptTurnSession>();
 /** A correction owed by an earlier streamed message, deferred until image continuation is done. */
 const pendingFalseBlockCorrectionSessions = new WeakSet<ChatGptTurnSession>();
+/** ChatGPT's record of the message that claimed the block, kept for a correction deferred past it. */
+const toolRecordBySession = new WeakMap<ChatGptTurnSession, ChatGptToolRecordEvidence>();
 
 const MAX_IMAGE_CONTINUATION_PHASES = 4;
 
@@ -899,6 +902,7 @@ export function createChatGptWebAdapter(
       ...(await prepareWith(input)),
       requestImages,
     });
+    const toolRecord: { evidence?: ChatGptToolRecordEvidence } = {};
     const browserTurn = cancellableBrowserTurn(trackBrowserOwner(finalizeCheckpoint(worker.run({
       traceId,
       modelId: parsed.modelId,
@@ -915,6 +919,7 @@ export function createChatGptWebAdapter(
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
+      onToolRecordEvidence: evidence => { toolRecord.evidence = evidence; },
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),
@@ -940,6 +945,7 @@ export function createChatGptWebAdapter(
       trace,
       text,
       usageInput: checkpointInput.parsed,
+      toolRecord,
       ...(conversationKey ? { conversationKey } : {}),
       ...(releaseRetainedConversation ? { releaseRetainedConversation } : {}),
       retireCapability: async () => {
@@ -1017,6 +1023,7 @@ export function createChatGptWebAdapter(
         requestImages: images.length,
       };
     };
+    const toolRecord: { evidence?: ChatGptToolRecordEvidence } = {};
     const browserRun = worker.run({
       traceId: continuationTraceId,
       modelId: parsed.modelId,
@@ -1041,6 +1048,7 @@ export function createChatGptWebAdapter(
         ...(continuation ? { continuation: true } : {}),
       }),
       onTextDelta: delta => text.push(delta),
+      onToolRecordEvidence: evidence => { toolRecord.evidence = evidence; },
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),
@@ -1068,6 +1076,7 @@ export function createChatGptWebAdapter(
         text,
         usageInput: parsed,
         conversationKey,
+        toolRecord,
         ...(session.runtime.releaseRetainedConversation
           ? { releaseRetainedConversation: session.runtime.releaseRetainedConversation }
           : {}),
@@ -1710,9 +1719,17 @@ export function createChatGptWebAdapter(
                   && !falseBlockRecoveredSessions.has(session)
                   && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(correctionAnswer), ledger);
                 const pendingFalseBlockCorrection = pendingFalseBlockCorrectionSessions.has(session);
+                const phaseRecord = activeRuntime.toolRecord?.evidence;
+                if (phaseRecord) toolRecordBySession.set(session, phaseRecord);
+                const claimRecord = toolRecordBySession.get(session);
+                // ChatGPT's own record decides when it could be read. A quoted refusal decided alone
+                // until 28.09, when the record showed the quoted refusal had never been sent.
+                const platformRefusal = claimRecord
+                  ? claimRecord.platformRefusal
+                  : correctionAnswer !== undefined && quotesChatGptPlatformRefusal(correctionAnswer);
                 const skipForPlatformRefusal = correctionAnswer !== undefined
                   && (correctionEligible || pendingFalseBlockCorrection)
-                  && quotesChatGptPlatformRefusal(correctionAnswer);
+                  && platformRefusal;
                 const correcting = (correctionEligible || pendingFalseBlockCorrection)
                   && !skipForPlatformRefusal;
                 if (activeToken) await broker.revoke(activeToken);
@@ -1756,7 +1773,7 @@ export function createChatGptWebAdapter(
                 // image continuation printed the same tool-call footer twice under one answer.
                 const blockEvidence = reusedEmittedAnswer
                   ? undefined
-                  : blockClaimEvidenceFor(completedOutcome.answer, ledger);
+                  : blockClaimEvidenceFor(completedOutcome.answer, ledger, phaseRecord);
                 if (blockEvidence) {
                   console.warn(
                     `[chatgpt-web] answer claimed a blocked or failed tool call`
@@ -1768,6 +1785,7 @@ export function createChatGptWebAdapter(
                 if (skipForPlatformRefusal) {
                   console.warn(
                     `[chatgpt-web] false block claim correction skipped reason=chatgpt_platform_refusal`
+                    + ` record=${claimRecord ? "confirmed" : "unavailable"}`
                     + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`,
                   );
                 }
@@ -1900,7 +1918,7 @@ export function createChatGptWebAdapter(
                   // broker queued it with waiters=0, ChatGPT waited on the result and the turn failed
                   // after the DOM grace — taking the pending image delivery down with it.
                   const prepareCorrection = async () => ({
-                    text: falseBlockCorrection(ledger),
+                    text: falseBlockCorrection(ledger, claimRecord),
                     images: [],
                     release: () => {},
                   });
@@ -1939,6 +1957,7 @@ export function createChatGptWebAdapter(
                   console.warn(
                     `[chatgpt-web] false block claim correction sent`
                     + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
+                    + ` record=${claimRecord ? `unansweredCalls:${claimRecord.unansweredCalls}` : "unavailable"}`
                     + ` answered=${corrected !== undefined}`
                     + ` secondAnswerMentionsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
                     + (failure !== undefined ? ` failure=${JSON.stringify(failure)}` : ""),
