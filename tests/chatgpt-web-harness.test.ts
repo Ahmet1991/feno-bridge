@@ -10,6 +10,7 @@ import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adap
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
+import type { ChatGptToolRecordEvidence } from "../src/adapters/chatgpt-web/tool-record-evidence";
 import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision, priorChatGptAbortedTurnIds } from "../src/adapters/chatgpt-web/environment";
 import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
@@ -4313,6 +4314,8 @@ async function deliverWindowRecoveryFixtures(
     fallbackAnswer?: string;
     structuredOutput?: boolean;
     followUps?: Array<{ images: number; text: string }>;
+    // What ChatGPT's own record of the first message shows, as the worker would report it.
+    firstRecord?: ChatGptToolRecordEvidence;
   },
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
@@ -4382,6 +4385,7 @@ async function deliverWindowRecoveryFixtures(
       delivered.push(...results);
       const answer = options?.firstAnswer ?? "Window recovery fixture complete";
       turn.onTextDelta(answer);
+      if (options?.firstRecord) await turn.onToolRecordEvidence?.(options.firstRecord);
       return answer;
     } finally {
       prepared.release();
@@ -4900,6 +4904,69 @@ test("ChatGPT's own platform refusal skips correction while preserving bridge ev
   const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
   expect(text).toContain(refusal);
   expect(text).toContain("[Feno Bridge] Bu turda köprüye ulaşan 1 araç çağrısı Codex'te çalıştı ve sonucuyla döndü.");
+});
+
+test("28.09: a quoted refusal that ChatGPT's own record never contained is corrected, not trusted", async () => {
+  // The capability test's click had nothing under it in ChatGPT's record and never reached the
+  // bridge; the answer still quoted ChatGPT's refusal, and v5.0.40 believed the quote.
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  const refusal = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
+  try {
+    await deliverWindowRecoveryFixtures(
+      [{ wireName: "js", code: "nodeRepl.write('done')", content: "ok" }],
+      events,
+      {
+        retained: true,
+        browserTurns,
+        followUps,
+        firstAnswer: `TEST 10 ❌ Tıklama çağrısı ChatGPT tarafından engellendi: “${refusal}”`,
+        firstRecord: { unansweredCalls: 1, platformRefusal: false },
+      },
+    );
+
+    expect(followUps).toHaveLength(1);
+    expect(followUps[0]!.text).toContain("Köprü ChatGPT'nin bu sohbet için tuttuğu kaydı da okudu");
+    expect(followUps[0]!.text).not.toContain("aynen koru");
+    expect(warnings.some(line => line.includes("false block claim correction sent")
+      && line.includes("record=unansweredCalls:1"))).toBeTrue();
+    expect(warnings.some(line => line.includes("correction skipped"))).toBeFalse();
+    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+    expect(text).toContain("ChatGPT'nin kendi sohbet kaydında bu turdaki 1 araç çağrısının altında ne bir sonuç");
+  } finally {
+    warning.mockRestore();
+  }
+});
+
+test("a refusal ChatGPT's own record does contain skips the correction whatever the answer's wording", async () => {
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  try {
+    await deliverWindowRecoveryFixtures(
+      [{ wireName: "js", code: "nodeRepl.write('done')", content: "ok" }],
+      events,
+      {
+        retained: true,
+        browserTurns,
+        followUps,
+        firstAnswer: "Bu araç çağrısı güvenlik engeline takıldı.",
+        firstRecord: { unansweredCalls: 0, platformRefusal: true },
+      },
+    );
+
+    expect(followUps).toHaveLength(0);
+    expect(warnings.some(line => line.includes("correction skipped reason=chatgpt_platform_refusal record=confirmed"))).toBeTrue();
+    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+    expect(text).toContain("ChatGPT'nin kendi sohbet kaydında bu turda bir platform red mesajı var.");
+  } finally {
+    warning.mockRestore();
+  }
 });
 
 test("structured-output turns do not open image continuation or delivery turns for unshown tool images", async () => {

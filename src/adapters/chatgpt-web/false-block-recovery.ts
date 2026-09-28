@@ -16,6 +16,10 @@
  * reason given. That measurement is why the correction is worded exactly this way.
  */
 
+import type { ChatGptToolRecordEvidence } from "./tool-record-evidence";
+
+// Used only when ChatGPT's own record could not be read: 28.09 the model quoted the first sentence
+// for a call whose record held no refusal at all, so a quote alone no longer skips a correction.
 const CHATGPT_PLATFORM_REFUSALS = [
   "isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi",
   // 27 Sep 23:56 UTC: the capability test opened Calculator and captured it through the bridge, then
@@ -42,7 +46,10 @@ export function quotesChatGptPlatformRefusal(answer: string): boolean {
  * Pushing a model past a refusal it meant is worse than the fabrication this repairs, so the text
  * corrects the record and leaves the decision alone.
  */
-export function falseBlockCorrection(counts: { completed: number; failed: number }): string {
+export function falseBlockCorrection(
+  counts: { completed: number; failed: number },
+  record?: ChatGptToolRecordEvidence,
+): string {
   const observed = counts.completed === 0
     // The bridge cannot see a refusal that never reached it, so this says what it observed rather
     // than claiming nothing refused the call.
@@ -50,11 +57,25 @@ export function falseBlockCorrection(counts: { completed: number; failed: number
     // Returned, not succeeded: Codex sends a call's output without an error flag, so a failed call
     // (28.09: "Computer Use native pipe is unavailable") looks the same here as a successful one.
     : `bu turda köprüye ulaşan ${counts.completed} araç çağrısı tamamlandı ve sonuçlarıyla döndü`;
-  // The bridge cannot see a call ChatGPT refused before it reached the connector, and ChatGPT shows
-  // such a refusal to the model in its own words. Say so, instead of pushing the model to withdraw a
-  // refusal that may be real. This turn has no tools (its answer cannot reach Codex), so it must not
-  // invite work that needs one.
-  return "Bu not kullanıcıdan değil, köprünün otomatik kayıt kontrolünden geliyor; kullanıcı bir itirazda bulunmadı. 'Haklısın' deme, özür dileme; yalnız kaydı düzelt."
+  const preface = "Bu not kullanıcıdan değil, köprünün otomatik kayıt kontrolünden geliyor; kullanıcı bir itirazda bulunmadı. 'Haklısın' deme, özür dileme; yalnız kaydı düzelt.";
+  if (record && !record.platformRefusal) {
+    // ChatGPT's own record has been read, so "ChatGPT showed it to me" is no longer an open door:
+    // 28.09 the model took that door and kept a refusal the record never contained.
+    const unanswered = record.unansweredCalls > 0
+      ? `; ${record.unansweredCalls} araç çağrının altında ne bir sonuç ne de bir hata var, yani o çağrılar hiç çalıştırılmadı`
+      : "";
+    return preface
+      + ` Kayda göre ${observed}.`
+      + " Köprü ChatGPT'nin bu sohbet için tuttuğu kaydı da okudu: bu turda hiçbir araç sonucunda ya da"
+      + ` platform mesajında bir engel veya red metni yok${unanswered}.`
+      + " Bildirdiğin engel metnini ve çalışmayan çağrılara dayanan sonuçları geri çek; o adımın"
+      + " çalıştırılmadığını ve nedeninin kayıtta olmadığını söyle."
+      + " Bu cevapta araç çağırma.";
+  }
+  // Without ChatGPT's record the bridge cannot see a call ChatGPT refused before it reached the
+  // connector. This turn has no tools (its answer cannot reach Codex), so it must not invite work
+  // that needs one.
+  return preface
     + ` Kayda göre ${observed}; bildirdiğin engel metni köprüden dönen hiçbir araç çıktısında yok.`
     + " Köprü, ChatGPT'nin kendisine hiç ulaştırmadığı bir çağrıyı göremez:"
     + " bu metni ChatGPT'nin kendisi gösterdiyse aynen koru ve ChatGPT tarafından geldiğini belirt."

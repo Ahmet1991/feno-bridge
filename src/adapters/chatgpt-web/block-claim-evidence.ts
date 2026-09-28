@@ -10,6 +10,8 @@
  * unavailable" arrived as plain output text, and the line still said "0 tanesi hata döndürdü". So the
  * line names failures only when a result really was marked as one, and never claims there were none.
  */
+import type { ChatGptToolRecordEvidence } from "./tool-record-evidence";
+
 // Missing a claim costs more than an extra informational line, so these lean broad. They cover the
 // wordings observed on 19-20 Sep, including "güvenlik engeline takıldı", which no "engellendi"
 // stem matches.
@@ -76,6 +78,7 @@ export class TurnCallLedger {
 
 export function formatBlockClaimEvidence(
   counts: { completed: number; failed: number; windowCaptureNeverReached?: boolean },
+  record?: ChatGptToolRecordEvidence,
 ): string {
   const { completed, failed } = counts;
   const marked = failed > 0 ? `; ${failed} tanesi hata olarak işaretlendi` : "";
@@ -88,13 +91,24 @@ export function formatBlockClaimEvidence(
   const missing = counts.windowCaptureNeverReached
     ? ` Pencere hazırlama çağrısı yapıldı ama ekran görüntüsü çağrısı (${WINDOW_CAPTURE}) köprüye hiç ulaşmadı.`
     : "";
-  return `\n\n---\n[Feno Bridge] ${observed}${missing}`;
+  // ChatGPT's own record reaches past the bridge: it shows a call ChatGPT never ran, which the
+  // count above cannot. 28.09: the record held no refusal for the "blocked" click, only silence.
+  const recorded = !record
+    ? ""
+    : record.platformRefusal
+      ? " ChatGPT'nin kendi sohbet kaydında bu turda bir platform red mesajı var."
+      : record.unansweredCalls > 0
+        ? ` ChatGPT'nin kendi sohbet kaydında bu turdaki ${record.unansweredCalls} araç çağrısının altında ne bir sonuç`
+          + " ne de bir hata ya da red mesajı var: ChatGPT bu çağrıları çalıştırmadı ve nedenini kayda yazmadı."
+        : " ChatGPT'nin kendi sohbet kaydında bu turda hiçbir red ya da engel mesajı yok.";
+  return `\n\n---\n[Feno Bridge] ${observed}${missing}${recorded}`;
 }
 
 /** Returns the line to append, or undefined when the answer makes no such claim. */
 export function blockClaimEvidenceFor(
   answer: string,
   counts: { completed: number; failed: number; windowCaptureNeverReached?: boolean },
+  record?: ChatGptToolRecordEvidence,
 ): string | undefined {
-  return claimsBlockedToolCall(answer) ? formatBlockClaimEvidence(counts) : undefined;
+  return claimsBlockedToolCall(answer) ? formatBlockClaimEvidence(counts, record) : undefined;
 }
