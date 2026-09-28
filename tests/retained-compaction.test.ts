@@ -27,6 +27,12 @@ import {
   chatGptWebExecutionNamespace,
   createChatGptWebAdapter,
 } from "../src/adapters/chatgpt-web/index";
+import { compiledChatGptWebMessages } from "../src/adapters/chatgpt-web/input-tokens";
+import {
+  compactionHistoryTrimSteps,
+  compileChatGptWebPrompt,
+  withoutOldestCompactionHistory,
+} from "../src/adapters/chatgpt-web/prompt";
 import { SUMMARY_PREFIX } from "../src/responses/compaction";
 import {
   ChatGptTextFeed,
@@ -47,7 +53,7 @@ import {
   CODEX_ACTIVE_COMPACTION_REQUEST_MARKER,
   structuredCompactionHandoffInstruction,
 } from "../src/adapters/chatgpt-web/native-compaction-control";
-import type { AdapterEvent, CodexParsedRequest, CodexProviderConfig } from "../src/types";
+import type { AdapterEvent, CodexMessage, CodexParsedRequest, CodexProviderConfig } from "../src/types";
 
 /**
  * These fixtures hand the turn broker a Unix socket under their temp root. macOS puts TMPDIR at
@@ -167,6 +173,72 @@ test("compaction uses the browser page capacity guard without trimming canonical
   const staged = compiled.multipart!.parts.join("\n");
   expect(staged).toContain("compaction-history-0-");
   expect(staged).toContain("compaction-history-11-");
+});
+
+test("a compaction past the twelve-part ceiling leaves out the oldest history instead of failing", () => {
+  // 28.09 00:29 UTC: the fresh compaction of a 225-item session needed 13 parts, failed with
+  // browser_message_too_large on every retry, and the Codex task could not continue at all.
+  const compact = request(true);
+  compact.context.systemPrompt = [];
+  compact.context.messages = Array.from({ length: 13 }, (_unused, index) => ({
+    role: "user" as const,
+    content: `ceiling-history-${index}-${"q".repeat(8_000)}`,
+    timestamp: index + 1,
+  }));
+  const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
+  const twelve = compileChatGptWebPrompt(compact, capabilities, undefined, {
+    multipartParts: 12,
+    preserveCompactionHistory: true,
+  });
+  const recordCounts = twelve.multipart!.parts.map(part => (
+    JSON.parse(part) as { records: unknown[] }
+  ).records.length);
+  const messages = compiledChatGptWebMessages(twelve);
+  const singleRecordMax = Math.max(...messages.filter((_message, index) => recordCounts[index] === 1).map(message => message.length));
+  const multiRecordMin = Math.min(...messages.filter((_message, index) => recordCounts[index]! > 1).map(message => message.length));
+  const maxMessageChars = Math.floor((singleRecordMax + multiRecordMin) / 2);
+
+  // An ordinary turn with the same history still fails explicitly rather than lose context.
+  const ordinary = structuredClone(compact);
+  ordinary._compactionRequest = false;
+  expect(() => compileChatGptWebPromptWithinPageCapacity(ordinary, capabilities, undefined, { maxMessageChars }))
+    .toThrow(/maximum is 12/);
+
+  const compiled = compileChatGptWebPromptWithinPageCapacity(compact, capabilities, undefined, { maxMessageChars });
+  expect(compiled.trimmedCompactionMessages).toBeGreaterThan(0);
+  expect(Math.max(...compiledChatGptWebMessages(compiled).map(message => message.length))).toBeLessThanOrEqual(maxMessageChars);
+  const staged = (compiled.multipart?.parts ?? []).join("\n") + compiled.text;
+  expect(staged).not.toContain("ceiling-history-0-");
+  // The final message is the compaction instruction's position and always survives.
+  expect(staged).toContain("ceiling-history-12-");
+  // The summary is told the history is incomplete, never that the context is complete.
+  const commit = compiled.multipart?.commit ?? compiled.text;
+  expect(commit).toContain(`${compiled.trimmedCompactionMessages} earlier history items were omitted to fit this compaction request`);
+  expect(commit).not.toContain("The task context is complete.");
+  // Each attempt runs the full capacity search, including the exact 13-part diagnostic.
+}, 60_000);
+
+test("trimming a compaction keeps the newest checkpoint and the final instruction, oldest first", () => {
+  const history: CodexMessage[] = [
+    { role: "user", content: "old-0", timestamp: 1 },
+    { role: "user", content: `${SUMMARY_PREFIX}\nolder checkpoint`, timestamp: 2 },
+    { role: "user", content: "old-2", timestamp: 3 },
+    { role: "user", content: `${SUMMARY_PREFIX}\nnewest checkpoint`, timestamp: 4 },
+    { role: "user", content: "old-4", timestamp: 5 },
+    { role: "user", content: "final instruction", timestamp: 6 },
+  ];
+  expect(withoutOldestCompactionHistory(history, 2).map(message => message.content))
+    .toEqual(["old-2", `${SUMMARY_PREFIX}\nnewest checkpoint`, "old-4", "final instruction"]);
+  expect(withoutOldestCompactionHistory(history, 99).map(message => message.content))
+    .toEqual([`${SUMMARY_PREFIX}\nnewest checkpoint`, "final instruction"]);
+
+  const compact = request(true);
+  compact.context.messages = history;
+  const steps = compactionHistoryTrimSteps(compact);
+  expect(steps.length).toBeGreaterThan(0);
+  expect(steps).toEqual([...steps].sort((left, right) => left - right));
+  // The last step leaves out every trimmable item: all but the newest checkpoint and the final one.
+  expect(steps.at(-1)).toBe(4);
 });
 
 test("compaction capability is one-shot and structurally bound to its handoff id", async () => {
