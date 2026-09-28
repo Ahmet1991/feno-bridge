@@ -62,6 +62,24 @@ export function chatGptStoppedThinkingError(): ChatGptWebAdapterError {
   );
 }
 
+/**
+ * Nothing was sent: the page no longer shows the conversation a resumed turn depends on. Retrying
+ * is safe and correct, because the launcher never reuses a tab whose turn failed, so the retry opens
+ * a new conversation and sends the full context.
+ */
+export function chatGptRetainedConversationLostError(moment: string): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "The retained ChatGPT conversation is no longer on its page, so nothing was sent. Retry to resend the full context.",
+    {
+      status: 503,
+      errorType: "server_error",
+      code: "retained_conversation_lost",
+      retryable: true,
+      cause: new Error(`retained conversation lost ${moment}`),
+    },
+  );
+}
+
 export function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     "The retained ChatGPT conversation is no longer available.",
