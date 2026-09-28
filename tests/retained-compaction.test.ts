@@ -1366,7 +1366,9 @@ test.each([false, true])("structured compact rebuilds canonical context when its
     await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
     rmSync(root, { recursive: true, force: true });
   }
-});
+  // Bigger Context compiles a multipart prompt here, which is CPU-bound: on a busy machine it ran 5.3-6.8 s
+  // against the 5 s default (28.09), in this file and in untouched v5.0.44 alike.
+}, 30_000);
 
 test("fresh multipart compaction gives each acknowledged phase its own handoff budget", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-phased-fallback-compact-"));

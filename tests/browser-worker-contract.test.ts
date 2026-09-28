@@ -4050,7 +4050,8 @@ test("Bigger Context fits mixed-density whole records within both token and comp
       { stagingEffort: stagingMode.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens, finalMessageChars: final.length },
     )).not.toThrow();
   }
-}, 90_000);
+  // CPU-bound multipart compilation: 89 s alone and 101 s in the full suite on 28.09, against 90 s.
+}, 300_000);
 
 test("Bigger Context preflight expands only the total context ceiling and keeps each message boundary", () => {
   const plus = {
