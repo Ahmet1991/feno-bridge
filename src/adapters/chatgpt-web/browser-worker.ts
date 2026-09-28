@@ -3037,9 +3037,24 @@ export class ChatGptBrowserWorker {
     return selectedMode;
   }
 
-  private async assertSelectedEffort(page: Page, mode: SelectedChatGptWebModelMode): Promise<void> {
+  /** Whether the pre-send check would accept this selection as it stands; never throws. */
+  private async selectedEffortHolds(page: Page, mode: SelectedChatGptWebModelMode): Promise<boolean> {
+    if (!mode.selection) return false;
+    try {
+      await this.assertSelectedEffort(page, mode, 5_000);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async assertSelectedEffort(
+    page: Page,
+    mode: SelectedChatGptWebModelMode,
+    composerTimeoutMs?: number,
+  ): Promise<void> {
     if (!mode.selection) return;
-    const composer = await this.activeComposer(page);
+    const composer = await this.activeComposer(page, composerTimeoutMs);
     const controls = composer.locator("xpath=ancestor::form[1]")
       .locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
     if (page.url() !== mode.selection.url || !mode.selection.label || await controls.count() !== 1) {
@@ -5520,7 +5535,10 @@ export class ChatGptBrowserWorker {
           // on, so every second stage failed with "model controls are unavailable" (it worked
           // on 24.09). Upstream 6.1.x re-proves the selection before each later stage; so does
           // this, without the reload retry above, which would abandon the stages already sent.
-          if (index > 0) {
+          // Only when the pre-send check would refuse it, though: the page moves once, after the
+          // first stage, and re-selecting on an unchanged page cost ~2.5 s per stage (28.09: a
+          // seven-part context spent 13 s re-choosing an effort that was still selected).
+          if (index > 0 && !await this.selectedEffortHolds(page, mode)) {
             mode = await this.runStage(
               turn.traceId,
               `multipart_stage_${index + 1}_effort_selection`,
