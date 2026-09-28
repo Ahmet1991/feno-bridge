@@ -18,11 +18,25 @@ function copyDirectory(source, destination) {
   });
 }
 
-function restoreApplicationDirectory({ backupDir, previousDir, targetDir }) {
+// A killed installer and the old uninstaller it started can hold the install directory for a while
+// after the kill. 28.09: the rollback's single rm hit EBUSY and left Feno Bridge uninstalled.
+const REMOVE_RETRIES = { maxRetries: 12, retryDelay: 1_000 };
+
+function restoreApplicationDirectory({ backupDir, previousDir, targetDir, removeDirectory = fs.rmSync }) {
   if (targetDir !== previousDir && fs.existsSync(targetDir)) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
+    removeDirectory(targetDir, { recursive: true, force: true, ...REMOVE_RETRIES });
   }
-  if (fs.existsSync(previousDir)) fs.rmSync(previousDir, { recursive: true, force: true });
+  if (fs.existsSync(previousDir)) {
+    try {
+      removeDirectory(previousDir, { recursive: true, force: true, ...REMOVE_RETRIES });
+    } catch (error) {
+      // The directory itself can stay locked after everything in it is gone (another process's
+      // working directory); restoring into it empty is as good as recreating it.
+      if (!fs.existsSync(previousDir) || fs.readdirSync(previousDir).length > 0) throw error;
+      fs.cpSync(backupDir, previousDir, { recursive: true, force: true });
+      return;
+    }
+  }
   copyDirectory(backupDir, previousDir);
 }
 
@@ -32,6 +46,7 @@ async function runWindowsUpdateTransaction(job, {
   waitForReadiness,
   onInstalled = () => {},
   appendLog = () => {},
+  removeDirectory = fs.rmSync,
 } = {}) {
   if (typeof runInstaller !== "function" || typeof launch !== "function" || typeof waitForReadiness !== "function") {
     throw new Error("Windows update transaction requires installer, launch, and readiness functions");
@@ -72,7 +87,7 @@ async function runWindowsUpdateTransaction(job, {
       throw retained;
     }
     try {
-      restoreApplicationDirectory({ backupDir, previousDir, targetDir });
+      restoreApplicationDirectory({ backupDir, previousDir, targetDir, removeDirectory });
       fs.rmSync(backupDir, { recursive: true, force: true });
     } catch (rollbackError) {
       const message = error instanceof Error ? error.message : String(error);

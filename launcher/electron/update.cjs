@@ -503,6 +503,7 @@ function createUpdateController({
         fs.copyFileSync(path.join(__dirname, "update-ready.cjs"), path.join(tempRoot, "update-ready.cjs"));
         fs.copyFileSync(path.join(__dirname, "update-recovery.cjs"), path.join(tempRoot, "update-recovery.cjs"));
         fs.copyFileSync(path.join(__dirname, "update-progress.cjs"), path.join(tempRoot, "update-progress.cjs"));
+        fs.copyFileSync(path.join(__dirname, "update-installer.cjs"), path.join(tempRoot, "update-installer.cjs"));
         const job = buildJob({
           version: available.version,
           platform,

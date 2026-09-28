@@ -3,6 +3,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { waitForFunctionalReadyMarker } = require("./update-ready.cjs");
 const { runWindowsUpdateTransaction } = require("./update-recovery.cjs");
+const { holdWindowsAwake, runWindowsInstaller } = require("./update-installer.cjs");
 const { startWindowsUpdateProgress, showWindowsUpdateFailure } = require("./update-progress.cjs");
 
 function appendLog(job, message) {
@@ -86,18 +87,21 @@ async function updateMac(job) {
 
 async function updateWindows(job, onInstalled = () => {}) {
   requireFile(job.source, "Windows installer");
-  const readiness = await runWindowsUpdateTransaction(job, {
-    runInstaller: () => {
-      const result = spawnSync(job.source, ["/S"], { encoding: "utf8", timeout: 15 * 60_000, windowsHide: true });
-      if (result.error) throw result.error;
-      if (result.status !== 0) throw new Error(`Windows installer exited with code ${result.status}`);
-    },
-    launch,
-    waitForReadiness: waitForFunctionalReadyMarker,
-    onInstalled,
-    appendLog: (message) => appendLog(job, message),
-  });
-  appendLog(job, `startup readiness confirmed: ${readiness.startup.status}`);
+  // The launcher that kept the machine awake has quit for this update; hold it awake until the
+  // updated application is functionally ready or the rollback is done.
+  const releaseAwake = holdWindowsAwake();
+  try {
+    const readiness = await runWindowsUpdateTransaction(job, {
+      runInstaller: () => runWindowsInstaller(job.source),
+      launch,
+      waitForReadiness: waitForFunctionalReadyMarker,
+      onInstalled,
+      appendLog: (message) => appendLog(job, message),
+    });
+    appendLog(job, `startup readiness confirmed: ${readiness.startup.status}`);
+  } finally {
+    releaseAwake();
+  }
 }
 
 function shellQuote(value) {
