@@ -1,3 +1,5 @@
+const { configureWindowsTrust } = require("./windows-trust.cjs");
+configureWindowsTrust();
 const languages = require("./languages.json");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -93,6 +95,10 @@ let mainWindowShowRequested = false;
 let startupFailed = false;
 let browserHost = null;
 let runtimeHost = null;
+// Renderer actions can arrive as soon as loadRenderer starts, before startup has acquired any
+// runtime operation lock. Keep setup/settings behind startup and its recovery as one boundary.
+let finishRuntimeStartup;
+const runtimeStartup = new Promise(resolve => { finishRuntimeStartup = resolve; });
 let browserControl = null;
 let runtimeSupervisor = null;
 let tray = null;
@@ -581,7 +587,17 @@ function smokePassedForCurrentVersion(state) {
 }
 
 function registerIpc({ logger, stateStore }) {
-  const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler);
+  const runtimeChannels = new Set([
+    "launcher:setup-core", "launcher:setup-mcp", "launcher:uninstall-integration",
+    "launcher:bigger-context", "launcher:skill-attachments", "launcher:zero-risk-pro",
+    "launcher:browser-interaction-mode", "launcher:mcp-verify", "launcher:doctor",
+    "launcher:cancel-turns", "launcher:browser-passkey-login", "launcher:browser-logout",
+    "launcher:browser-smoke", "launcher:update-install", "launcher:complete-onboarding",
+  ]);
+  const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, async (...args) => {
+    if (runtimeChannels.has(channel)) await runtimeStartup;
+    return handler(...args);
+  });
   handle("launcher:snapshot", async () => ({
     profile: LAUNCHER_PROFILE.kind,
     profilePaths: {
@@ -1317,8 +1333,8 @@ async function start() {
         logger.error("dev_profile.runtime_start_failed", { message });
         const failed = stateStore.update({ mcpSetupComplete: false });
         send("launcher:state-changed", failed);
-      });
-    }
+      }).finally(finishRuntimeStartup);
+    } else finishRuntimeStartup();
   } else void (async () => {
     await startupAuthenticationRefresh;
     const upgrade = await runtimeHost.upgradeManagedRuntime();
@@ -1460,7 +1476,7 @@ async function start() {
     send("launcher:state-changed", state);
     publishOperation({ name: "runtime-start", status: "failed", message });
     recordStartupReadiness("repair-required", message);
-  });
+  }).finally(finishRuntimeStartup);
 
   app.on("before-quit", (event) => {
     if (exitCommitted) return;

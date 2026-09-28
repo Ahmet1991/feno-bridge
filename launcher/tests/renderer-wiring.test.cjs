@@ -10,6 +10,49 @@ const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.c
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 
+test("runtime-changing IPC waits for startup, and every startup branch releases it", async () => {
+  // Upstream 6.1.3: a setting clicked while the runtime was still starting raced its startup.
+  const gate = electronMain.match(/const runtimeChannels = new Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(gate, "the runtime channel gate is missing");
+  const channels = [...gate[1].matchAll(/"(launcher:[a-z-]+)"/g)].map(match => match[1]);
+  assert.ok(channels.includes("launcher:bigger-context"));
+  assert.ok(channels.includes("launcher:complete-onboarding"));
+  // A gated name the fork never registers would be dead configuration that hides a missing one.
+  for (const channel of channels) {
+    assert.ok(electronMain.includes(`handle("${channel}"`), `${channel} is gated but never registered`);
+  }
+  assert.match(electronMain, /if \(runtimeChannels\.has\(channel\)\) await runtimeStartup;/);
+  // Dev profile with and without a full runtime, and the packaged startup path, each settle it once;
+  // a branch that never did would leave these buttons waiting forever.
+  assert.equal(electronMain.match(/\.finally\(finishRuntimeStartup\)/g)?.length, 2);
+  assert.equal(electronMain.match(/else finishRuntimeStartup\(\);/g)?.length, 1);
+  // Certificates must be configured before any module opens a connection.
+  assert.match(electronMain, /^const \{ configureWindowsTrust \} = require\("\.\/windows-trust\.cjs"\);\r?\nconfigureWindowsTrust\(\);/);
+
+  const vm = require("node:vm");
+  let finishRuntimeStartup;
+  const runtimeStartup = new Promise(resolve => { finishRuntimeStartup = resolve; });
+  const handlers = new Map();
+  const context = vm.createContext({ runtimeStartup, handlers });
+  const wrapper = electronMain.slice(
+    electronMain.indexOf("  const runtimeChannels = new Set(["),
+    electronMain.indexOf("  });", electronMain.indexOf("if (runtimeChannels.has(channel))")) + "  });".length,
+  );
+  vm.runInContext(`const registerLoggedIpc = (_ipc, _logger, channel, handler) => handlers.set(channel, handler);
+    const ipcMain = {}; const logger = {};
+    ${wrapper}
+    handle("launcher:bigger-context", () => "setting");
+    handle("launcher:snapshot", () => "snapshot");`, context);
+  let settled = false;
+  const setting = handlers.get("launcher:bigger-context")().then(value => { settled = true; return value; });
+  // Read-only calls stay usable while the runtime starts.
+  assert.equal(await handlers.get("launcher:snapshot")(), "snapshot");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, "a runtime-changing call ran before startup settled");
+  finishRuntimeStartup();
+  assert.equal(await setting, "setting");
+});
+
 test("embedded ChatGPT is measured only after its animated surface mounts", () => {
   assert.match(appSource, /const \[browserSlot, setBrowserSlot\] = useState<HTMLDivElement \| null>\(null\)/);
   assert.match(appSource, /setBrowserSurfaceActive\(browserSurfaceActive\)\.then\(\(\) => \{/);
