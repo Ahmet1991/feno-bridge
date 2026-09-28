@@ -93,6 +93,7 @@ import {
   ChatGptWebAdapterError,
   chatGptBrowserTabClosedError,
   chatGptRetainedConversationLostError,
+  chatGptSignInRequiredError,
   chatGptRetainedConversationUnavailableError,
   chatGptStoppedThinkingError,
 } from "./adapter-error";
@@ -3149,10 +3150,21 @@ export class ChatGptBrowserWorker {
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
     if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL) {
-      await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
-        waitUntil: "domcontentloaded",
-        timeout: 60_000,
-      });
+      try {
+        await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
+          waitUntil: "domcontentloaded",
+          timeout: 60_000,
+        });
+      } catch (error) {
+        // A signed-out session redirects to sign-in, which the launcher refuses in a turn tab, so
+        // the navigation aborts. Name that instead of passing ERR_ABORTED on (29.09 00:08). The
+        // page may still be about:blank, so ask the session's cookies, not the page.
+        if (/ERR_ABORTED/.test(error instanceof Error ? error.message : String(error))
+          && await this.chatGptSessionCookiePresent(page) === false) {
+          throw chatGptSignInRequiredError(error);
+        }
+        throw error;
+      }
       await captureDiagnostic?.("temporary-chat-navigation-complete");
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
@@ -3694,12 +3706,17 @@ export class ChatGptBrowserWorker {
    * starts cold for another account; and a stale proof is caught by the missing connector row.
    */
   private async personalizationSessionKey(page: Page): Promise<string | undefined> {
+    // No session evidence means the full personalization check is required.
+    return await this.chatGptSessionCookiePresent(page) ? "chatgpt-signed-in" : undefined;
+  }
+
+  /** True or false when the session cookies could be read, undefined when they could not. */
+  private async chatGptSessionCookiePresent(page: Page): Promise<boolean | undefined> {
     const signedIn = (cookies: Array<{ name: string; value: string }>) => cookies.some(cookie => (
-      /^(?:__Secure-|__Host-)?next-auth\.session-token(?:\.\d+)?$/.test(cookie.name) && cookie.value
-    )) ? "chatgpt-signed-in" : undefined;
+      /^(?:__Secure-|__Host-)?next-auth\.session-token(?:\.\d+)?$/.test(cookie.name) && Boolean(cookie.value)
+    ));
     try {
-      const fromContext = signedIn(await page.context().cookies("https://chatgpt.com"));
-      if (fromContext) return fromContext;
+      if (signedIn(await page.context().cookies("https://chatgpt.com"))) return true;
       // Over the launcher's CDP connection the context lists no cookies at all for the Electron
       // session (28.09: 0 cookies, and every proof lookup was no_session), while the page's own
       // network domain sees the signed-in session. Ask the page.
@@ -3711,7 +3728,7 @@ export class ChatGptBrowserWorker {
         await session.detach().catch(() => {});
       }
     } catch {
-      return undefined; // No session evidence means the full personalization check is required.
+      return undefined;
     }
   }
 
