@@ -5172,6 +5172,8 @@ test("heavy stage matching covers the numbered stages and never the response wai
     "response_page_rebind_12",
     "multipart_stage_1_attachment",
     "multipart_stage_2_send",
+    // Opens the model picker on the conversation page, so it drives the document too.
+    "multipart_stage_2_effort_selection",
   ]) {
     expect(isHeavyChatGptStage(stage)).toBe(true);
   }

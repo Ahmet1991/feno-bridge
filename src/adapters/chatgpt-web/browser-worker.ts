@@ -1485,7 +1485,7 @@ const CHATGPT_HEAVY_STAGES = new Set([
 export function isHeavyChatGptStage(stage: string): boolean {
   return CHATGPT_HEAVY_STAGES.has(stage)
     || /^response_page_rebind_\d+$/.test(stage)
-    || /^multipart_stage_\d+_(attachment|send)$/.test(stage);
+    || /^multipart_stage_\d+_(attachment|send|effort_selection)$/.test(stage);
 }
 
 export const CHATGPT_MIN_OPERATIONAL_VIEWPORT = Object.freeze({ width: 320, height: 240 });
@@ -5482,6 +5482,25 @@ export class ChatGptBrowserWorker {
       if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
         for (let index = 0; index < multipartStages.length; index += 1) {
           const stage = multipartStages[index]!;
+          // 28.09: ChatGPT now moves a temporary chat from / to /c/<id> once the first stage is
+          // saved, and the pre-send check compares the page with the one the effort was chosen
+          // on, so every second stage failed with "model controls are unavailable" (it worked
+          // on 24.09). Upstream 6.1.x re-proves the selection before each later stage; so does
+          // this, without the reload retry above, which would abandon the stages already sent.
+          if (index > 0) {
+            mode = await this.runStage(
+              turn.traceId,
+              `multipart_stage_${index + 1}_effort_selection`,
+              browserStageTimeouts.effortSelection,
+              () => this.selectModelAndEffort(
+                page,
+                turn.modelId,
+                stagingMode.effort,
+                browserCapabilities,
+                checkpoint => diagnostics.capture(page, `multipart-${index + 1}-${checkpoint}`),
+              ),
+            );
+          }
           let stageBaseline = await this.captureSubmissionBaseline(page);
           await this.runStage(
             turn.traceId,
@@ -5568,7 +5587,9 @@ export class ChatGptBrowserWorker {
           await diagnostics.capture(page, `multipart-stage-${index + 1}-acknowledged`);
           await turn.onMultipartStageAcknowledged?.(index + 1);
         }
-        if (mode.effort !== requestedMode.effort) {
+        // The final part is sent on the /c/<id> page the stages created, so the selection is
+        // re-proved there even when the staging and final efforts are the same.
+        if (mode.effort !== requestedMode.effort || (mode.selection && mode.selection.url !== page.url())) {
           mode = await this.runStage(
             turn.traceId,
             "final_part_effort_selection",
