@@ -93,7 +93,9 @@ const pendingFalseBlockCorrectionSessions = new WeakSet<ChatGptTurnSession>();
 
 const MAX_IMAGE_CONTINUATION_PHASES = 4;
 
-const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that cannot be attached to the already-running ChatGPT message. The image will be shown to you in a new message after you finish this message. If you need to see it, do not guess; end this message with a short note.";
+// ChatGPT may already show the image inside this tool result (28 Sep: twelve view_image results were
+// read correctly before any attachment). Only an image that is not visible waits for a new message.
+const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image. If it is visible to you in this result, use it normally. If it is not, it will be shown to you in a new message after you finish this message: do not guess; end this message with a short note.";
 
 function imageContinuationTraceId(parentTraceId: string, phase: number): string {
   return createHash("sha256")
@@ -103,13 +105,17 @@ function imageContinuationTraceId(parentTraceId: string, phase: number): string 
 }
 
 /**
- * What a delivery turn says. The images ride on this message as real attachments, which is the one
- * path by which a tool's image reaches the model at all — a result returned into a generation
- * already under way never becomes one.
+ * What a delivery turn says. The images ride on this message as real attachments. Until late
+ * September that was the one path by which a tool's image reached the model; on 28 Sep ChatGPT read
+ * all twelve view_image results inside the running message, and the delivery turn then wrote the
+ * whole answer a second time. So it verifies rather than answers again: an answer that already
+ * matches the images gets one short sentence, and only what the images change is written out.
  */
-const DELIVERED_IMAGES_PROMPT = "[Feno Bridge] Önceki araç çağrısının döndürdüğü görüntü(ler) bu"
-  + " mesaja ek olarak bağlandı, artık görebilirsin. Bir önceki turda göremediğin için"
-  + " yanıtlayamadığın soruyu şimdi yanıtla. Göremediğin bir şey varsa göremediğini söyle.";
+const DELIVERED_IMAGES_PROMPT = "[Feno Bridge] Önceki araç çağrılarının döndürdüğü görüntü(ler) bu"
+  + " mesaja ek olarak bağlandı. Önceki cevabını bu eklerle karşılaştır. Önceki cevabın görüntülerle"
+  + " uyuşuyorsa onu tekrarlama; yalnızca bunu doğrulayan tek kısa cümle yaz. Görüntüleri daha önce"
+  + " göremediğin için yanıtlayamadığın, eksik ya da yanlış kalan bir şey varsa yalnızca onu yanıtla"
+  + " veya düzelt. Ekte göremediğin bir şey varsa göremediğini söyle.";
 
 function unshownImageFinalNotice(count: number): string | undefined {
   return count > 0

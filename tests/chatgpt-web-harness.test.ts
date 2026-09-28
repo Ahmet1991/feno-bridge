@@ -4492,6 +4492,7 @@ test("image-only broker output preserves the image and tells the model and user 
   expect(delivered?.content).toHaveLength(2);
   expect(delivered?.content[1]).toMatchObject({ type: "text" });
   const notice = (delivered?.content[1] as { text: string }).text;
+  expect(notice).toContain("If it is visible to you in this result, use it normally");
   expect(notice).toContain("will be shown to you in a new message");
   expect(notice).toContain("do not guess");
   expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
@@ -5058,6 +5059,9 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   // Attachments are what makes this work, so the prompt must produce a real uploadable file.
   expect(chatGptPromptFilePayloads(prompt).map(file => file.mimeType)).toEqual(["image/jpeg"]);
   expect(prompt.text).toContain("ek olarak bağlandı");
+  // 28 Sep: ChatGPT had already read the images in the tool results, and this turn repeated the
+  // whole answer. It verifies now, and writes out only what the images change.
+  expect(prompt.text).toContain("Önceki cevabın görüntülerle uyuşuyorsa onu tekrarlama");
   expect(prompt.text).toMatch(/turn_token turn_[A-Za-z0-9_-]+/);
   expect(delivery.capabilities.localToolsEnabled).toBeTrue();
   expect(delivery.nativeConnector).toBeTrue();
