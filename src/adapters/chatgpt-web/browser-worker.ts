@@ -90,6 +90,7 @@ import {
   ChatGptCompactionHandoffAccepted,
   ChatGptWebAdapterError,
   chatGptBrowserTabClosedError,
+  chatGptRetainedConversationLostError,
   chatGptRetainedConversationUnavailableError,
   chatGptStoppedThinkingError,
 } from "./adapter-error";
@@ -2590,6 +2591,41 @@ export class ChatGptBrowserWorker {
   private readonly activeRuns = new Map<string, Promise<string>>();
   private readonly reactionTimings = new Map<string, { startedAt: number; stages: Map<string, number> }>();
   private readonly personalizationProofCache = new ChatGptPersonalizationProofCache();
+  /** The launcher surface a Page belongs to; a surface outlives the per-turn CDP connection. */
+  private readonly launcherSurfaceByPage = new WeakMap<Page, string>();
+
+  private proofKey(page: Page): Page | string {
+    return this.launcherSurfaceByPage?.get(page) ?? page;
+  }
+
+  /**
+   * A resumed turn sends only what is new, so it must land in the conversation that holds the rest.
+   * 28.09 probe: a reloaded Temporary Chat opens as an empty new chat (its /c/<id> address falls
+   * back to /), and the bridge then sent the delta there as if nothing had happened: the model
+   * answered without any of the earlier conversation. Checked when the turn starts and again just
+   * before the first submission, because the recovery paths of this turn may reload the page.
+   */
+  private async assertRetainedConversation(
+    page: Page,
+    turn: Pick<BrowserTurn, "traceId" | "requireRetainedConversation">,
+    moment: "before_turn" | "before_submission",
+    expectedPath?: string,
+  ): Promise<string> {
+    const path = new URL(page.url()).pathname;
+    const assistantTurns = await withChatGptBrowserObservationTimeout(
+      page.locator(CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR).count(),
+    );
+    const moved = expectedPath !== undefined && path !== expectedPath;
+    if (!moved && assistantTurns > 0) return path;
+    console.warn(
+      `[chatgpt-web] browser turn ${turn.traceId} retained conversation lost ${moment}`
+      + ` page=${path.startsWith("/c/") ? "/c/<id>" : path} moved=${moved} assistantTurns=${assistantTurns}`,
+    );
+    // Follow-ups and compaction handoffs exist only inside the retained conversation, and their
+    // callers already treat this code as "fall back" (fresh compaction, best-effort follow-up).
+    if (turn.requireRetainedConversation) throw chatGptRetainedConversationUnavailableError();
+    throw chatGptRetainedConversationLostError(moment);
+  }
 
   private constructor(private readonly config: ResolvedBrowserConfig) {}
 
@@ -3780,7 +3816,7 @@ export class ChatGptBrowserWorker {
       return composer;
     }
     let sessionKey = await this.personalizationSessionKey?.(page);
-    let cachedProof = this.personalizationProofCache?.isValid(page, sessionKey) ?? false;
+    let cachedProof = this.personalizationProofCache?.isValid(this.proofKey(page), sessionKey) ?? false;
     let provedThisTurn = alreadyProved;
     // Legacy rows first; the new list-navigation buttons are the fallback when no
     // legacy menu row exists. Neither structure exposes a dependable ARIA menu role.
@@ -3858,7 +3894,7 @@ export class ChatGptBrowserWorker {
       try {
         await runPersonalizationPreflight();
       } catch (error) {
-        this.personalizationProofCache?.invalidate(page);
+        this.personalizationProofCache?.invalidate(this.proofKey(page));
         throwIfPromptAttachmentAborted(abortSignal);
         if (error instanceof ChatGptPromptAttachmentIntegrityError
           || error instanceof ChatGptPersistentBrowserStateError) throw error;
@@ -3886,7 +3922,7 @@ export class ChatGptBrowserWorker {
       composer = await this.activeComposer(page, 30_000, abortSignal);
       if (await this.connectorIsSelected(composer, abortSignal)) {
         if ((await this.attachedPromptText(page, abortSignal)).length === 0) {
-          if (provedThisTurn) this.personalizationProofCache?.remember(page, sessionKey);
+          if (provedThisTurn) this.personalizationProofCache?.remember(this.proofKey(page), sessionKey);
           await capture("connector-already-selected");
           return composer;
         }
@@ -3928,7 +3964,7 @@ export class ChatGptBrowserWorker {
           const visibleRows = await this.connectorMentionRowTitles(menuRows, abortSignal);
           if (cachedProof && !visibleRows.includes(this.config.appName)) {
             // The cached proof went stale. Verify personalization on this same turn, then retry.
-            this.personalizationProofCache?.invalidate(page);
+            this.personalizationProofCache?.invalidate(this.proofKey(page));
             cachedProof = false;
             await capture("personalization-cache-miss");
             await this.clearChatGptComposerState(page);
@@ -3975,7 +4011,7 @@ export class ChatGptBrowserWorker {
       const candidateTitles = await this.connectorMentionRowTitles(appResult, abortSignal);
       if (exactResultCount !== 1 || candidateTitles[0] !== this.config.appName) {
         if (cachedProof) {
-          this.personalizationProofCache?.invalidate(page);
+          this.personalizationProofCache?.invalidate(this.proofKey(page));
           await capture("personalization-cache-miss");
           await this.clearChatGptComposerState(page);
           await ensurePersonalizationWithRecovery();
@@ -4031,11 +4067,11 @@ export class ChatGptBrowserWorker {
       if (!await this.connectorIsSelected(selectedComposer, abortSignal)) {
         throw new Error(`ChatGPT composer did not select ${JSON.stringify(this.config.appName)} connector`);
       }
-      if (provedThisTurn) this.personalizationProofCache?.remember(page, sessionKey);
+      if (provedThisTurn) this.personalizationProofCache?.remember(this.proofKey(page), sessionKey);
       await capture("connector-selected");
       return selectedComposer;
     } catch (error) {
-      this.personalizationProofCache?.invalidate(page);
+      this.personalizationProofCache?.invalidate(this.proofKey(page));
       try {
         await this.clearChatGptComposerState(page);
       } catch (cleanupError) {
@@ -5343,6 +5379,7 @@ export class ChatGptBrowserWorker {
           throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
         }
         turnConnection = connection.browser;
+        this.launcherSurfaceByPage?.set(connection.page, launcherSurfaceId);
         await waitForOperationalChatGptViewport(connection.page, abortSignal);
         return connection.page;
       });
@@ -5401,6 +5438,7 @@ export class ChatGptBrowserWorker {
         );
         turnConnection = connection.browser;
         page = connection.page;
+        if (launcherSurfaceId) this.launcherSurfaceByPage?.set(page, launcherSurfaceId);
         diagnosticPage = page;
         console.warn(
           `[chatgpt-web] browser turn ${turn.traceId} rebound its existing launcher page after a stalled DOM probe`,
@@ -5452,6 +5490,9 @@ export class ChatGptBrowserWorker {
       const launcherObservationRecovery = launcherSurfaceId !== undefined
         && this.config.browserHostDescriptorPath !== undefined;
       await diagnostics.capture(page, "browser-page-acquired");
+      const retainedPath = reuseConversation
+        ? await this.assertRetainedConversation(page, turn, "before_turn")
+        : undefined;
       console.info(
         `[chatgpt-web] browser turn ${turn.traceId} opened (transport=${prepared.multipart ? `multipart-${prepared.multipart.parts.length}` : "inline"}, maxMessageChars=${maxMessageChars}, estimatedInputTokens=${estimatedInputTokens}, images=${prepared.images.length}, contextImages=${prepared.contextImages ?? "?"}, requestImages=${prepared.requestImages ?? "?"}, compactionTrimmedMessages=${prepared.trimmedCompactionMessages ?? 0})`,
       );
@@ -5461,7 +5502,9 @@ export class ChatGptBrowserWorker {
       );
       if (contextOverflow) {
         console.warn(
-          `[chatgpt-web] browser turn ${turn.traceId} context overflow warning`
+          // Measured against the standard window: Bigger Context lets Codex keep up to three
+          // times this before compacting, so there this line is expected, not an overflow.
+          `[chatgpt-web] browser turn ${turn.traceId} context above the standard window`
           + ` estimatedInputTokens=${estimatedInputTokens}`
           + ` codexEffectiveContextWindow=${contextOverflow.codexEffectiveContextWindow}`
           + ` modelContextWindow=${contextOverflow.modelContextWindow}`
@@ -5568,6 +5611,9 @@ export class ChatGptBrowserWorker {
             true,
           );
           await diagnostics.capture(page, `multipart-stage-${index + 1}-attachment-complete`);
+          if (index === 0 && retainedPath !== undefined) {
+            await this.assertRetainedConversation(page, turn, "before_submission", retainedPath);
+          }
           const evidence = await this.runStage(
             turn.traceId,
             `multipart_stage_${index + 1}_send`,
@@ -5722,6 +5768,9 @@ export class ChatGptBrowserWorker {
       ));
       await diagnostics.capture(page, "file-attachment-complete");
       const completionTracker = new ChatGptCompletionTracker();
+      if (retainedPath !== undefined && !prepared.multipart) {
+        await this.assertRetainedConversation(page, turn, "before_submission", retainedPath);
+      }
       const finalSubmissionEvidence = await this.runStage(
         turn.traceId,
         "send",
@@ -6117,7 +6166,7 @@ export class ChatGptBrowserWorker {
         error = await submissionRejection.failure() ?? error;
       }
       if (diagnosticPage && /personaliz|connector/i.test(error instanceof Error ? error.message : String(error))) {
-        this.personalizationProofCache.invalidate(diagnosticPage);
+        this.personalizationProofCache.invalidate(this.proofKey(diagnosticPage));
       }
       if (error instanceof DOMException && error.name === "AbortError"
         && turn.abortSignal?.reason instanceof ChatGptCompactionHandoffAccepted) {
