@@ -215,3 +215,30 @@ test("diagnostic distinguishes pending-before-committed from a committed-order r
   expect(boundedDiagnostic?.observedOrder).toEqual([11, 10]);
   expect(JSON.stringify(boundedDiagnostic)).not.toContain("PRIVATE_");
 });
+
+test("keeps a cell's line breaks inside its table row", () => {
+  // 28 Sep: a four-commit git log cell was written as hard breaks, which ended the row early.
+  const html = "<table><thead><tr><th>Test</th><th>Kanıt</th></tr></thead><tbody>"
+    + "<tr><td>6</td><td>e3a5b20 feno<br>66aebe7 feno</td></tr>"
+    + "<tr><td>7</td><td>tamam</td></tr></tbody></table>";
+  expect(chatGptHtmlToMarkdown(html)).toBe([
+    "| Test | Kanıt |",
+    "| --- | --- |",
+    "| 6 | e3a5b20 feno<br>66aebe7 feno |",
+    "| 7 | tamam |",
+  ].join("\n"));
+  // Outside a table a line break is still a Markdown hard break.
+  expect(chatGptHtmlToMarkdown("<p>bir<br>iki</p>")).toBe("bir  \niki");
+});
+
+test("never writes the \\[ … \\] pair that Codex renders as LaTeX", () => {
+  // 28 Sep: "windows: []" reached Codex as "windows: \\[\\]" and rendered as an empty formula.
+  expect(chatGptHtmlToMarkdown("<p>windows: [] ile doğrulandı</p>")).toBe("windows: \\[] ile doğrulandı");
+  // The opening escape alone still keeps link and task-box syntax literal.
+  expect(chatGptHtmlToMarkdown("<p>[metin](adres) ve [x] kutu</p>")).toBe(String.raw`\[metin](adres) ve \[x] kutu`);
+  // A source backslash before a bracket survives as text.
+  expect(chatGptHtmlToMarkdown(String.raw`<p>yol C:\a] son</p>`)).toBe(String.raw`yol C:\\a] son`);
+  for (const html of ["<p>[a] ve [b]</p>", "<p>dizi [1, 2] ve [3]</p>", "<ul><li>[ ] yapılacak</li></ul>"]) {
+    expect(chatGptHtmlToMarkdown(html)).not.toMatch(/\\\[[^\n]*\\\]/);
+  }
+});

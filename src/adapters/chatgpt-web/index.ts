@@ -113,8 +113,22 @@ const DELIVERED_IMAGES_PROMPT = "[Feno Bridge] Önceki araç çağrısının dö
 
 function unshownImageFinalNotice(count: number): string | undefined {
   return count > 0
-    ? `\n\n[Feno Bridge] ${count} image result(s) were returned by local tools but could not be attached to this browser turn. Visual inspection of those images has not been verified. Continue in a new turn to attach and inspect them.`
+    ? `\n\n[Feno Bridge] Yerel araçların döndürdüğü ${count} görüntü bu tura eklenemedi; bu görüntülere dayanan görsel bir inceleme doğrulanmış değil. Görüntüleri ekleyip incelemek için yeni bir turda devam et.`
     : undefined;
+}
+
+/**
+ * The newest tool images, each named for the attachment it becomes. Refs used to be numbered from
+ * the pending list's length, which stops growing at the cap, so the twelfth screenshot of a round
+ * reused the eleventh's name. ChatGPT then showed two attachments with one name and the upload
+ * check could not tell them apart (28 Sep: "did not accept all prompt attachments" on a ten-image
+ * continuation). Numbering whatever is kept makes every name unique by construction.
+ */
+export function newestToolImages(images: Array<{ imageUrl: string; detail?: string }>): ChatGptWebPromptImage[] {
+  return images.slice(-CHATGPT_MAX_INPUT_IMAGES).map((image, index) => ({
+    ...image,
+    ref: `codex-tool-image-${index + 1}`,
+  }));
 }
 
 function brokerSocketPath(provider: CodexProviderConfig): string {
@@ -1584,12 +1598,12 @@ export function createChatGptWebAdapter(
                     // Kept for the delivery turn below. The cap is ChatGPT's own attachment limit,
                     // and the newest images are the ones the answer is about, so a long tool round
                     // drops its oldest rather than refusing to attach anything.
-                    const pending = unshownImagesBySession.get(session) ?? [];
+                    const pending: Array<{ imageUrl: string }> = [...(unshownImagesBySession.get(session) ?? [])];
                     for (const part of message.content) {
                       if (part.type !== "image") continue;
-                      pending.push({ ref: `codex-tool-image-${pending.length + 1}`, imageUrl: part.imageUrl });
+                      pending.push({ imageUrl: part.imageUrl });
                     }
-                    unshownImagesBySession.set(session, pending.slice(-CHATGPT_MAX_INPUT_IMAGES));
+                    unshownImagesBySession.set(session, newestToolImages(pending));
                     console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
                   }
                   toolCallLedger.record(skyFunctionsIn(callsById.get(message.toolCallId)), message.isError);
@@ -1670,6 +1684,9 @@ export function createChatGptWebAdapter(
                 const phase = session.phaseNumber();
                 const attachedPhaseImages = activeContinuationImagesBySession.get(session) ?? [];
                 let completedOutcome = observedOutcome;
+                // Set when a failed image continuation falls back to the answer the previous phase
+                // already emitted, together with anything the bridge appended to it.
+                let reusedEmittedAnswer = false;
                 const ledger = toolCallLedger.summary();
                 // Bound here so the narrowing survives into the correction block below.
                 const correctionEnvironment = environment;
@@ -1698,13 +1715,13 @@ export function createChatGptWebAdapter(
                     + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)}`
                     + ` failed reason=${JSON.stringify(reason)}`,
                   );
-                  const pending = [...attachedPhaseImages, ...(unshownImagesBySession.get(session) ?? [])]
-                    .slice(-CHATGPT_MAX_INPUT_IMAGES);
+                  const pending = newestToolImages([...attachedPhaseImages, ...(unshownImagesBySession.get(session) ?? [])]);
                   activeContinuationImagesBySession.delete(session);
                   if (pending.length > 0) unshownImagesBySession.set(session, pending);
                   const lastAnswer = lastCompletedAnswerBySession.get(session);
                   if (lastAnswer === undefined) throw completedOutcome.error;
                   completedOutcome = { type: "final", answer: lastAnswer };
+                  reusedEmittedAnswer = true;
                 }
                 if (completedOutcome.type !== "final") throw new Error("ChatGPT browser outcome was not finalized");
                 if (observedOutcome.type === "final" && activeRuntime.text.value() !== observedOutcome.answer) {
@@ -1726,7 +1743,11 @@ export function createChatGptWebAdapter(
                 }
                 // The answer itself is already verified above; this only adds what the bridge
                 // observed, after that check, so the integrity comparison stays untouched.
-                const blockEvidence = blockClaimEvidenceFor(completedOutcome.answer, ledger);
+                // Not again for an answer the previous phase already footnoted: 28 Sep, a failed
+                // image continuation printed the same tool-call footer twice under one answer.
+                const blockEvidence = reusedEmittedAnswer
+                  ? undefined
+                  : blockClaimEvidenceFor(completedOutcome.answer, ledger);
                 if (blockEvidence) {
                   console.warn(
                     `[chatgpt-web] answer claimed a blocked or failed tool call`
@@ -1778,7 +1799,7 @@ export function createChatGptWebAdapter(
                   } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
                     activeContinuationImagesBySession.delete(session);
-                    unshownImagesBySession.set(session, continuationImages.slice(-CHATGPT_MAX_INPUT_IMAGES));
+                    unshownImagesBySession.set(session, newestToolImages(continuationImages));
                     console.warn(
                       `[chatgpt-web] image continuation phase=${nextPhase} images=${continuationImages.length}`
                       + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, nextPhase)}`

@@ -2501,6 +2501,16 @@ function assertChatGptPromptAttachments(prompt: CompiledChatGptWebPrompt): void 
     );
   }
   validateSkillFiles(prompt.skillFiles);
+  // The upload check finds each attachment by its name, so two files with one name cannot both be
+  // proven; say so here instead of as an unexplained rejection after the upload.
+  const names = [
+    ...prompt.images.map(image => image.ref),
+    ...(prompt.skillFiles ?? []).map(file => file.name),
+  ];
+  const repeated = names.find((name, index) => names.indexOf(name) !== index);
+  if (repeated !== undefined) {
+    throw new Error(`ChatGPT web attachments need unique names; ${repeated} appears more than once`);
+  }
 }
 
 export function chatGptPromptFilePayloads(
@@ -4512,13 +4522,14 @@ export class ChatGptBrowserWorker {
           .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
           .waitFor({ state: "visible", timeout: Math.min(60_000, remainingMs(0)) })
       )));
-    } catch {
+    } catch (error) {
       const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
         .map(text => text.replace(/\s+/g, " ").trim())
         .filter(Boolean);
       throw new Error(
         `ChatGPT did not accept all prompt attachments`
         + (alerts.length > 0 ? `: ${alerts.join(" | ")}` : ""),
+        { cause: error },
       );
     }
     const send = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR);

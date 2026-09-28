@@ -1950,8 +1950,9 @@ describe("ChatGPT outer-native harness v4", () => {
     )).toBe(
       "Sources: [Projects/sample-roadmap](<Projects/sample-roadmap.md>) · [Notes/example](<Notes/example.md>)",
     );
+    // Only the opening bracket: "\[…\]" is itself a LaTeX display pair to Codex (28 Sep).
     expect(chatGptHtmlToMarkdown("<p>Ordinary [brackets] stay escaped</p>"))
-      .toBe("Ordinary \\[brackets\\] stay escaped");
+      .toBe("Ordinary \\[brackets] stay escaped");
   });
 
   test("buffers citation hydration, tolerates later markup-only rewrites, and rejects text rewrites", () => {
@@ -4494,7 +4495,7 @@ test("image-only broker output preserves the image and tells the model and user 
   expect(notice).toContain("will be shown to you in a new message");
   expect(notice).toContain("do not guess");
   expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
-    .toContain("1 image result(s) were returned by local tools but could not be attached");
+    .toContain("Yerel araçların döndürdüğü 1 görüntü bu tura eklenemedi");
 });
 
 test("text-only broker output does not claim an unseen image", async () => {
@@ -4960,7 +4961,7 @@ test("a failed image continuation requeues its image and uses the retained tool-
 
     const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
     expect(text).toContain("Fallback inspected the requeued image.");
-    expect(text).not.toContain("could not be attached");
+    expect(text).not.toContain("bu tura eklenemedi");
     expect(warnings.some(line => line.includes("image continuation phase=1 images=1")
       && line.includes(" failed reason="))).toBeTrue();
     expect(warnings.some(line => line.includes("image continuation chain phases=1 final=fallback"))).toBeTrue();
@@ -5029,7 +5030,7 @@ test("a tool image is delivered before a block-claim correction, which cannot ta
   const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
   // The image reached the model although the correction failed afterwards.
   expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
-  expect(text).not.toContain("could not be attached");
+  expect(text).not.toContain("bu tura eklenemedi");
   expect(text).toContain("köprüye ulaşan 1 araç çağrısı Codex'te çalıştı");
   // The continuation's answer is its own paragraph (27 Sep: "... girmez.Abim, şimdi ...").
   expect(text).toContain("bu sayıma girmez.\n\nEkte gördüğüm pencere");
@@ -5068,5 +5069,59 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
   expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
   // A delivered image is no longer unseen, so the turn must not also report it as unshown.
-  expect(text).not.toContain("could not be attached");
+  expect(text).not.toContain("bu tura eklenemedi");
+});
+
+test("more tool screenshots than one message holds keep the newest ten under unique names, and a failed continuation keeps one footer", async () => {
+  // 28 Sep (trace e589cc8586f5): twelve screenshots in one round. Refs came from the capped list's
+  // length, so two were both named codex-tool-image-11, ChatGPT rejected the continuation's upload,
+  // and the fallback printed the tool-call footer a second time under the same answer.
+  const images = Array.from({ length: 12 }, (_, index): CodexContentPart => ({
+    type: "image",
+    imageUrl: `data:image/jpeg;base64,/9j/4AAQAAA${String.fromCharCode(65 + index)}`,
+  }));
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const followUps: Array<{ images: number; text: string }> = [];
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  try {
+    await deliverWindowRecoveryFixtures(
+      images.map((image, index) => ({ wireName: "js", code: `nodeRepl.write('ekran ${index + 1}')`, content: [image] })),
+      events,
+      {
+        retained: true,
+        browserTurns,
+        followUps,
+        failContinuation: true,
+        firstAnswer: "Bu araç çağrısı güvenlik engeline takıldı.",
+        fallbackAnswer: "Yedek tur görüntüleri inceledi.",
+      },
+    );
+  } finally {
+    warning.mockRestore();
+  }
+
+  expect(followUps[0]!.images).toBe(10);
+  const continuation = await browserTurns[1]!.prepare();
+  try {
+    expect(continuation.images.map(image => image.imageUrl)).toEqual(images.slice(2).map(image => (
+      (image as { imageUrl: string }).imageUrl
+    )));
+    const names = chatGptPromptFilePayloads(continuation).map(file => file.name);
+    expect(new Set(names).size).toBe(10);
+  } finally {
+    continuation.release();
+  }
+  expect(warnings.filter(line => line.includes("answer claimed a blocked or failed tool call"))).toHaveLength(1);
+  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+  expect(text.split("köprüye ulaşan 12 araç çağrısı").length - 1).toBe(1);
+  expect(text).toContain("Yedek tur görüntüleri inceledi.");
+});
+
+test("attachments that share a name are refused before any upload", () => {
+  const image = { ref: "codex-tool-image-1", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  expect(() => chatGptPromptFilePayloads({
+    text: "iki ek", images: [image, { ...image }],
+  } as Parameters<typeof chatGptPromptFilePayloads>[0])).toThrow("codex-tool-image-1 appears more than once");
 });
