@@ -16,16 +16,23 @@
  * reason given. That measurement is why the correction is worded exactly this way.
  */
 
-const CHATGPT_PLATFORM_REFUSAL_CORE =
-  "isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi";
+const CHATGPT_PLATFORM_REFUSALS = [
+  "isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi",
+  // 27 Sep 23:56 UTC: the capability test opened Calculator and captured it through the bridge, then
+  // its first click never reached the bridge and the model quoted this as "Script error: ...". It is
+  // the sentence seen on 19-20 Sep too; the correction turn made the model restate it as ChatGPT's.
+  // Both sentences are required, so a model's own shorter "engellendi" wording is still corrected.
+  "OpenAI'ın güvenlik kontrolleri tarafından engellendi. Lütfen gönderdiğin içeriği tekrar kontrol et",
+];
 
 export function quotesChatGptPlatformRefusal(answer: string): boolean {
   const normalized = answer
     .replace(/\\/g, "")
     .replace(/[`*_]/g, "")
+    .replace(/[‘’ʼ]/g, "'")
     .replace(/\s+/g, " ")
     .trim();
-  return normalized.includes(CHATGPT_PLATFORM_REFUSAL_CORE);
+  return CHATGPT_PLATFORM_REFUSALS.some(refusal => normalized.includes(refusal));
 }
 
 /**

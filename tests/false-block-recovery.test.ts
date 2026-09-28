@@ -37,6 +37,16 @@ test("ChatGPT's observed Turkish platform refusal is recognized through wrappers
   )).toBeTrue();
 });
 
+test("ChatGPT's second observed refusal is recognized only when quoted whole", () => {
+  // Verbatim from the 28.09 capability test: the click never reached the bridge.
+  const quoted = "Araç çıktısı / OpenAI güvenlik katmanı: Script error: Bu araç OpenAI'ın güvenlik kontrolleri"
+    + " tarafından engellendi. Lütfen gönderdiğin içeriği tekrar kontrol et. Hesap Makinesi açıldı.";
+  expect(quotesChatGptPlatformRefusal(quoted)).toBeTrue();
+  expect(quotesChatGptPlatformRefusal(quoted.replace("OpenAI'ın", "OpenAI’ın"))).toBeTrue();
+  // The first sentence alone is how a model paraphrases a block it invented; that is still corrected.
+  expect(quotesChatGptPlatformRefusal(NO_CALL_CLAIM)).toBeFalse();
+});
+
 test("other block wording is not mistaken for ChatGPT's platform refusal", () => {
   expect(quotesChatGptPlatformRefusal("Bu araç çağrısı güvenlik engeline takıldı.")).toBeFalse();
   expect(quotesChatGptPlatformRefusal("Bu araç çağrısı güvenlik katmanı tarafından reddedildi.")).toBeFalse();
