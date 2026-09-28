@@ -12,6 +12,7 @@ import { resolveChatGptWebMessageTokenBudget } from "../../chatgpt-web-models";
 import { CHATGPT_WEB_LUNA_MODEL_ID, CHATGPT_WEB_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import {
   CHATGPT_WEB_MULTIPART_MAX_PARTS,
+  compactionHistoryTrimSteps,
   compileChatGptWebPrompt,
   repartitionChatGptWebMultipartParts,
   type CompileChatGptWebPromptOptions,
@@ -24,7 +25,11 @@ export { DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS } from "./input-tokens";
 export interface ChatGptWebCapacityCompileOptions
   extends Omit<
     CompileChatGptWebPromptOptions,
-    "multipartParts" | "experimentalMultipartParts" | "multipartRecordWeightCache" | "preserveCompactionHistory"
+    | "multipartParts"
+    | "experimentalMultipartParts"
+    | "multipartRecordWeightCache"
+    | "preserveCompactionHistory"
+    | "compactionTrimMessages"
   > {
   maxMessageChars?: number;
 }
@@ -207,11 +212,44 @@ function findRequiredMultipartParts(
   return undefined;
 }
 
+/**
+ * A compaction request must not end in browser_message_too_large: Codex cannot continue without the
+ * summary, and cannot shrink its history without one. 28.09 00:29 UTC: a 225-item session lost its
+ * retained conversation, the fresh compaction needed 13 parts against the maximum of 12, and the task
+ * stopped for good. A summary is lossy anyway, so the oldest history is left out in growing steps
+ * until the request fits, keeping the newest checkpoint and the final instruction and stating the
+ * omission. Ordinary turns are unchanged: they still fail explicitly rather than lose context.
+ */
 export function compileChatGptWebPromptWithinPageCapacity(
   parsed: CodexParsedRequest,
   capabilities: ChatGptWebCapabilities,
   turnToken?: string,
   options: ChatGptWebCapacityCompileOptions = {},
+): CompiledChatGptWebPrompt {
+  try {
+    return compileWithinPageCapacityOnce(parsed, capabilities, turnToken, options);
+  } catch (error) {
+    if (!parsed._compactionRequest || !isBrowserMessageTooLarge(error)) throw error;
+    for (const compactionTrimMessages of compactionHistoryTrimSteps(parsed)) {
+      try {
+        return compileWithinPageCapacityOnce(parsed, capabilities, turnToken, { ...options, compactionTrimMessages });
+      } catch (retryError) {
+        if (!isBrowserMessageTooLarge(retryError)) throw retryError;
+      }
+    }
+    throw error;
+  }
+}
+
+function isBrowserMessageTooLarge(error: unknown): boolean {
+  return error instanceof ChatGptWebAdapterError && error.code === "browser_message_too_large";
+}
+
+function compileWithinPageCapacityOnce(
+  parsed: CodexParsedRequest,
+  capabilities: ChatGptWebCapabilities,
+  turnToken: string | undefined,
+  options: ChatGptWebCapacityCompileOptions & { compactionTrimMessages?: number },
 ): CompiledChatGptWebPrompt {
   const maxMessageChars = options.maxMessageChars ?? DEFAULT_CHATGPT_WEB_MAX_MESSAGE_CHARS;
   if (!Number.isSafeInteger(maxMessageChars) || maxMessageChars <= 0) {

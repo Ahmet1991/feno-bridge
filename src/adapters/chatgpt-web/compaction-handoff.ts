@@ -192,7 +192,11 @@ export async function settleActiveCompactionSource(
     let token: string | undefined;
     try {
       token = await source.runtime.token;
-      broker.requestCompaction(token, interruptedByActiveCompaction());
+      // 28.09 00:29 UTC: ChatGPT obeyed the interception, ended with no new text, and the browser
+      // read that as a missing answer; the source turn failed, its retained conversation went with
+      // it, and the fresh fallback was too large for twelve parts. The browser is now told.
+      const progress = source.runtime.externalProgress;
+      broker.requestCompaction(token, interruptedByActiveCompaction(), () => progress.recordCompactionStop());
       for (const request of outstanding) {
         const result = results.get(request.callId)!;
         await broker.completeTool(

@@ -62,6 +62,12 @@ export interface CompileChatGptWebPromptOptions {
   /** Measure/transport canonical compaction history before the retired inline byte-fit fallback. */
   preserveCompactionHistory?: boolean;
   /**
+   * @internal Oldest history items to leave out of a compaction request that does not fit even the
+   * largest multipart split; see compileChatGptWebPromptWithinPageCapacity. The newest cumulative
+   * checkpoint and the final compaction instruction are always kept, and the omission is stated.
+   */
+  compactionTrimMessages?: number;
+  /**
    * Manual Zero Risk transport keeps ChatGPT model/effort selection and prompt submission under the
    * user's control. The browser bridge may open the owned tab and copy this prompt, but it never
    * reads or mutates ChatGPT's DOM. Completion is accepted only through the bound Zero Risk MCP tools.
@@ -314,6 +320,52 @@ function assistantContent(content: CodexAssistantContentPart[]): unknown[] {
       arguments: part.arguments,
     };
   });
+}
+
+/**
+ * Leaves the oldest `count` history items out of a compaction request, in their original order.
+ * The newest cumulative checkpoint may be the only account of earlier work and the final message
+ * is the compaction instruction itself, so both are always kept.
+ */
+export function withoutOldestCompactionHistory(messages: readonly CodexMessage[], count: number): CodexMessage[] {
+  const checkpointIndex = newestCompactionCheckpointIndex(messages);
+  let remaining = count;
+  return messages.filter((_message, index) => {
+    if (remaining <= 0 || index === messages.length - 1 || index === checkpointIndex) return true;
+    remaining -= 1;
+    return false;
+  });
+}
+
+/**
+ * Trim counts to try, in order, for a compaction request that does not fit: the fewest oldest
+ * items whose removal leaves at most 85%, 70%, 50%, 30% and 15% of the trimmable history's
+ * characters, and finally all of it. Measured on the same history the compiler trims.
+ */
+export function compactionHistoryTrimSteps(parsed: CodexParsedRequest): number[] {
+  const messages = withoutSupersededModelSwitchContracts(parsed.context.messages);
+  const checkpointIndex = newestCompactionCheckpointIndex(messages);
+  const trimmable = messages
+    .map((message, index) => ({ index, chars: JSON.stringify(message).length }))
+    .filter(({ index }) => index !== messages.length - 1 && index !== checkpointIndex);
+  const total = trimmable.reduce((sum, item) => sum + item.chars, 0);
+  const steps: number[] = [];
+  for (const keep of [0.85, 0.7, 0.5, 0.3, 0.15, 0]) {
+    let removed = 0;
+    let removedChars = 0;
+    while (removed < trimmable.length && total - removedChars > total * keep) {
+      removedChars += trimmable[removed]!.chars;
+      removed += 1;
+    }
+    if (removed > 0 && removed !== steps.at(-1)) steps.push(removed);
+  }
+  return steps;
+}
+
+function newestCompactionCheckpointIndex(messages: readonly CodexMessage[]): number {
+  return messages.findLastIndex(message =>
+    message.role === "user" && isReadableCompactionSummaryText(plainMessageText(message))
+  );
 }
 
 function plainMessageText(message: CodexMessage): string | undefined {
@@ -977,6 +1029,17 @@ export function compileChatGptWebPrompt(
       "</codex_transport_resume>",
     ];
   const build = (sourceMessages: readonly CodexMessage[], omittedMessages = 0): CompiledChatGptWebPrompt => {
+    // A trimmed compaction request must say so in either transport: "the task context is complete"
+    // would be false, and the summary would present missing history as never having happened.
+    const resume = omittedMessages > 0 ? [
+      "<codex_transport_resume>",
+      `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
+      "Preserve still-relevant progress, constraints and pending work from any supplied cumulative checkpoint and the remaining evidence. Do not infer that omitted work was never done or invent missing details.",
+      manualControl
+        ? "Produce the requested checkpoint summary now."
+        : "Produce the requested checkpoint summary now without calling tools.",
+      "</codex_transport_resume>",
+    ] : transportResume;
     const images: ChatGptWebPromptImage[] = [];
     const contextImages = countChatGptContextImages(sourceMessages);
     const budget: ImageBudget = {
@@ -1034,7 +1097,7 @@ export function compileChatGptWebPrompt(
           ...manualControlContract,
           ...checkpointContract,
           answerContract,
-          ...transportResume,
+          ...resume,
         ].join("\n"),
       };
       const imageTokens = images.reduce((sum, image) => sum + chatGptWebImageTokenReserve(image.detail), 0);
@@ -1075,21 +1138,20 @@ export function compileChatGptWebPrompt(
         "The attached UTF-8 text file contains the complete version 3 JSON task context. Read its complete contents before acting. Interpret its system and message roles according to the priority and role contract above. If the attachment cannot be read completely, report that failure and do not execute the task from incomplete context.",
         "</codex_context_file>",
       ] : ["<codex_context_json>", envelopeJson, "</codex_context_json>"]),
-      ...(omittedMessages > 0 ? [
-        "<codex_transport_resume>",
-        `${omittedMessages} earlier history items were omitted to fit this compaction request; the supplied history is incomplete.`,
-        "Preserve still-relevant progress, constraints and pending work from any supplied cumulative checkpoint and the remaining evidence. Do not infer that omitted work was never done or invent missing details.",
-        manualControl
-          ? "Produce the requested checkpoint summary now."
-          : "Produce the requested checkpoint summary now without calling tools.",
-        "</codex_transport_resume>",
-      ] : transportResume),
+      ...resume,
     ].join("\n");
     return { text, images, contextImages, ...attachments };
   };
 
   let sourceMessages = withoutSupersededModelSwitchContracts(parsed.context.messages);
   const initialMessageCount = sourceMessages.length;
+  const trimForCapacity = parsed._compactionRequest ? options?.compactionTrimMessages ?? 0 : 0;
+  if (trimForCapacity > 0) {
+    sourceMessages = withoutOldestCompactionHistory(sourceMessages, trimForCapacity);
+    const omitted = initialMessageCount - sourceMessages.length;
+    const trimmed = build(sourceMessages, omitted);
+    return omitted > 0 ? { ...trimmed, trimmedCompactionMessages: omitted } : trimmed;
+  }
   let compiled = build(sourceMessages);
   if (!parsed._compactionRequest) return compiled;
 

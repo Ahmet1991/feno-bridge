@@ -53,7 +53,9 @@ test("multipart selection accounts for whole-record and composer fit before subm
   expect(resolveChatGptWebMultipartStagingMode(
     "gpt-5.6-sol", capabilities, estimateTokens(proMessages[0]!), proMessages[0]!.length,
   ).effort).toBe("max");
-}, 120_000);
+  // Tokenizing 1.35 million spaces is the tokenizer's worst case and CPU-bound: 125-166 s on the
+  // development machine on 28.09, in untouched v5.0.44 as well, against the old 120 s ceiling.
+}, 300_000);
 
 test("Bigger Context compaction starts with three parts before the legacy inline byte budget", () => {
   const parsed = request("x".repeat(160_000));

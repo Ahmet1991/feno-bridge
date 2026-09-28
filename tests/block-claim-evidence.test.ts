@@ -39,12 +39,26 @@ test("a blocked-call claim is recognised in the wordings ChatGPT actually produc
 
 test("the evidence line reports what the bridge dispatched, including the none case", () => {
   expect(formatBlockClaimEvidence({ completed: 6, failed: 0 }))
-    .toBe("\n\n---\n[Feno Bridge] Bu turda köprüye ulaşan 6 araç çağrısı tamamlandı, 0 tanesi hata döndürdü."
-      + " ChatGPT'nin köprüye hiç ulaştırmadığı bir çağrı bu sayıma girmez.");
+    .toBe("\n\n---\n[Feno Bridge] Bu turda köprüye ulaşan 6 araç çağrısı Codex'te çalıştı ve sonucuyla döndü."
+      + " Başarılı olup olmadıklarını araç çıktıları söyler; ChatGPT'nin köprüye hiç ulaştırmadığı bir çağrı"
+      + " bu sayıma girmez.");
   expect(formatBlockClaimEvidence({ completed: 4, failed: 2 }))
-    .toContain("4 araç çağrısı tamamlandı, 2 tanesi hata döndürdü");
+    .toContain("4 araç çağrısı Codex'te çalıştı ve sonucuyla döndü; 2 tanesi hata olarak işaretlendi.");
   expect(formatBlockClaimEvidence({ completed: 0, failed: 0 }))
     .toContain("hiç araç çağrısı yapılmadı");
+});
+
+test("the evidence line never claims a turn had no failed calls", () => {
+  // 28.09: node_repl failed with "Computer Use native pipe is unavailable", Codex sent that back as
+  // plain output with no error flag, and the line said "0 tanesi hata döndürdü" under an answer that
+  // correctly reported the failure. The bridge cannot see such failures, so it must not count them.
+  const line = formatBlockClaimEvidence({ completed: 19, failed: 0, windowCaptureNeverReached: true });
+  expect(line).not.toContain("0 tanesi");
+  expect(line).not.toContain("hata döndürdü");
+  expect(line).toContain("araç çıktıları söyler");
+  // The setup call was made; whether it worked is not the bridge's to say.
+  expect(line).toContain("Pencere hazırlama çağrısı yapıldı");
+  expect(line).not.toContain("Pencere hazırlandı");
 });
 
 test("the ledger counts a whole turn, not the round the answer landed in", () => {
@@ -55,7 +69,7 @@ test("the ledger counts a whole turn, not the round the answer landed in", () =>
   ledger.record(["get_window"], false);
   expect(ledger.completed).toBe(2);
   expect(ledger.failed).toBe(0);
-  expect(formatBlockClaimEvidence(ledger.summary())).toContain("2 araç çağrısı tamamlandı");
+  expect(formatBlockClaimEvidence(ledger.summary())).toContain("2 araç çağrısı Codex'te çalıştı");
 });
 
 test("a turn that set a window up but never asked to capture it is reported as such", () => {
@@ -93,7 +107,7 @@ test("only an answer that claims a block carries the evidence line", () => {
   expect(blockClaimEvidenceFor(
     "Pencereyi öne getirme ve ekran görüntüsü alma çağrısı engellendi.",
     { completed: 6, failed: 0 },
-  )).toContain("6 araç çağrısı tamamlandı, 0 tanesi hata döndürdü");
+  )).toContain("6 araç çağrısı Codex'te çalıştı ve sonucuyla döndü.");
   expect(blockClaimEvidenceFor("Üç sekme okundu.", { completed: 6, failed: 0 })).toBeUndefined();
 });
 

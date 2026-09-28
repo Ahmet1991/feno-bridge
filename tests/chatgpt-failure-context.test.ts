@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import type { Page } from "playwright-core";
-import { chatGptFailureContext, chatGptPageTextChars } from "../src/adapters/chatgpt-web/browser-worker";
+import {
+  chatGptFailureContext,
+  chatGptPageTextChars,
+  countVisibleBodyTextChars,
+} from "../src/adapters/chatgpt-web/browser-worker";
 
 function fakePage(alerts: string[] | Error, pageChars: number | Error): Page {
   return {
@@ -32,6 +36,29 @@ test("alert text is bounded, redacted and capped at three", async () => {
   expect(context).not.toContain("x".repeat(161));
   expect(context).toContain("turn_[redacted]");
   expect(context).not.toContain('"c"');
+});
+
+test("page size counts what the page shows, not the scripts ChatGPT embeds in it", () => {
+  const embedded = [{ textContent: "s".repeat(446_000) }, { textContent: "c".repeat(1_000) }];
+  const fakeDocument = {
+    body: {
+      textContent: "s".repeat(446_000) + "c".repeat(1_000) + "conversation",
+      querySelectorAll: (selector: string) => {
+        expect(selector).toBe("script, style, template, noscript");
+        return embedded;
+      },
+    },
+  };
+  const globals = globalThis as { document?: unknown };
+  const previous = globals.document;
+  globals.document = fakeDocument;
+  try {
+    expect(countVisibleBodyTextChars()).toBe("conversation".length);
+    globals.document = { body: null };
+    expect(countVisibleBodyTextChars()).toBe(0);
+  } finally {
+    globals.document = previous;
+  }
 });
 
 test("an unreadable page never replaces the failure it decorates", async () => {

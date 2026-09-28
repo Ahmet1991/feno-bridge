@@ -3,6 +3,12 @@ export interface ChatGptExternalTurnProgressSnapshot {
   lastToolBatchRevision: number;
   activeToolCalls: number;
   lastProgressAt?: number;
+  /**
+   * A tool call of this turn was intercepted because Codex is compacting, and ChatGPT was told to
+   * end its response. An end with no new text after that call is then the requested stop, not a
+   * missing answer.
+   */
+  stoppedForCompaction?: true;
 }
 
 interface ProgressWaiter {
@@ -88,6 +94,7 @@ export class ChatGptExternalTurnProgress extends ChatGptTurnProgressBroadcaster 
   private observedToolBatchRevision = 0;
   private activeToolCalls = 0;
   private lastProgressAt?: number;
+  private stoppedForCompaction = false;
   private retirementError?: Error;
   private readonly toolBatchObservationWaiters = new Set<ToolBatchObservationWaiter>();
 
@@ -97,7 +104,20 @@ export class ChatGptExternalTurnProgress extends ChatGptTurnProgressBroadcaster 
       lastToolBatchRevision: this.lastToolBatchRevision,
       activeToolCalls: this.activeToolCalls,
       ...(this.lastProgressAt !== undefined ? { lastProgressAt: this.lastProgressAt } : {}),
+      ...(this.stoppedForCompaction ? { stoppedForCompaction: true as const } : {}),
     };
+  }
+
+  /**
+   * Records that the broker intercepted one of this turn's tool calls for compaction. It is not
+   * model progress, so the timestamp of the last proven MCP activity is kept.
+   */
+  recordCompactionStop(now = Date.now()): void {
+    if (this.retirementError || this.stoppedForCompaction) return;
+    this.stoppedForCompaction = true;
+    this.revision += 1;
+    this.lastProgressAt ??= now;
+    this.notify(this.snapshot());
   }
 
   recordToolBatch(count: number, now = Date.now()): number {
@@ -242,6 +262,7 @@ export class ChatGptMirroredTurnProgress extends ChatGptTurnProgressBroadcaster 
     // recorder only ever moves these forward, so a regression means a corrupt or forged frame
     // rather than an ordering artefact, and accepting it would desynchronise observed liveness.
     if (next.lastToolBatchRevision < this.current.lastToolBatchRevision
+      || (this.current.stoppedForCompaction === true && next.stoppedForCompaction !== true)
       || (next.lastProgressAt === undefined && this.current.lastProgressAt !== undefined)
       || (next.lastProgressAt !== undefined
         && this.current.lastProgressAt !== undefined
@@ -264,6 +285,7 @@ export function assertChatGptTurnProgressSnapshot(
     || !finiteIndex(value.activeToolCalls)
     || value.lastToolBatchRevision > value.revision
     || (value.lastProgressAt !== undefined && !Number.isFinite(value.lastProgressAt))
+    || (value.stoppedForCompaction !== undefined && value.stoppedForCompaction !== true)
     // Any recorded activity stamps a timestamp, so a frame claiming progress without one is
     // malformed and would otherwise report liveness the daemon never observed.
     || (value.revision > 0 && value.lastProgressAt === undefined)) {

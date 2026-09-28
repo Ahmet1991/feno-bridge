@@ -37,6 +37,16 @@ test("ChatGPT's observed Turkish platform refusal is recognized through wrappers
   )).toBeTrue();
 });
 
+test("ChatGPT's second observed refusal is recognized only when quoted whole", () => {
+  // Verbatim from the 28.09 capability test: the click never reached the bridge.
+  const quoted = "Araç çıktısı / OpenAI güvenlik katmanı: Script error: Bu araç OpenAI'ın güvenlik kontrolleri"
+    + " tarafından engellendi. Lütfen gönderdiğin içeriği tekrar kontrol et. Hesap Makinesi açıldı.";
+  expect(quotesChatGptPlatformRefusal(quoted)).toBeTrue();
+  expect(quotesChatGptPlatformRefusal(quoted.replace("OpenAI'ın", "OpenAI’ın"))).toBeTrue();
+  // The first sentence alone is how a model paraphrases a block it invented; that is still corrected.
+  expect(quotesChatGptPlatformRefusal(NO_CALL_CLAIM)).toBeFalse();
+});
+
 test("other block wording is not mistaken for ChatGPT's platform refusal", () => {
   expect(quotesChatGptPlatformRefusal("Bu araç çağrısı güvenlik engeline takıldı.")).toBeFalse();
   expect(quotesChatGptPlatformRefusal("Bu araç çağrısı güvenlik katmanı tarafından reddedildi.")).toBeFalse();
@@ -56,7 +66,10 @@ test("the correction states the record and never pushes the model to act", () =>
   const text = falseBlockCorrection({ completed: 4, failed: 0 });
   expect(text).toContain("Bu not kullanıcıdan değil, köprünün otomatik kayıt kontrolünden geliyor; kullanıcı bir itirazda bulunmadı.");
   expect(text).toContain("'Haklısın' deme, özür dileme; yalnız kaydı düzelt.");
-  expect(text).toContain("köprüye ulaşan 4 araç çağrısı tamamlandı");
+  expect(text).toContain("köprüye ulaşan 4 araç çağrısı tamamlandı ve sonuçlarıyla döndü");
+  // A returned result is not a successful one: the bridge cannot see a failure Codex reports as
+  // plain output, so it must not tell the model that none failed.
+  expect(text).not.toContain("hiçbiri hata");
   expect(text).toContain("köprüden dönen hiçbir araç çıktısında yok");
   // ChatGPT can refuse a call before it reaches the connector and show that refusal itself; the
   // bridge cannot see it, so the correction must allow the model to keep a real refusal verbatim.

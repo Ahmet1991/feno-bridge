@@ -16,16 +16,23 @@
  * reason given. That measurement is why the correction is worded exactly this way.
  */
 
-const CHATGPT_PLATFORM_REFUSAL_CORE =
-  "isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi";
+const CHATGPT_PLATFORM_REFUSALS = [
+  "isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi",
+  // 27 Sep 23:56 UTC: the capability test opened Calculator and captured it through the bridge, then
+  // its first click never reached the bridge and the model quoted this as "Script error: ...". It is
+  // the sentence seen on 19-20 Sep too; the correction turn made the model restate it as ChatGPT's.
+  // Both sentences are required, so a model's own shorter "engellendi" wording is still corrected.
+  "OpenAI'ın güvenlik kontrolleri tarafından engellendi. Lütfen gönderdiğin içeriği tekrar kontrol et",
+];
 
 export function quotesChatGptPlatformRefusal(answer: string): boolean {
   const normalized = answer
     .replace(/\\/g, "")
     .replace(/[`*_]/g, "")
+    .replace(/[‘’ʼ]/g, "'")
     .replace(/\s+/g, " ")
     .trim();
-  return normalized.includes(CHATGPT_PLATFORM_REFUSAL_CORE);
+  return CHATGPT_PLATFORM_REFUSALS.some(refusal => normalized.includes(refusal));
 }
 
 /**
@@ -40,7 +47,9 @@ export function falseBlockCorrection(counts: { completed: number; failed: number
     // The bridge cannot see a refusal that never reached it, so this says what it observed rather
     // than claiming nothing refused the call.
     ? "bu turda köprüye hiçbir araç çağrısı ulaşmadı"
-    : `bu turda köprüye ulaşan ${counts.completed} araç çağrısı tamamlandı ve hiçbiri hata döndürmedi`;
+    // Returned, not succeeded: Codex sends a call's output without an error flag, so a failed call
+    // (28.09: "Computer Use native pipe is unavailable") looks the same here as a successful one.
+    : `bu turda köprüye ulaşan ${counts.completed} araç çağrısı tamamlandı ve sonuçlarıyla döndü`;
   // The bridge cannot see a call ChatGPT refused before it reached the connector, and ChatGPT shows
   // such a refusal to the model in its own words. Say so, instead of pushing the model to withdraw a
   // refusal that may be real. This turn has no tools (its answer cannot reach Codex), so it must not

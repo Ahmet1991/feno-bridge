@@ -931,10 +931,25 @@ const chatGptExpiredSessionAlert = (page: Page): Locator => page
   .filter({ hasText: /Your session has expired|你的工作階段已過期|您的工作階段已過期|你的会话已过期|您的会话已过期/i })
   .last();
 
-/** Length of the page's text, or undefined when it cannot be read; a measure of how far the conversation has grown. */
+/**
+ * Runs inside the page: the body's text without script, style, template and noscript text. ChatGPT
+ * embeds about 446,000 characters of hydration data and styles in the body (28.09), so a raw
+ * textContent read gave nearly the same large number on every page, whatever the conversation held.
+ */
+export function countVisibleBodyTextChars(): number {
+  const body = document.body;
+  if (!body) return 0;
+  let hidden = 0;
+  body.querySelectorAll("script, style, template, noscript").forEach(node => {
+    hidden += node.textContent?.length ?? 0;
+  });
+  return Math.max(0, (body.textContent?.length ?? 0) - hidden);
+}
+
+/** Length of the page's visible text, or undefined when it cannot be read; a measure of how far the conversation has grown. */
 export async function chatGptPageTextChars(page: Page): Promise<number | undefined> {
   try {
-    const chars = await page.evaluate(() => document.body?.textContent?.length ?? 0);
+    const chars = await page.evaluate(countVisibleBodyTextChars);
     return typeof chars === "number" ? chars : undefined;
   } catch {
     return undefined;
@@ -944,7 +959,8 @@ export async function chatGptPageTextChars(page: Page): Promise<number | undefin
 /**
  * What ChatGPT itself displayed when a turn died, for the failure message. Alert text is ChatGPT's own
  * UI copy (an error or limit notice), not conversation content, and it is bounded and redacted anyway.
- * 27.09: a 50-minute turn died with a 53-character alert on a 572,693-character page, and diagnostics,
+ * 27.09: a 50-minute turn died with a 53-character alert on a 572,693-character page (a raw count; on
+ * 28.09 embedded scripts alone were about 446,000 of such a count), and diagnostics,
  * which record counts only, could not say what ChatGPT had shown. Never throws: it only decorates an
  * error that is already on its way out.
  */
@@ -1800,6 +1816,8 @@ export class ChatGptCompletionTracker {
   update(
     state: Parameters<typeof chatGptTurnIsComplete>[0] & {
       externalToolCallsInFlight?: boolean;
+      /** The daemon intercepted a call of this turn for compaction and asked ChatGPT to stop. */
+      stoppedForCompaction?: boolean;
     },
     now = Date.now(),
   ): boolean {
@@ -1812,7 +1830,9 @@ export class ChatGptCompletionTracker {
       this.missingPostToolAnswerSince = undefined;
       return false;
     }
-    if (this.postToolAnswerBaselineText === state.currentText) {
+    // Stopping with no new text is what an intercepted turn was asked to do; it settles below like
+    // any answer, so its retained conversation survives for the compaction handoff.
+    if (this.postToolAnswerBaselineText === state.currentText && !state.stoppedForCompaction) {
       this.candidate = undefined;
       if (!chatGptTurnIsComplete(state)) {
         this.missingPostToolAnswerSince = undefined;
@@ -5903,6 +5923,7 @@ export class ChatGptBrowserWorker {
             currentHtml: snapshot.fullHtml,
             completionActionVisible: snapshot.completionActionVisible,
             externalToolCallsInFlight,
+            stoppedForCompaction: externalProgressSnapshot?.stoppedForCompaction === true,
           });
           if (!completionReady) completionFenceRevision = undefined;
           if (completionReady) {
