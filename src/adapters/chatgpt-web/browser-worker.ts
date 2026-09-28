@@ -3682,16 +3682,19 @@ export class ChatGptBrowserWorker {
   }
 
   /** A changed/missing auth cookie invalidates proof without exposing credential material to logs. */
+  /**
+   * Whether ChatGPT is signed in, as the identity a personalization proof is bound to. Not the
+   * token's value: ChatGPT re-issues its session token as it refreshes the session, so a hash of
+   * the value changed between turns and no proof was ever reused (28.09, v5.0.50 live test). An
+   * account switch needs a sign-out, which closes every owned tab, so the surface key already
+   * starts cold for another account; and a stale proof is caught by the missing connector row.
+   */
   private async personalizationSessionKey(page: Page): Promise<string | undefined> {
     try {
       const cookies = await page.context().cookies("https://chatgpt.com");
       const sessions = cookies
-        .filter(cookie => /^(?:__Secure-|__Host-)?next-auth\.session-token(?:\.\d+)?$/.test(cookie.name) && cookie.value)
-        .sort((left, right) => left.name.localeCompare(right.name));
-      if (sessions.length === 0) return undefined;
-      return createHash("sha256")
-        .update(sessions.map(cookie => `${cookie.name}:${cookie.value}`).join("\n"))
-        .digest("hex");
+        .filter(cookie => /^(?:__Secure-|__Host-)?next-auth\.session-token(?:\.\d+)?$/.test(cookie.name) && cookie.value);
+      return sessions.length > 0 ? "chatgpt-signed-in" : undefined;
     } catch {
       return undefined; // No session evidence means the full personalization check is required.
     }
@@ -3816,7 +3819,9 @@ export class ChatGptBrowserWorker {
       return composer;
     }
     let sessionKey = await this.personalizationSessionKey?.(page);
-    let cachedProof = this.personalizationProofCache?.isValid(this.proofKey(page), sessionKey) ?? false;
+    const proofStatus = this.personalizationProofCache?.status(this.proofKey(page), sessionKey);
+    let cachedProof = proofStatus === "hit";
+    if (proofStatus !== undefined) console.info(`[chatgpt-web] personalization proof cache=${proofStatus}`);
     let provedThisTurn = alreadyProved;
     // Legacy rows first; the new list-navigation buttons are the fallback when no
     // legacy menu row exists. Neither structure exposes a dependable ARIA menu role.

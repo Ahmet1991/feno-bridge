@@ -125,3 +125,34 @@ test("a personalization proof outlives the per-turn Page object on the same laun
   cache.remember(worker.proofKey(managedPage), "session-1", 0);
   expect(cache.isValid(managedPage, "session-1", 1_000)).toBeTrue();
 });
+
+test("a refreshed ChatGPT session token keeps the personalization proof, and a miss names its reason", async () => {
+  // v5.0.50 live test: ChatGPT re-issued its session token between turns, so a key hashed from
+  // the token's value changed every turn and the proof was never reused.
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    personalizationSessionKey(page: unknown): Promise<string | undefined>;
+  };
+  const pageWith = (cookies: Array<{ name: string; value: string }>) => ({
+    context: () => ({ cookies: async () => cookies }),
+  });
+  const before = await worker.personalizationSessionKey(pageWith([
+    { name: "__Secure-next-auth.session-token", value: "first-issued-token" },
+    { name: "oai-did", value: "device" },
+  ]));
+  const after = await worker.personalizationSessionKey(pageWith([
+    { name: "__Secure-next-auth.session-token", value: "re-issued-token" },
+  ]));
+  expect(before).toBeDefined();
+  expect(after).toBe(before);
+  expect(await worker.personalizationSessionKey(pageWith([{ name: "oai-did", value: "device" }]))).toBeUndefined();
+
+  const cache = new ChatGptPersonalizationProofCache();
+  expect(cache.status("surface-a", before, 0)).toBe("none");
+  cache.remember("surface-a", before, 0);
+  expect(cache.status("surface-a", after, 1_000)).toBe("hit");
+  expect(cache.status("surface-a", undefined, 2_000)).toBe("no_session");
+  cache.remember("surface-a", before, 0);
+  expect(cache.status("surface-a", "another-session", 2_000)).toBe("session_changed");
+  cache.remember("surface-a", before, 0);
+  expect(cache.status("surface-a", before, 61 * 60_000)).toBe("expired");
+});

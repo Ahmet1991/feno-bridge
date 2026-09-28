@@ -3,6 +3,7 @@
 export const CHATGPT_PERSONALIZATION_PROOF_TTL_MS = 60 * 60_000;
 
 type ProofKey = object | string;
+export type ChatGptPersonalizationProofStatus = "hit" | "none" | "no_session" | "session_changed" | "expired";
 interface Proof { session: string; expiresAt: number }
 
 /**
@@ -16,12 +17,19 @@ export class ChatGptPersonalizationProofCache {
   private readonly surfaceProofs = new Map<string, Proof>();
 
   isValid(key: ProofKey, session: string | undefined, now = Date.now()): boolean {
+    return this.status(key, session, now) === "hit";
+  }
+
+  /** Why a proof can or cannot be reused; a miss drops the stored proof. */
+  status(key: ProofKey, session: string | undefined, now = Date.now()): ChatGptPersonalizationProofStatus {
     const proof = this.get(key);
-    if (!session || !proof || proof.session !== session || now >= proof.expiresAt) {
-      this.invalidate(key);
-      return false;
-    }
-    return true;
+    const status: ChatGptPersonalizationProofStatus = !session ? "no_session"
+      : !proof ? "none"
+        : proof.session !== session ? "session_changed"
+          : now >= proof.expiresAt ? "expired"
+            : "hit";
+    if (status !== "hit") this.invalidate(key);
+    return status;
   }
 
   remember(key: ProofKey, session: string | undefined, now = Date.now()): void {
