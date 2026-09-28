@@ -112,3 +112,63 @@ test("Windows backup is removed only after functional startup succeeds", async (
     fs.rmSync(fx.root, { recursive: true, force: true });
   }
 });
+
+test("a rollback restores into an emptied install directory that stays locked (28.09 EBUSY)", async () => {
+  const fx = fixture();
+  const removals = [];
+  try {
+    await assert.rejects(
+      runWindowsUpdateTransaction(fx.job, {
+        runInstaller: () => {
+          // The installer removed the old files, then was killed while it still held the directory.
+          for (const name of fs.readdirSync(fx.installDir)) fs.rmSync(path.join(fx.installDir, name), { force: true });
+          throw new Error("Windows installer did not finish within 15 minutes of awake time");
+        },
+        launch: () => assert.fail("failed installer must not launch the new application"),
+        waitForReadiness: () => assert.fail("failed installer must not wait for readiness"),
+        removeDirectory: (dir, options) => {
+          removals.push({ dir, options });
+          if (dir === fx.installDir) {
+            throw Object.assign(new Error(`EBUSY: resource busy or locked, rm '${dir}'`), { code: "EBUSY" });
+          }
+          fs.rmSync(dir, options);
+        },
+      }),
+      /awake time/,
+    );
+    assert.equal(fs.readFileSync(fx.target, "utf8"), "old launcher");
+    assert.equal(fs.readFileSync(path.join(fx.installDir, "app.asar"), "utf8"), "old app");
+    assert.ok(removals.some(({ dir, options }) => dir === fx.installDir && options.maxRetries >= 10));
+    assert.equal(fs.existsSync(path.join(fx.job.tempRoot, "previous-install")), false);
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
+
+test("a locked install directory that still holds files is not overwritten; the backup is kept", async () => {
+  const fx = fixture();
+  try {
+    let failure = null;
+    try {
+      await runWindowsUpdateTransaction(fx.job, {
+        runInstaller: () => {
+          fs.writeFileSync(fx.target, "partial launcher");
+          throw new Error("injected installer failure");
+        },
+        launch: () => assert.fail("failed installer must not launch the new application"),
+        waitForReadiness: () => assert.fail("failed installer must not wait for readiness"),
+        removeDirectory: (dir, options) => {
+          if (dir === fx.installDir) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+          fs.rmSync(dir, options);
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure instanceof Error);
+    assert.equal(failure.rollbackFailed, true);
+    assert.equal(fs.readFileSync(path.join(failure.backupPath, "Feno Bridge.exe"), "utf8"), "old launcher");
+  } finally {
+    fs.rmSync(fx.root, { recursive: true, force: true });
+  }
+});
