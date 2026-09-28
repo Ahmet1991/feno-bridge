@@ -3690,11 +3690,22 @@ export class ChatGptBrowserWorker {
    * starts cold for another account; and a stale proof is caught by the missing connector row.
    */
   private async personalizationSessionKey(page: Page): Promise<string | undefined> {
+    const signedIn = (cookies: Array<{ name: string; value: string }>) => cookies.some(cookie => (
+      /^(?:__Secure-|__Host-)?next-auth\.session-token(?:\.\d+)?$/.test(cookie.name) && cookie.value
+    )) ? "chatgpt-signed-in" : undefined;
     try {
-      const cookies = await page.context().cookies("https://chatgpt.com");
-      const sessions = cookies
-        .filter(cookie => /^(?:__Secure-|__Host-)?next-auth\.session-token(?:\.\d+)?$/.test(cookie.name) && cookie.value);
-      return sessions.length > 0 ? "chatgpt-signed-in" : undefined;
+      const fromContext = signedIn(await page.context().cookies("https://chatgpt.com"));
+      if (fromContext) return fromContext;
+      // Over the launcher's CDP connection the context lists no cookies at all for the Electron
+      // session (28.09: 0 cookies, and every proof lookup was no_session), while the page's own
+      // network domain sees the signed-in session. Ask the page.
+      const session = await page.context().newCDPSession(page);
+      try {
+        const { cookies } = await session.send("Network.getCookies", { urls: ["https://chatgpt.com/"] });
+        return signedIn(cookies);
+      } finally {
+        await session.detach().catch(() => {});
+      }
     } catch {
       return undefined; // No session evidence means the full personalization check is required.
     }

@@ -156,3 +156,30 @@ test("a refreshed ChatGPT session token keeps the personalization proof, and a m
   cache.remember("surface-a", before, 0);
   expect(cache.status("surface-a", before, 61 * 60_000)).toBe("expired");
 });
+
+test("the signed-in check reads the page's own cookies when the CDP context lists none", async () => {
+  // 28.09: over the launcher's CDP connection context.cookies() returned 0 cookies, so every proof
+  // lookup was no_session, while the page's Network domain saw 169 cookies with the session.
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    personalizationSessionKey(page: unknown): Promise<string | undefined>;
+  };
+  let detached = 0;
+  const pageWith = (pageCookies: Array<{ name: string; value: string }>) => ({
+    context: () => ({
+      cookies: async () => [],
+      newCDPSession: async () => ({
+        send: async (method: string) => {
+          expect(method).toBe("Network.getCookies");
+          return { cookies: pageCookies };
+        },
+        detach: async () => { detached += 1; },
+      }),
+    }),
+  });
+  expect(await worker.personalizationSessionKey(pageWith([
+    { name: "__Secure-next-auth.session-token.0", value: "chunk" },
+    { name: "__Secure-next-auth.session-token.1", value: "chunk" },
+  ]))).toBe("chatgpt-signed-in");
+  expect(await worker.personalizationSessionKey(pageWith([{ name: "oai-did", value: "device" }]))).toBeUndefined();
+  expect(detached).toBe(2);
+});
