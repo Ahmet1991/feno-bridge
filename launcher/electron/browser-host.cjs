@@ -784,11 +784,20 @@ class BrowserHost {
     contents.once("destroyed", () => this.shellZoomShortcutBindings.delete(contents));
   }
 
+  // A turn tab sent to sign-in means the ChatGPT session is over for every tab. 29.09 00:08: only
+  // that tab's message said so, the launcher kept `authenticated: true`, and Sign in did nothing.
+  markSessionEnded() {
+    if (!this.state?.authenticated) return;
+    this.setState({ authenticated: false });
+    this.logger.warn("browser.session_ended", {});
+  }
+
   bindTurnContents(tab) {
     const contents = tab.view.webContents;
     contents.setWindowOpenHandler(({ url }) => {
       if (allowedAuthUrl(url)) {
         this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
+        this.markSessionEnded();
         return { action: "deny" };
       }
       let parsed;
@@ -801,6 +810,7 @@ class BrowserHost {
       event.preventDefault();
       tab.message = "ChatGPT requires a fresh sign-in; finish this turn, then sign in from Setup";
       this.logger.warn("browser.turn_authentication_blocked", { tabId: tab.id, traceId: tab.traceId });
+      this.markSessionEnded();
       this.publishState?.(this.snapshot());
     };
     contents.on("will-navigate", blockAuthenticationNavigation);
@@ -2611,9 +2621,18 @@ class BrowserHost {
   openLogin() {
     requireAutomaticBrowserInspection(this, "Automated ChatGPT sign-in verification");
     if (this.state.authenticated) {
-      this.activateHomeSurface();
-      this.show();
-      return Promise.resolve(this.snapshot());
+      // 29.09 00:08: ChatGPT had ended the session while this flag still said authenticated, so
+      // Sign in showed the home page and started nothing. Check before trusting the flag; a check
+      // that cannot run (a Codex turn owns the browser) keeps the old behavior.
+      return Promise.resolve()
+        .then(() => this.refreshAuthentication())
+        .catch(() => this.snapshot())
+        .then(() => {
+          if (!this.state.authenticated) return this.openLogin();
+          this.activateHomeSurface();
+          this.show();
+          return this.snapshot();
+        });
     }
     if (this.loginOperation) {
       this.activateHomeSurface();

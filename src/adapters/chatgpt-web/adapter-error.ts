@@ -80,6 +80,25 @@ export function chatGptRetainedConversationLostError(moment: string): ChatGptWeb
   );
 }
 
+/**
+ * 29.09 00:08: ChatGPT ended the session server-side; every turn then failed as
+ * "page.goto: net::ERR_ABORTED", because the launcher stops a turn tab from following the redirect
+ * to sign-in. Retrying cannot help until someone signs in, so this is not retryable. Not a 401:
+ * this is the ChatGPT browser's session, not the Codex client's credentials.
+ */
+export function chatGptSignInRequiredError(cause?: unknown): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "ChatGPT signed this browser out. Sign in again from Feno Bridge (Setup → Sign in), then retry the task.",
+    {
+      status: 409,
+      errorType: "invalid_request_error",
+      code: "chatgpt_sign_in_required",
+      retryable: false,
+      ...(cause !== undefined ? { cause } : {}),
+    },
+  );
+}
+
 export function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     "The retained ChatGPT conversation is no longer available.",

@@ -3674,3 +3674,58 @@ test("a signed-in home view left on a used Temporary Chat returns to a fresh one
   await BrowserHost.prototype.probeAuthentication.call(fixture);
   assert.deepEqual(loads, []);
 });
+
+test("Sign in re-checks a stale authenticated flag and starts the login when the session is gone (29.09)", async () => {
+  const calls = [];
+  const fixture = {
+    state: { authenticated: true },
+    loginOperation: null,
+    sessionRefreshOperation: null,
+    authNavigationError: null,
+    activateHomeSurface() { calls.push("home"); },
+    show() { calls.push("show"); },
+    snapshot() { return { authenticated: this.state.authenticated }; },
+    logger: { info() {}, warn() {} },
+    view: { webContents: { getURL: () => "https://chatgpt.com/?temporary-chat=true", loadURL: async () => {} } },
+    // ChatGPT ended the session server-side; the flag was stale until this check.
+    refreshAuthentication() { calls.push("refresh"); this.state.authenticated = false; return Promise.resolve(this.snapshot()); },
+    probeAuthentication: async () => calls.push("probe"),
+    waitForAuthenticated: async () => { calls.push("wait-for-login"); return { authenticated: true }; },
+    runSessionInspection: async () => calls.push("inspect"),
+    withManualOperation: async (name, action) => { calls.push(name); return await action(); },
+    openLogin(...args) { return BrowserHost.prototype.openLogin.apply(this, args); },
+  };
+  const result = await BrowserHost.prototype.openLogin.call(fixture);
+  assert.deepEqual(result, { authenticated: true });
+  assert.deepEqual(calls.filter(call => call !== "show"), ["refresh", "ChatGPT login", "probe", "wait-for-login", "inspect"]);
+});
+
+test("Sign in with a session that is still valid only shows the home page", async () => {
+  const calls = [];
+  const fixture = {
+    state: { authenticated: true },
+    loginOperation: null,
+    activateHomeSurface() { calls.push("home"); },
+    show() { calls.push("show"); },
+    snapshot() { return { authenticated: this.state.authenticated }; },
+    refreshAuthentication() { calls.push("refresh"); return Promise.resolve(this.snapshot()); },
+    waitForAuthenticated: async () => assert.fail("a valid session must not start a login"),
+    withManualOperation: async () => assert.fail("a valid session must not take browser ownership for login"),
+  };
+  assert.deepEqual(await BrowserHost.prototype.openLogin.call(fixture), { authenticated: true });
+  assert.deepEqual(calls, ["refresh", "home", "show"]);
+});
+
+test("a turn tab sent to sign-in marks the whole ChatGPT session as ended", () => {
+  const warnings = [];
+  const fixture = {
+    state: { authenticated: true },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    logger: { warn: (event) => warnings.push(event) },
+  };
+  BrowserHost.prototype.markSessionEnded.call(fixture);
+  assert.equal(fixture.state.authenticated, false);
+  assert.deepEqual(warnings, ["browser.session_ended"]);
+  BrowserHost.prototype.markSessionEnded.call(fixture);
+  assert.deepEqual(warnings, ["browser.session_ended"]);
+});
