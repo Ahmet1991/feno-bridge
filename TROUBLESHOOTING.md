@@ -113,6 +113,25 @@ After updating, if `codex_exec` still does not expose `sandbox_permissions`, `ju
 These fields only forward a permission request to Codex; its sandbox and approval policy still
 decide whether the command can run. Ordinary commands do not require these optional fields.
 
+### Windows: `unable to verify the first certificate` or `SELF_SIGNED_CERT_IN_CHAIN`
+
+The Windows launcher and packaged CLI use Windows-trusted certificates by default, including
+certificates installed by your company or antivirus. Explicit `NODE_USE_SYSTEM_CA` settings are
+preserved. Certificate verification remains enabled.
+
+If it still fails, check the affected host with Windows `curl.exe -Iv`
+(for example, `curl.exe -Iv https://api.openai.com/`). If it uses Schannel and receives an HTTP
+response, Windows trusts that connection. For an older launcher, fully quit it and start it from PowerShell:
+
+```powershell
+$env:NODE_USE_SYSTEM_CA = "1"
+Start-Process "$env:LOCALAPPDATA\Programs\Feno Bridge\Feno Bridge.exe"
+```
+
+For a portable copy, use its executable path instead. Retry **Connect harness** once. This enables
+[Node's system CA support](https://nodejs.org/api/cli.html#node_use_system_ca1); certificate verification
+stays enabled. If it still fails, export a safe log. Do not set `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
 ### ChatGPT shows `Error creating connector`
 
 1. Confirm that the Tunnel ID and the regular API key used by the launcher were created under the

@@ -94,7 +94,12 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
     expect(actions).toEqual([
       ...(multipart ? [
         "effort:low",
-        ...Array.from({ length: 5 }, () => ["attach:plain", "send", "observe", "ack"]).flat(),
+        // Every later stage re-proves the staging effort on the page it is sent from: the first
+        // saved stage moves a temporary chat to /c/<id> (28.09).
+        ...Array.from({ length: 5 }, (_unused, index) => [
+          ...(index > 0 ? ["effort:low"] : []),
+          "attach:plain", "send", "observe", "ack",
+        ]).flat(),
       ] : []),
       `effort:${effort}`,
       tools ? "attach:tools" : "attach:plain", "files", "send", "observe",

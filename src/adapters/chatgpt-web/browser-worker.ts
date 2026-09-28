@@ -1485,7 +1485,7 @@ const CHATGPT_HEAVY_STAGES = new Set([
 export function isHeavyChatGptStage(stage: string): boolean {
   return CHATGPT_HEAVY_STAGES.has(stage)
     || /^response_page_rebind_\d+$/.test(stage)
-    || /^multipart_stage_\d+_(attachment|send)$/.test(stage);
+    || /^multipart_stage_\d+_(attachment|send|effort_selection)$/.test(stage);
 }
 
 export const CHATGPT_MIN_OPERATIONAL_VIEWPORT = Object.freeze({ width: 320, height: 240 });
@@ -1888,10 +1888,11 @@ export class ChatGptTurnDomHealthTracker {
     externalProgressLive?: boolean;
   }, now = Date.now()): string | undefined {
     if (state.responsePresent) this.sawResponse = true;
-    if (state.externalProgressLive) {
+    if (state.externalProgressLive || state.running) {
       // Every conclusion below asserts that ChatGPT stopped producing this turn. A tool call that
-      // is still completing disproves all of them, whatever the renderer is currently exposing, so
-      // no window may accrue while the model is provably working.
+      // is still completing or a visible Stop control disproves that, whatever response content
+      // the renderer currently exposes. Start a fresh grace period once generation stops
+      // (upstream 6.1.3).
       this.missingResponseSince = undefined;
       this.emptyCompletionSince = undefined;
       this.missingCompletionAction = undefined;
@@ -3859,9 +3860,17 @@ export class ChatGptBrowserWorker {
     try {
       composer = await this.activeComposer(page, 30_000, abortSignal);
       if (await this.connectorIsSelected(composer, abortSignal)) {
-        if (provedThisTurn) this.personalizationProofCache?.remember(page, sessionKey);
-        await capture("connector-already-selected");
-        return composer;
+        if ((await this.attachedPromptText(page, abortSignal)).length === 0) {
+          if (provedThisTurn) this.personalizationProofCache?.remember(page, sessionKey);
+          await capture("connector-already-selected");
+          return composer;
+        }
+        // A restored draft can include both the connector and an earlier request. Selecting
+        // that pill proves the connector, not an empty composer. Reset the owned draft before
+        // attaching this request so it cannot be appended to the previous one (upstream 6.1.3).
+        await this.clearChatGptComposerState(page);
+        throwIfPromptAttachmentAborted(abortSignal);
+        composer = await this.activeComposer(page, 30_000, abortSignal);
       }
       await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
 
@@ -4670,6 +4679,19 @@ export class ChatGptBrowserWorker {
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
       const chatGptMarkdownContent = (markdownRoot: HTMLElement): HTMLElement => {
         const content = markdownRoot.cloneNode(true) as HTMLElement;
+        // Writing cards expose a copy-content boundary separate from their title,
+        // format picker and other changing controls. Keep only that owned content.
+        const writingCard = '[data-markdown-copy="rich-block"]';
+        const cards = [...(content.matches(writingCard) ? [content] : []),
+          ...Array.from(content.querySelectorAll<HTMLElement>(writingCard))];
+        for (const card of cards.reverse()) {
+          const bodies = Array.from(card.querySelectorAll('[data-markdown-copy-content="true"]'))
+            .filter(body => body.closest(writingCard) === card);
+          if (bodies.length !== 1) continue;
+          const children = Array.from(bodies[0]!.childNodes);
+          card.textContent = "";
+          for (const child of children) card.appendChild(child);
+        }
         // These are embedded renderers, not Markdown answer text. Their loading labels, controls
         // and plot axes change independently of generation (including after a later paragraph).
         // Keep their UI out of both the emitted HTML and the text consistency fingerprint.
@@ -5482,6 +5504,25 @@ export class ChatGptBrowserWorker {
       if (prepared.multipart && multipartStages && multipartTransactionId && multipartFinalPrompt) {
         for (let index = 0; index < multipartStages.length; index += 1) {
           const stage = multipartStages[index]!;
+          // 28.09: ChatGPT now moves a temporary chat from / to /c/<id> once the first stage is
+          // saved, and the pre-send check compares the page with the one the effort was chosen
+          // on, so every second stage failed with "model controls are unavailable" (it worked
+          // on 24.09). Upstream 6.1.x re-proves the selection before each later stage; so does
+          // this, without the reload retry above, which would abandon the stages already sent.
+          if (index > 0) {
+            mode = await this.runStage(
+              turn.traceId,
+              `multipart_stage_${index + 1}_effort_selection`,
+              browserStageTimeouts.effortSelection,
+              () => this.selectModelAndEffort(
+                page,
+                turn.modelId,
+                stagingMode.effort,
+                browserCapabilities,
+                checkpoint => diagnostics.capture(page, `multipart-${index + 1}-${checkpoint}`),
+              ),
+            );
+          }
           let stageBaseline = await this.captureSubmissionBaseline(page);
           await this.runStage(
             turn.traceId,
@@ -5568,7 +5609,9 @@ export class ChatGptBrowserWorker {
           await diagnostics.capture(page, `multipart-stage-${index + 1}-acknowledged`);
           await turn.onMultipartStageAcknowledged?.(index + 1);
         }
-        if (mode.effort !== requestedMode.effort) {
+        // The final part is sent on the /c/<id> page the stages created, so the selection is
+        // re-proved there even when the staging and final efforts are the same.
+        if (mode.effort !== requestedMode.effort || (mode.selection && mode.selection.url !== page.url())) {
           mode = await this.runStage(
             turn.traceId,
             "final_part_effort_selection",
