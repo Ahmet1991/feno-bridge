@@ -13,6 +13,19 @@ const turndown = new TurndownService({
 
 turndown.use(gfm);
 turndown.remove(["button", "script", "style"]);
+// Turndown escapes both brackets, and Codex renders the `\[ … \]` pair that leaves behind (a plain
+// "windows: []" on 28 Sep) as LaTeX. A `]` cannot open a link, image, reference or task box, so
+// escaping `[` alone keeps all of those literal without ever writing the math delimiter pair. Every
+// other `]` escape comes from this rule: source backslashes are doubled first.
+const escapeMarkdownText = turndown.escape.bind(turndown);
+turndown.escape = text => escapeMarkdownText(text).replaceAll("\\]", "]");
+turndown.addRule("tableCellLineBreak", {
+  // Turndown writes <br> as a Markdown hard break, "  \n", which ends a GFM table row and spills the
+  // rest of the cell out of the table (28 Sep: a four-commit git log cell broke the results table).
+  // GFM keeps inline HTML inside a cell, and <br> is what ChatGPT's own Markdown had there.
+  filter: node => node.nodeName === "BR" && insideTableCell(node),
+  replacement: () => "<br>",
+});
 turndown.addRule("removeImages", {
   filter: node => ["IMG", "PICTURE", "SOURCE"].includes(node.nodeName),
   replacement: () => "",
@@ -55,6 +68,14 @@ turndown.addRule("compactListItem", {
   },
 });
 
+function insideTableCell(node: Node): boolean {
+  for (let ancestor = node.parentNode; ancestor; ancestor = ancestor.parentNode) {
+    if (["TD", "TH"].includes(ancestor.nodeName)) return true;
+    if (ancestor.nodeName === "TABLE") return false;
+  }
+  return false;
+}
+
 function inlineFilePath(node: Node): string | undefined {
   if (node.nodeName !== "CODE") return undefined;
   for (let ancestor = node.parentNode; ancestor; ancestor = ancestor.parentNode) {
@@ -75,9 +96,9 @@ function inlineFilePath(node: Node): string | undefined {
 }
 
 function preserveObsidianWikiLinks(markdown: string): string {
-  // Turndown escapes literal brackets, but Codex interprets the resulting `\[` as LaTeX.
+  // Turndown escapes literal opening brackets, but Codex interprets the resulting `\[` as LaTeX.
   // Restore the source syntax before converting it into a regular Markdown file link.
-  return markdown.replace(/\\\[\\\[([^\r\n]*?)\\\]\\\]/g, "[[$1]]");
+  return markdown.replace(/\\\[\\\[([^\r\n]*?)\]\]/g, "[[$1]]");
 }
 
 function obsidianWikiLink(value: string): string | undefined {
