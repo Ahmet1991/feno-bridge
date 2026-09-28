@@ -243,10 +243,13 @@ test("active compaction delivers the current result and converts every later MCP
       arguments: { cmd: "pwd" },
     });
     const [request] = await broker.nextToolBatch(token);
+    let interceptions = 0;
     broker.requestCompaction(token, {
       content: [{ type: "text", text: "compact now" }],
       isError: true,
-    });
+    }, () => { interceptions += 1; });
+    // The call already handed to Codex is not an interception; its result is delivered unchanged.
+    expect(interceptions).toBe(0);
     broker.completeTool(token, request!.callId, {
       content: [{ type: "text", text: "current result" }],
     });
@@ -262,6 +265,8 @@ test("active compaction delivers the current result and converts every later MCP
       content: [{ type: "text", text: "compact now" }],
       isError: true,
     });
+    // The later call was answered with the instruction, so the browser is told the turn was stopped.
+    expect(interceptions).toBe(1);
     expect(broker.interruptedCompactionRequests(token)).toEqual([{
       wireName: "exec_command",
       freeform: false,
@@ -299,11 +304,17 @@ test("active compaction drains an MCP call already queued without an outer Codex
       arguments: { cmd: "must-not-run" },
     });
     await Bun.sleep(25);
+    let interceptions = 0;
     const interrupted = broker.requestCompaction(token, {
       content: [{ type: "text", text: "compact instead" }],
       isError: true,
+    }, () => {
+      interceptions += 1;
+      // A failing listener must not change what the intercepted call is answered with.
+      throw new Error("listener failure");
     });
     expect(interrupted).toBe(1);
+    expect(interceptions).toBe(1);
     await expect(invocation).resolves.toMatchObject({
       content: [{ type: "text", text: "compact instead" }],
       isError: true,
@@ -742,12 +753,19 @@ test("active compaction distinguishes a later intercepted tool from an ordinary 
   let finishBrowser!: (answer: string) => void;
   const browser = new Promise<string>(resolve => { finishBrowser = resolve; });
   let compactionDeliveries = 0;
+  let onInterception: (() => void) | undefined;
+  let browserToldToStop = 0;
   const broker = {
-    requestCompaction: () => 0,
+    requestCompaction: (_token: string, _result: BrokerToolResult, listener?: () => void) => {
+      onInterception = listener;
+      return 0;
+    },
     compactionDeliveryCount: () => compactionDeliveries,
     completeTool: async (_token: string, _callId: string, result: BrokerToolResult) => {
       expect(result.content).toEqual([{ type: "text", text: "canonical result" }]);
+      // The later call is intercepted; the browser must learn that before ChatGPT ends its response.
       compactionDeliveries = 1;
+      onInterception?.();
       finishBrowser("Stopped after the bridge rejected a later tool call.");
     },
     revoke() {},
@@ -755,7 +773,7 @@ test("active compaction distinguishes a later intercepted tool from an ordinary 
   const source = new ChatGptTurnSession({
     mode: "tools",
     token: Promise.resolve("turn_active_later_tool"),
-    externalProgress: { recordToolResult() {} } as never,
+    externalProgress: { recordToolResult() {}, recordCompactionStop() { browserToldToStop += 1; } } as never,
     browser,
     physicalSettlement: browser.then(() => undefined),
     trace: new ChatGptTraceFeed(),
@@ -781,6 +799,7 @@ test("active compaction distinguishes a later intercepted tool from an ordinary 
     answer: "Stopped after the bridge rejected a later tool call.",
     compactionInstructionDelivered: true,
   });
+  expect(browserToldToStop).toBe(1);
 });
 
 test("active compaction waits for an ordinary response with no available tool boundary", async () => {

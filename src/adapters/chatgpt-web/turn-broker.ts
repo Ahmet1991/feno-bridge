@@ -76,6 +76,8 @@ interface TurnChannel {
   compactionResult?: BrokerToolResult;
   compactionDeliveryCount: number;
   compactionInterruptedRequests: CompactionPendingToolRequest[];
+  /** Told each time a call is answered with the compaction instruction instead of being run. */
+  onCompactionInterception?: () => void;
   safe?: SafeTurnControl;
   /** Every MCP request owns a lease from token claim until its handler has settled. */
   activities: Set<string>;
@@ -302,6 +304,18 @@ export interface TurnBrokerOwner {
  * that works on one developer's machine is not silently unbindable on another's.
  */
 const MAX_UNIX_SOCKET_PATH_BYTES = 103;
+
+/** A listener's failure must not change what the broker answers the intercepted call. */
+function notifyCompactionInterception(channel: { traceId: string; onCompactionInterception?: () => void }): void {
+  try {
+    channel.onCompactionInterception?.();
+  } catch (error) {
+    console.warn(
+      `[chatgpt-web] broker trace=${channel.traceId} compaction interception listener failed:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 export class TurnBroker implements TurnBrokerOwner {
   static forSocket(path: string): TurnBroker {
@@ -559,7 +573,7 @@ export class TurnBroker implements TurnBrokerOwner {
     return this.waitForSafeState(channel.retirementWaiters, signal, "turn retirement wait aborted");
   }
 
-  requestCompaction(token: string, queuedResult: BrokerToolResult): number {
+  requestCompaction(token: string, queuedResult: BrokerToolResult, onInterception?: () => void): number {
     this.prune();
     const channel = this.channels.get(token);
     if (!channel) throw new Error("turn token is invalid or expired");
@@ -569,6 +583,7 @@ export class TurnBroker implements TurnBrokerOwner {
     }
     channel.compactionRequested = true;
     channel.compactionResult = structuredClone(queuedResult);
+    if (onInterception) channel.onCompactionInterception = onInterception;
     if (channel.batchTimer) {
       clearTimeout(channel.batchTimer);
       channel.batchTimer = undefined;
@@ -581,6 +596,7 @@ export class TurnBroker implements TurnBrokerOwner {
       channel.compactionInterruptedRequests.push(structuredClone(pendingRequest));
       channel.invocations.delete(callId);
       channel.compactionDeliveryCount += 1;
+      notifyCompactionInterception(channel);
       invocation.resolve(structuredClone(queuedResult));
     }
     if (queued.length > 0) {
@@ -1233,6 +1249,7 @@ export class TurnBroker implements TurnBrokerOwner {
         }
       }
       binding.channel.compactionDeliveryCount += 1;
+      notifyCompactionInterception(binding.channel);
       console.info(
         `[chatgpt-web] broker trace=${binding.channel.traceId} intercepted a post-compaction MCP call`,
       );

@@ -1816,6 +1816,8 @@ export class ChatGptCompletionTracker {
   update(
     state: Parameters<typeof chatGptTurnIsComplete>[0] & {
       externalToolCallsInFlight?: boolean;
+      /** The daemon intercepted a call of this turn for compaction and asked ChatGPT to stop. */
+      stoppedForCompaction?: boolean;
     },
     now = Date.now(),
   ): boolean {
@@ -1828,7 +1830,9 @@ export class ChatGptCompletionTracker {
       this.missingPostToolAnswerSince = undefined;
       return false;
     }
-    if (this.postToolAnswerBaselineText === state.currentText) {
+    // Stopping with no new text is what an intercepted turn was asked to do; it settles below like
+    // any answer, so its retained conversation survives for the compaction handoff.
+    if (this.postToolAnswerBaselineText === state.currentText && !state.stoppedForCompaction) {
       this.candidate = undefined;
       if (!chatGptTurnIsComplete(state)) {
         this.missingPostToolAnswerSince = undefined;
@@ -5919,6 +5923,7 @@ export class ChatGptBrowserWorker {
             currentHtml: snapshot.fullHtml,
             completionActionVisible: snapshot.completionActionVisible,
             externalToolCallsInFlight,
+            stoppedForCompaction: externalProgressSnapshot?.stoppedForCompaction === true,
           });
           if (!completionReady) completionFenceRevision = undefined;
           if (completionReady) {
