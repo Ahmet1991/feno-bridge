@@ -93,9 +93,9 @@ const pendingFalseBlockCorrectionSessions = new WeakSet<ChatGptTurnSession>();
 
 const MAX_IMAGE_CONTINUATION_PHASES = 4;
 
-// ChatGPT may already show the image inside this tool result (28 Sep: twelve view_image results were
-// read correctly before any attachment). Only an image that is not visible waits for a new message.
-const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image. If it is visible to you in this result, use it normally. If it is not, it will be shown to you in a new message after you finish this message: do not guess; end this message with a short note.";
+// The v5.0.48 wording ("if it is visible to you, use it") made the model reopen the same files: 32
+// view_image calls for 12 images on 28 Sep, against 12 with this one. Keep it.
+const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that cannot be attached to the already-running ChatGPT message. The image will be shown to you in a new message after you finish this message. If you need to see it, do not guess; end this message with a short note.";
 
 function imageContinuationTraceId(parentTraceId: string, phase: number): string {
   return createHash("sha256")
@@ -111,11 +111,14 @@ function imageContinuationTraceId(parentTraceId: string, phase: number): string 
  * whole answer a second time. So it verifies rather than answers again: an answer that already
  * matches the images gets one short sentence, and only what the images change is written out.
  */
+// "Compare with these attachments" (v5.0.48) read as "open them again": each follow-up called
+// view_image once more, whose new image started another follow-up, four phases deep (28 Sep). The
+// attachments are the images; saying so, and forbidding the reopen, ends the chain at one phase.
 const DELIVERED_IMAGES_PROMPT = "[Feno Bridge] Önceki araç çağrılarının döndürdüğü görüntü(ler) bu"
-  + " mesaja ek olarak bağlandı. Önceki cevabını bu eklerle karşılaştır. Önceki cevabın görüntülerle"
-  + " uyuşuyorsa onu tekrarlama; yalnızca bunu doğrulayan tek kısa cümle yaz. Görüntüleri daha önce"
-  + " göremediğin için yanıtlayamadığın, eksik ya da yanlış kalan bir şey varsa yalnızca onu yanıtla"
-  + " veya düzelt. Ekte göremediğin bir şey varsa göremediğini söyle.";
+  + " mesaja ek olarak bağlandı; bunlar o görüntülerin kendisi, onları yeniden açmak için araç"
+  + " çağırma. Önceki cevabın bu görüntülerle uyuşuyorsa onu tekrarlama; yalnızca bunu doğrulayan tek"
+  + " kısa cümle yaz. Görüntüleri göremediğin için yanıtlayamadığın, eksik ya da yanlış kalan bir şey"
+  + " varsa yalnızca onu yanıtla veya düzelt. Ekte göremediğin bir şey varsa göremediğini söyle.";
 
 function unshownImageFinalNotice(count: number): string | undefined {
   return count > 0

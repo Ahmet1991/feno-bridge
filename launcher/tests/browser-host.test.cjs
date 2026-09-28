@@ -3635,3 +3635,42 @@ test("the heavy phase wait covers a full field of tabs, not just one holder ahea
     "a bound that covers only one holder ahead cannot support concurrent chats",
   );
 });
+
+test("a signed-in home view left on a used Temporary Chat returns to a fresh one instead of reading as signed out", async () => {
+  let url = "https://chatgpt.com/c/used-chat?temporary-chat=true";
+  const loads = [];
+  const fixture = {
+    state: { authenticated: false },
+    activeTraceId: null,
+    manualOperation: null,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        getURL: () => url,
+        loadURL: async next => { loads.push(next); url = next; },
+        executeJavaScript: async () => ({
+          url,
+          composer: true,
+          temporary: url === "https://chatgpt.com/?temporary-chat=true",
+          sessionAuthenticated: true,
+          readyState: "complete",
+        }),
+      },
+    },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return { ...this.state }; },
+    logger: { info() {} },
+  };
+  const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+  assert.deepEqual(loads, ["https://chatgpt.com/?temporary-chat=true"]);
+  assert.equal(result.authenticated, true);
+  assert.equal(result.status, "ready");
+
+  // A running Codex turn owns its tab; the probe never navigates it away.
+  url = "https://chatgpt.com/c/used-chat?temporary-chat=true";
+  loads.length = 0;
+  fixture.activeTraceId = "running-turn";
+  fixture.state = { authenticated: false };
+  await BrowserHost.prototype.probeAuthentication.call(fixture);
+  assert.deepEqual(loads, []);
+});

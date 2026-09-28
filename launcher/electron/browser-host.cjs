@@ -2933,7 +2933,20 @@ class BrowserHost {
         result = await probe(this.view.webContents);
       }
     }
-    if (this.manualOperation === "ChatGPT login"
+    // 28.09: ChatGPT moves a Temporary Chat to /c/<id> after its first message, so after the smoke
+    // test the home view sat there and a signed-in session read as signed out ("Sign in to ChatGPT
+    // before installing the Codex integration" right after a passing smoke test). Start a fresh one.
+    const usedTemporaryChat = (() => {
+      try {
+        const current = new URL(result.url);
+        return current.origin === CHATGPT_ORIGIN
+          && /^\/c\/[^/]+$/.test(current.pathname)
+          && current.searchParams.get("temporary-chat") === "true";
+      } catch {
+        return false;
+      }
+    })();
+    if ((this.manualOperation === "ChatGPT login" || (usedTemporaryChat && !this.activeTraceId && !this.manualOperation))
       && result.sessionAuthenticated
       && !result.temporary
       && !this.view.webContents.isDestroyed()) {
