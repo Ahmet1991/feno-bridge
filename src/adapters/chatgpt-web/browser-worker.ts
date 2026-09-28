@@ -3342,18 +3342,25 @@ export class ChatGptBrowserWorker {
     prompt: string,
     abortSignal?: AbortSignal,
   ): Promise<void> {
+    const startedAt = performance.now();
     const deadline = Date.now() + 10_000;
     let observed = "";
+    let readbacks = 0;
     while (Date.now() < deadline) {
       throwIfPromptAttachmentAborted(abortSignal);
       observed = await this.attachedPromptText(page, abortSignal);
+      readbacks += 1;
       throwIfPromptAttachmentAborted(abortSignal);
-      if (this.promptTextEquivalent(prompt, observed)) return;
+      if (this.promptTextEquivalent(prompt, observed)) {
+        console.info(`[chatgpt-web] prompt readback chars=${prompt.length} reads=${readbacks} durationMs=${Math.round(performance.now() - startedAt)}`);
+        return;
+      }
       await withBrowserTurnAbort(
         new Promise(resolveSleep => setTimeout(resolveSleep, 50)),
         abortSignal,
       );
     }
+    console.info(`[chatgpt-web] prompt readback failed expectedChars=${prompt.length} observedChars=${observed.length} reads=${readbacks} durationMs=${Math.round(performance.now() - startedAt)}`);
     throwIfPromptAttachmentAborted(abortSignal);
     const commonPrefix = this.promptEquivalentPrefixLength(prompt, observed);
     throw new ChatGptPromptAttachmentIntegrityError(
@@ -3715,18 +3722,26 @@ export class ChatGptBrowserWorker {
     let composerMutationStarted = false;
     try {
       if (connectorMode !== "mention") {
+        const startedAt = performance.now();
         const composer = await this.activeComposer(page, 30_000, abortSignal);
+        const resolvedAt = performance.now();
         // Playwright's multiline fill maps through an input action that ChatGPT's Lexical editor can
         // collapse to the first paragraph on the launcher-owned Electron surface. Clear separately,
         // then transport the complete text through the browser's plain-text editing command.
         composerMutationStarted = true;
         await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+        const clearedAt = performance.now();
         await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+        const focusedAt = performance.now();
         if (requireThink) {
           await setChatGptThinkMode(composer.locator("xpath=ancestor::form[1]"), true, captureDiagnostic, abortSignal);
         }
+        const readyAt = performance.now();
         await this.insertPromptText(page, prompt, abortSignal);
+        const insertedAt = performance.now();
         await this.assertPromptAttached(page, prompt, abortSignal);
+        const verifiedAt = performance.now();
+        console.info(`[chatgpt-web] prompt attachment cached path chars=${prompt.length} resolveMs=${Math.round(resolvedAt - startedAt)} clearMs=${Math.round(clearedAt - resolvedAt)} focusMs=${Math.round(focusedAt - clearedAt)} thinkMs=${Math.round(readyAt - focusedAt)} insertMs=${Math.round(insertedAt - readyAt)} verifyMs=${Math.round(verifiedAt - insertedAt)} totalMs=${Math.round(verifiedAt - startedAt)}`);
         return;
       }
       const selectedComposer = await this.selectConnector(
@@ -4055,8 +4070,11 @@ export class ChatGptBrowserWorker {
 
   private async insertPromptText(page: Page, text: string, abortSignal?: AbortSignal): Promise<void> {
     throwIfPromptAttachmentAborted(abortSignal);
+    const startedAt = performance.now();
     const composer = await this.activeComposer(page, 30_000, abortSignal);
+    const resolvedAt = performance.now();
     await composer.focus({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+    const focusedAt = performance.now();
     // CDP Input.insertText is interpreted as live typing by ChatGPT's Lexical plugins. On a large
     // JSON transport it can turn literal Markdown backticks into rich code nodes, remove the
     // delimiters from textContent, and leave the next insertion outside the intended block. The
@@ -4066,6 +4084,7 @@ export class ChatGptBrowserWorker {
       timeout: 20_000,
       signal: abortSignal,
     });
+    console.info(`[chatgpt-web] prompt insert chars=${text.length} resolveMs=${Math.round(resolvedAt - startedAt)} focusMs=${Math.round(focusedAt - resolvedAt)} editMs=${Math.round(performance.now() - focusedAt)} accepted=${inserted}`);
     throwIfPromptAttachmentAborted(abortSignal);
     if (!inserted) {
       throw new ChatGptPromptAttachmentIntegrityError(
