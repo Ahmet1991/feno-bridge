@@ -82,6 +82,8 @@ const callLedgerBySession = new WeakMap<ChatGptTurnSession, TurnCallLedger>();
 const unshownImagesBySession = new WeakMap<ChatGptTurnSession, ChatGptWebPromptImage[]>();
 const activeContinuationImagesBySession = new WeakMap<ChatGptTurnSession, ChatGptWebPromptImage[]>();
 const lastCompletedAnswerBySession = new WeakMap<ChatGptTurnSession, string>();
+/** The image continuation phase whose answer has already been set apart; see separatePhaseText. */
+const separatedPhaseBySession = new WeakMap<ChatGptTurnSession, number>();
 /** Sessions already given one delivery turn, so a long tool round cannot spawn one per image. */
 const imagesDeliveredSessions = new WeakSet<ChatGptTurnSession>();
 /** Sessions already given one correction, so a repeated claim cannot cost a second browser turn. */
@@ -344,6 +346,31 @@ function emitTraceEvents(trace: ChatGptTraceEvent[], emit: (event: AdapterEvent)
       emit({ type: "thinking_delta", thinking: event.text });
     }
   }
+}
+
+/**
+ * An image continuation's answer streams into the message that already holds the previous phase's
+ * answer and any evidence line, so its first text needs a paragraph break. 27 Sep 23:57 UTC: without
+ * one the live answer read "... bu sayıma girmez.Abim, şimdi görüntüler net görünüyor." The break goes
+ * once per phase, before the phase's first non-empty text: a phase that runs tools resumes in a new
+ * Codex message, which must not start with one.
+ */
+export function separatePhaseText(
+  deltas: string[],
+  phase: number,
+  separatedPhase: number | undefined,
+  previousAnswer: string | undefined,
+): { deltas: string[]; separatedPhase: number | undefined } {
+  if (phase === 0 || separatedPhase === phase) return { deltas, separatedPhase };
+  const first = deltas.findIndex(delta => delta.length > 0);
+  if (first < 0) return { deltas, separatedPhase };
+  const needsBreak = previousAnswer !== undefined
+    && previousAnswer.trim().length > 0
+    && !/^\s*\n/.test(deltas[first]!);
+  return {
+    deltas: needsBreak ? deltas.map((delta, index) => index === first ? `\n\n${delta}` : delta) : deltas,
+    separatedPhase: phase,
+  };
 }
 
 function emitTextDeltas(deltas: string[], emit: (event: AdapterEvent) => void): void {
@@ -1583,7 +1610,15 @@ export function createChatGptWebAdapter(
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
               };
               const emitNewText = (deltas: string[]) => {
-                if (!bufferStructuredOutput) emitRoundBatch(buffer => emitTextDeltas(deltas, buffer));
+                if (bufferStructuredOutput) return;
+                const separated = separatePhaseText(
+                  deltas,
+                  session.phaseNumber(),
+                  separatedPhaseBySession.get(session),
+                  lastCompletedAnswerBySession.get(session),
+                );
+                if (separated.separatedPhase !== undefined) separatedPhaseBySession.set(session, separated.separatedPhase);
+                emitRoundBatch(buffer => emitTextDeltas(separated.deltas, buffer));
               };
               if (replay.length === 0 && !parsed._compactionRequest) {
                 emitRoundBatch(buffer => emitReadOnlyContextWarning(parsed, turnCapabilities, buffer));

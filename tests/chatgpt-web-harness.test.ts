@@ -5031,6 +5031,8 @@ test("a tool image is delivered before a block-claim correction, which cannot ta
   expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
   expect(text).not.toContain("could not be attached");
   expect(text).toContain("köprüye ulaşan 1 araç çağrısı Codex'te çalıştı");
+  // The continuation's answer is its own paragraph (27 Sep: "... girmez.Abim, şimdi ...").
+  expect(text).toContain("bu sayıma girmez.\n\nEkte gördüğüm pencere");
   expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
 });
 
