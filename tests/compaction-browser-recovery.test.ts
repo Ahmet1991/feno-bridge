@@ -160,3 +160,76 @@ test("effort selection retries one transient model-controls miss after reloading
     rmSync(diagnostics, { recursive: true, force: true });
   }
 });
+
+test("later multipart stages re-select the staging effort only when the pre-send check would refuse it", async () => {
+  // 28.09: the page moves to /c/<id> once, after the first stage; every later re-selection on an
+  // unchanged page cost ~2.5 s. The check that guards each send decides instead.
+  const diagnostics = mkdtempSync(join(tmpdir(), "stage-effort-hold-"));
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const finalResponse = new Error("fixture reached final response observation");
+  const actions: string[] = [];
+  let stage = "";
+  let url = "https://chatgpt.com/?temporary-chat=true";
+  const frame = {};
+  const page = Object.assign(new EventEmitter(), {
+    evaluate: async () => ({}), isClosed: () => false, mainFrame: () => frame, url: () => url,
+  });
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { appName: "Codex Native2", browserDiagnosticsPath: diagnostics },
+    runStage: async (_trace: string, name: string, _timeout: number, action: (signal: AbortSignal) => Promise<unknown>) => {
+      stage = name;
+      return action(new AbortController().signal);
+    },
+    prepareTemporaryChatSurface: async () => {},
+    selectModelAndEffort: async (_page: unknown, model: string, effort: string) => {
+      actions.push(`effort:${effort}`);
+      return { ...resolveChatGptWebModelMode(model, effort, capabilities), selection: { url, label: effort } };
+    },
+    assertSelectedEffort: async (_page: unknown, mode: { selection: { url: string } }) => {
+      if (mode.selection.url !== url) throw new Error("ChatGPT changed the selected model's browser surface before submission");
+    },
+    captureSubmissionBaseline: async () => ({}),
+    attachPrompt: async () => { actions.push("attach"); },
+    attachPromptWithCompactionRetry: async () => { actions.push("attach"); },
+    attachFiles: async () => {},
+    sendAttachedPrompt: async (...args: unknown[]) => {
+      const lifecycle = args[5] as { onSendActivated(): Promise<void> };
+      await lifecycle.onSendActivated();
+      actions.push("send");
+      // Saving the first stage moves the temporary chat to its /c/<id> address.
+      url = "https://chatgpt.com/c/fixture?temporary-chat=true";
+      return "user_turn";
+    },
+    waitForNewAssistantTurn: async () => {
+      if (stage === "send") throw finalResponse;
+      return {};
+    },
+    waitForMultipartAcknowledgement: async () => {},
+  });
+  try {
+    await expect(worker.runBrowserTurn({
+      traceId: "stage_effort_hold_fixture",
+      modelId: "gpt-5.6-sol",
+      reasoning: "high",
+      capabilities,
+      compaction: true,
+      prepare: async () => ({
+        text: "Summarize the context",
+        images: [],
+        multipart: { parts: Array.from({ length: 6 }, (_, index) => JSON.stringify({ part: index + 1 })), commit: "Summarize" },
+        release: () => {},
+      }),
+    }, undefined, page)).rejects.toBe(finalResponse);
+    expect(actions).toEqual([
+      "effort:low", "attach", "send",
+      // Only the stage after the move re-selects; the page does not move again.
+      "effort:low", "attach", "send",
+      "attach", "send",
+      "attach", "send",
+      "attach", "send",
+      "effort:high", "attach", "send",
+    ]);
+  } finally {
+    rmSync(diagnostics, { recursive: true, force: true });
+  }
+});
