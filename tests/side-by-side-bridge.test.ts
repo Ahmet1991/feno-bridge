@@ -23,3 +23,13 @@ test("without the variables, or with unusable values, the production identity is
   expect(configIn({ CODEX_WEB_GPT_CONNECTOR_NAME: "Codex Native", CODEX_WEB_GPT_DEFAULT_PORT: "yok" }))
     .toEqual({ name: "Codex Native2", port: 17841 });
 });
+
+test("a second bridge gets its own tunnel alias, so it never adopts or stops the first one's client", async () => {
+  const { sideBySideTunnelProfile } = await import("../src/setup");
+  expect(sideBySideTunnelProfile("codex-chatgpt-web-kanal2")).toBe("codex-chatgpt-web-kanal2");
+  expect(sideBySideTunnelProfile(undefined)).toBe("codex-chatgpt-web");
+  expect(sideBySideTunnelProfile("")).toBe("codex-chatgpt-web");
+  // tunnel-client accepts letters, digits, dot, underscore and dash only.
+  expect(sideBySideTunnelProfile("kanal 2")).toBe("codex-chatgpt-web");
+  expect(sideBySideTunnelProfile("../kanal2")).toBe("codex-chatgpt-web");
+});

@@ -523,6 +523,28 @@ test("MCP setup reuses valid private credentials without exposing or rewriting t
   }
 });
 
+test("a new Tunnel ID with no key moves to that tunnel and keeps the saved key (29.09 Kanal 2)", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-move-tunnel-"));
+  const keyPath = path.join(root, "tunnel-runtime.key");
+  fs.writeFileSync(keyPath, "saved-private-runtime-key\n", { mode: 0o600 });
+  const fixture = hostFor({
+    mode: "full",
+    appName: "Codex Native2",
+    tunnel: { tunnelId: "tunnel_0123456789abcdef0123456789abcdef", runtimeKeyFile: keyPath },
+  });
+  try {
+    await fixture.host.setupMcp({ replace: true, tunnelId: "tunnel_fedcba9876543210fedcba9876543210" });
+    const args = fixture.invocation().args;
+    assert.deepEqual(args.slice(args.indexOf("--tunnel-id"), args.indexOf("--tunnel-id") + 2),
+      ["--tunnel-id", "tunnel_fedcba9876543210fedcba9876543210"]);
+    // The CLI reuses the saved key when none is passed; the secret is never read or rewritten here.
+    assert.equal(args.includes("--runtime-key-file"), false);
+    assert.equal(fs.readFileSync(keyPath, "utf8"), "saved-private-runtime-key\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("new MCP setup uses the fixed connector without a CLI name override", async () => {
   const fixture = hostFor(null);
   await fixture.host.setupMcp({

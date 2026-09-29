@@ -1229,10 +1229,17 @@ class RuntimeHost {
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const targetMode = interactionMode ?? this.browserInteractionMode();
     const reuseSavedCredentials = replace !== true && this.mcpCredentialsConfigured(targetMode);
+    // A new Tunnel ID with no key keeps the saved runtime key: setup reuses it when no key file is
+    // passed, so moving to another tunnel never requires handling the secret again.
+    const moveToTunnelWithSavedKey = replace === true
+      && /^tunnel_[a-f0-9]{32}$/.test(tunnelId)
+      && !(typeof runtimeKey === "string" && runtimeKey.trim())
+      && this.mcpCredentialsConfigured(targetMode);
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
     }
-    if (!reuseSavedCredentials && (typeof runtimeKey !== "string" || runtimeKey.trim().length < 20)) {
+    if (!reuseSavedCredentials && !moveToTunnelWithSavedKey
+      && (typeof runtimeKey !== "string" || runtimeKey.trim().length < 20)) {
       throw new Error("A Tunnels Read + Use runtime key is required");
     }
     const args = [
@@ -1243,6 +1250,15 @@ class RuntimeHost {
       ...this.browserInteractionArgs({ mode: targetMode }),
       "--replace-codex-route",
     ];
+    if (moveToTunnelWithSavedKey) {
+      args.push("--tunnel-id", tunnelId, "--acknowledge-unofficial", "--restart-service");
+      return this.runSetup("mcp-setup", args, {
+        message: "Moving the native Codex harness to another tunnel with the saved runtime key",
+        successMessage: "Local MCP tools are ready",
+        timeoutMs: MCP_SETUP_TIMEOUT_MS,
+        afterRuntimeReady,
+      });
+    }
     if (reuseSavedCredentials) {
       args.push("--acknowledge-unofficial", "--restart-service");
       return this.runSetup("mcp-setup", args, {
