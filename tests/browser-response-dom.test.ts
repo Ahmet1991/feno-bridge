@@ -204,3 +204,46 @@ test("unit-key assistant extraction reads the entire outer turn across streaming
   expect(response.fullHtml).toContain("Third part.");
   expect(response.markdownSegments.length).toBeGreaterThan(0);
 });
+
+// Measured 29.09 (new app shell): the agent activity block that stands for the response until the
+// answer unit appears. Primary-tone Markdown is the model's commentary between tool rows;
+// tertiary-tone Markdown is ChatGPT's own action summary.
+const activityRow = (text: string) => '<div class="min-w-0 text-size-chat relative"><div class="flex min-w-0 flex-col">'
+  + `<div class="group/activity-header relative inline-flex"><span>${text}</span></div></div></div>`;
+const activityMarkdown = (tone: string, text: string) => `<div class="MarkdownRoot-rZKhxa" dir="auto"`
+  + ` data-markdown-text-style="assistant-message" data-markdown-text-tone="${tone}"><p>${text}</p></div>`;
+const activityBlock = (items: string) => '<div id="turn" class="block-BQZwFn">'
+  + '<span hidden data-chatgpt-agent-turn-start=""></span>'
+  + '<div class="min-w-0 text-size-chat relative"><div class="flex min-w-0 flex-col">'
+  + '<div class="group/activity-header relative inline-flex"><button type="button" aria-expanded="true"></button>'
+  + '<span>Thinking</span></div>'
+  + `<div class="-ms-2 ps-2"><div class="flex flex-col gap-2">${items}</div></div></div></div></div>`;
+
+test("commentary in the new agent activity block reaches Codex as commentary, never as answer text (29.09)", async () => {
+  const response = await snapshot(activityBlock(
+    activityMarkdown("tertiary", "Researched the task")
+      + activityMarkdown("primary", "First I read the date with Get-Date.")
+      + activityRow("Ran three PowerShell commands")
+      + activityMarkdown("primary", "Now I wait eight seconds and check the output")
+      + activityRow("Started a code run")
+      + activityMarkdown("primary", "Finally I count the files in the folder."),
+  ));
+  expect(response.visibleText).toBe("");
+  const commentary = response.traceBlocks.filter(block => block.kind === "commentary");
+  expect(commentary).toEqual([
+    expect.objectContaining({ text: "First I read the date with Get-Date.", complete: true }),
+    expect.objectContaining({ text: "Now I wait eight seconds and check the output", complete: true }),
+    expect.objectContaining({ text: "Finally I count the files in the folder.", complete: true }),
+  ]);
+  expect(response.traceBlocks.map(block => block.text)).not.toContain("Researched the task");
+});
+
+test("the last activity commentary waits while its sentence is still streaming (29.09)", async () => {
+  const response = await snapshot(activityBlock(
+    activityMarkdown("primary", "First I read the date with Get-Date.")
+      + activityRow("Ran a PowerShell command")
+      + activityMarkdown("primary", "Finally I count the files in"),
+  ));
+  const commentary = response.traceBlocks.filter(block => block.kind === "commentary");
+  expect(commentary.map(block => (block as { complete?: boolean }).complete)).toEqual([true, false]);
+});
