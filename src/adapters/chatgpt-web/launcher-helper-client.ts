@@ -10,7 +10,6 @@ import {
   parseChatGptLunaCheckpoint,
   type ChatGptLunaCheckpoint,
 } from "./rolling-checkpoint";
-import { parseChatGptToolRecordEvidence, type ChatGptToolRecordEvidence } from "./tool-record-evidence";
 
 interface PendingTurn {
   turn: BrowserTurn;
@@ -29,7 +28,6 @@ type HelperMessage =
   | { type: "event"; id: string; event: "heartbeat" | "send_activated" | "submitted" | "reasoning" | "commentary" | "text"; text?: string; continuation?: boolean }
   | { type: "event"; id: string; event: "tool_batch_observed"; revision: number }
   | { type: "event"; id: string; event: "multipart_stage_acknowledged"; stageIndex: number }
-  | { type: "event"; id: string; event: "tool_record_evidence"; evidence: ChatGptToolRecordEvidence }
   | { type: "event"; id: string; event: "completion_fence_begin"; requestId: number }
   | { type: "event"; id: string; event: "completion_fence_commit"; requestId: number; revision: number }
   | { type: "event"; id: string; event: "prepared_selected"; reused: boolean }
@@ -70,11 +68,6 @@ function parseHelperMessage(line: string): HelperMessage {
         throw new Error("Launcher browser helper multipart stage index is invalid");
       }
       return { type: "event", id: message.id, event, stageIndex: message.stageIndex as number };
-    }
-    if (event === "tool_record_evidence") {
-      const evidence = parseChatGptToolRecordEvidence(message.evidence);
-      if (!evidence) throw new Error("Launcher browser helper tool record evidence is invalid");
-      return { type: "event", id: message.id, event, evidence };
     }
     if (event === "tool_batch_observed") {
       if (!Number.isSafeInteger(message.revision) || (message.revision as number) <= 0) {
@@ -298,10 +291,6 @@ export class LauncherBrowserHelperClient {
             ...(turn.compaction ? { compaction: true } : {}),
             ...(turn.captureLunaCheckpoint ? { captureLunaCheckpoint: true } : {}),
             ...(turn.externalProgress ? { externalProgress: true } : {}),
-            // Optional: an older helper simply returns no record, and the older checks stay in place.
-            ...(turn.onToolRecordEvidence && this.helperFeatures.has("tool-record-evidence")
-              ? { toolRecordEvidence: true }
-              : {}),
           },
         })
           // Only mirror once the run frame is on the wire, so the helper never sees progress for a
@@ -500,15 +489,6 @@ export class LauncherBrowserHelperClient {
         ));
       }
       else if (message.event === "submitted") pending.turn.onSubmitted?.();
-      // Synchronously, before the result line that follows it resolves the turn: the adapter reads
-      // the record as soon as the answer settles.
-      else if (message.event === "tool_record_evidence") {
-        try {
-          void Promise.resolve(pending.turn.onToolRecordEvidence?.(message.evidence)).catch(() => {});
-        } catch {
-          // Evidence is advisory; a consumer fault must not fail a turn whose answer is final.
-        }
-      }
       else if (message.event === "multipart_stage_acknowledged") {
         const multipart = pending.prepared?.multipart;
         if (!multipart

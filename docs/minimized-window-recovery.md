@@ -35,8 +35,9 @@ arrives as:
 ```
 
 with `isError: false`. Nothing threw. A trigger keyed on the error flag would never fire, and the
-turn's failed-call count must not be inflated to make one: v5.0.21's evidence line reports what the
-bridge dispatched, and moving that number to drive a behaviour would make it lie.
+turn's failed-call count must not be inflated to make one: v5.0.21's evidence line (removed in
+v5.0.56) reported what the bridge dispatched, and moving that number to drive a behaviour would have
+made it lie.
 
 So the trigger is not "a failed call". It is "a result that needs recovery".
 

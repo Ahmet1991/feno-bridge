@@ -10,7 +10,6 @@ import {
 } from "./environment";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import type { ChatGptExternalTurnProgress } from "./turn-progress";
-import type { ChatGptToolRecordEvidence } from "./tool-record-evidence";
 
 function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
@@ -154,8 +153,6 @@ interface ChatGptTurnRuntimeBase {
   submission?: { phase: "prepared" | "send_activated" | "accepted" };
   /** Present only when the visible ChatGPT tab is driven manually through the Codex Zero Risk MCP contract. */
   manualControl?: { surfaceNonce: string };
-  /** Filled when the answer claims a blocked call and ChatGPT's own record of the turn was read. */
-  toolRecord?: { evidence?: ChatGptToolRecordEvidence };
   cancel: (reason?: Error) => void;
 }
 

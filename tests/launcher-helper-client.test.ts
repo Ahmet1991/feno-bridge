@@ -44,8 +44,6 @@ test("daemon streams browser lifecycle through the real helper process", async (
           pending: [],
         },
       });
-      // ChatGPT's record of a turn whose answer claimed a block; it must land before the result.
-      await turn.onToolRecordEvidence?.({ unansweredCalls: 1, platformRefusal: false });
       return "done";
     };
     await import(${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-helper-main.ts", import.meta.url).href)});
@@ -84,7 +82,6 @@ test("daemon streams browser lifecycle through the real helper process", async (
   const reasoning: Array<{ text: string; continuation: boolean }> = [];
   const deltas: string[] = [];
   const checkpoints: unknown[] = [];
-  const records: unknown[] = [];
   const acknowledgedStages: number[] = [];
   let sendActivated = false;
   let submitted = false;
@@ -111,10 +108,8 @@ test("daemon streams browser lifecycle through the real helper process", async (
       onTextDelta: text => deltas.push(text),
       captureLunaCheckpoint: true,
       onLunaCheckpoint: checkpoint => checkpoints.push(checkpoint),
-      onToolRecordEvidence: evidence => { records.push(evidence); },
     });
     expect(result).toBe("done");
-    expect(records).toEqual([{ unansweredCalls: 1, platformRefusal: false }]);
     expect(reasoning).toEqual([
       { text: "Reading project", continuation: false },
       { text: " files", continuation: true },
