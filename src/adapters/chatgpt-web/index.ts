@@ -20,6 +20,7 @@ import {
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
+import { toolImagesNeedingDelivery } from "./tool-images";
 import { describeCauseChain } from "../../lib/errors";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
@@ -315,7 +316,7 @@ function brokerContent(content: string | CodexContentPart[]): unknown[] {
 
 function brokerResult(message: CodexToolResultMessage, recoveryNote?: string): BrokerToolResult {
   const content = brokerContent(message.content);
-  const imageNotice = toolResultHasImage(message.content) ? BROKER_IMAGE_NOTICE : undefined;
+  const imageNotice = toolImagesNeedingDelivery(message.content).length > 0 ? BROKER_IMAGE_NOTICE : undefined;
   const text = typeof message.content === "string"
     ? message.content
     : message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
@@ -1586,17 +1587,18 @@ export function createChatGptWebAdapter(
                     message.toolCallId,
                     brokerResult(message, recovery?.kind === "recover" ? recovery.note : undefined),
                   );
-                  if (toolResultHasImage(message.content) && typeof message.content !== "string") {
+                  const undeliveredImages = toolImagesNeedingDelivery(message.content);
+                  if (undeliveredImages.length > 0) {
                     // Kept for the delivery turn below. The cap is ChatGPT's own attachment limit,
                     // and the newest images are the ones the answer is about, so a long tool round
                     // drops its oldest rather than refusing to attach anything.
-                    const pending: Array<{ imageUrl: string }> = [...(unshownImagesBySession.get(session) ?? [])];
-                    for (const part of message.content) {
-                      if (part.type !== "image") continue;
-                      pending.push({ imageUrl: part.imageUrl });
-                    }
-                    unshownImagesBySession.set(session, newestToolImages(pending));
+                    unshownImagesBySession.set(session, newestToolImages([
+                      ...(unshownImagesBySession.get(session) ?? []),
+                      ...undeliveredImages,
+                    ]));
                     console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
+                  } else if (toolResultHasImage(message.content)) {
+                    console.info(`[chatgpt-web] broker image result delivered inline trace=${session.traceId}`);
                   }
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test, onTestFinished } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -12,6 +12,19 @@ import { defaultBrokerEndpoint, defaultConfig, providerConfig } from "../src/con
 import { parseRequest } from "../src/responses/parser";
 import { compactRequest, HttpTurnCounter, responseRequest, routeChatGptWebRequest, startServer } from "../src/server";
 
+/**
+ * The delivery-turn tests: since 29 Sep an image riding in the MCP result is not delivered again, so
+ * these pin CODEX_WEB_GPT_TOOL_IMAGES=attach, the fallback that keeps the delivery turn for every image.
+ */
+function attachToolImages(): void {
+  const previous = process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+  process.env.CODEX_WEB_GPT_TOOL_IMAGES = "attach";
+  onTestFinished(() => {
+    if (previous === undefined) delete process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+    else process.env.CODEX_WEB_GPT_TOOL_IMAGES = previous;
+  });
+}
+
 test("DEV harness configuration cannot bind a Responses listener", () => {
   const config = { ...defaultConfig("browser-only"), purpose: "dev-harness" as const, port: 0 };
   expect(() => startServer(config)).toThrow("cannot start a Responses listener");
@@ -24,6 +37,7 @@ async function waitForTurnCount(turns: HttpTurnCounter, expected: number): Promi
 }
 
 test("real HTTP image continuation keeps a Codex waiter, retires the old token, and resumes the same phase after function_call_output", async () => {
+  attachToolImages();
   const root = mkdtempSync(join(tmpdir(), "cgw-image-cont-http-"));
   const config = {
     ...defaultConfig("full"),
@@ -206,6 +220,7 @@ test("real HTTP image continuation keeps a Codex waiter, retires the old token, 
 });
 
 test("native Interrupt hook aborts an active image continuation through the session-lifetime signal", async () => {
+  attachToolImages();
   const root = mkdtempSync(join(tmpdir(), "cgw-image-cont-abort-"));
   const config = {
     ...defaultConfig("full"),
@@ -348,6 +363,7 @@ test("native Interrupt hook aborts an active image continuation through the sess
 });
 
 test("image continuation stops at four phases and uses a retained tool-less fallback for the remaining image", async () => {
+  attachToolImages();
   const root = mkdtempSync(join(tmpdir(), "cgw-image-cont-limit-"));
   const config = {
     ...defaultConfig("full"),

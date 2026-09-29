@@ -1,10 +1,22 @@
-import { expect, test } from "bun:test";
+import { expect, onTestFinished, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import { compileChatGptWebPrompt, countChatGptContextImages } from "../src/adapters/chatgpt-web/prompt";
 import { retainedConversationResumeRequest } from "../src/adapters/chatgpt-web/conversation-key";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptPromptFilePayloads } from "../src/adapters/chatgpt-web/browser-worker";
 
+/**
+ * The carried-image tests: since 29 Sep an image the model already saw in its MCP result is not
+ * uploaded again, so these pin CODEX_WEB_GPT_TOOL_IMAGES=attach, the fallback that carries every image.
+ */
+function attachToolImages(): void {
+  const previous = process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+  process.env.CODEX_WEB_GPT_TOOL_IMAGES = "attach";
+  onTestFinished(() => {
+    if (previous === undefined) delete process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+    else process.env.CODEX_WEB_GPT_TOOL_IMAGES = previous;
+  });
+}
 const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
 const token = "turn_12345678901234567890123456789012";
 const jpeg = (n: number) => `data:image/jpeg;base64,${Buffer.from(`screenshot-${n}`).toString("base64")}`;
@@ -19,7 +31,17 @@ const shot = (n: number) => [
 const parse = (input: unknown[]) => parseRequest({ model: CHATGPT_WEB_MODEL_ID, reasoning: { effort: "high" }, input });
 const compile = (parsed: ReturnType<typeof parse>) => compileChatGptWebPrompt(parsed, capabilities, token);
 
+test("a screenshot the model already saw in its tool result is not uploaded again on the next turn (29 Sep)", () => {
+  // Kanal 2, 29 Sep: the next Codex turn re-uploaded the previous round's seven images (~5 s) that
+  // ChatGPT had already shown the model inside the retained conversation.
+  const parsed = parse([user("Inspect screenshot"), ...shot(1), answer("KOD-1234"), user("Continue")]);
+  const resumed = retainedConversationResumeRequest(parsed)!;
+  expect(resumed.context.messages.map(m => m.role)).toEqual(["user"]);
+  expect(compile(resumed).images).toHaveLength(0);
+});
+
 test("image from preceding tool-result round reaches the next retained browser prompt", () => {
+  attachToolImages();
   const parsed = parse([user("Inspect screenshot"), ...shot(1), answer("Cannot inspect it"), user("Describe the screenshot")]);
   expect(countChatGptContextImages(parsed.context.messages)).toBe(1);
   const resumed = retainedConversationResumeRequest(parsed)!;
@@ -42,6 +64,7 @@ test("older screenshot is not repeatedly attached and text-only turns keep their
 });
 
 test("identical tool-result images are attached once and the most recent 10 survive", () => {
+  attachToolImages();
   const raw = [user("Inspect several screenshots"), ...shot(1), ...shot(1),
     ...Array.from({ length: 11 }, (_, i) => shot(i + 2)).flat(), answer("Done"), user("Describe them")];
   const resumed = retainedConversationResumeRequest(parse(raw))!;
@@ -51,6 +74,7 @@ test("identical tool-result images are attached once and the most recent 10 surv
 });
 
 test("a compiled prompt reports the images its context held, not only the ones it attached", () => {
+  attachToolImages();
   const parsed = parse([user("Inspect screenshot"), ...shot(1), answer("Cannot inspect it"), user("Describe it")]);
   const resumed = retainedConversationResumeRequest(parsed)!;
   const prompt = compile(resumed);
