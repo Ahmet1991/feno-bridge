@@ -288,6 +288,7 @@ const NATIVE_COPY = Object.freeze({
     updateTitle: "Update Feno Bridge",
     updateMessage: "Feno Bridge will close while the update installs. Reopening may take several minutes.",
     updateDetail: "On Windows, an update status window will stay open. Do not start another installer while it is running. Active Codex tasks may be interrupted.",
+    updateSignInRequired: "Sign in to ChatGPT before updating. The update checks the ChatGPT session and would otherwise leave Feno Bridge needing a repair.",
   }),
   "zh-CN": Object.freeze({
     openLauncher: "打开 Feno Bridge",
@@ -307,6 +308,7 @@ const NATIVE_COPY = Object.freeze({
     updateTitle: "更新 Feno Bridge",
     updateMessage: "安装更新时 Feno Bridge 将关闭，重新打开可能需要几分钟。",
     updateDetail: "在 Windows 上会保持一个单独的更新状态窗口。运行期间不要启动其他安装程序。活动中的 Codex 任务可能会中断。",
+    updateSignInRequired: "更新前请先登录 ChatGPT。更新会验证 ChatGPT 会话，否则 Feno Bridge 将需要修复。",
   }),
   "zh-TW": Object.freeze({
     openLauncher: "開啟 Feno Bridge",
@@ -326,6 +328,7 @@ const NATIVE_COPY = Object.freeze({
     updateTitle: "更新 Feno Bridge",
     updateMessage: "安裝更新時 Feno Bridge 將關閉，重新開啟可能需要幾分鐘。",
     updateDetail: "Windows 會保留獨立的更新狀態視窗。執行期間請勿啟動其他安裝程式。進行中的 Codex 工作可能會中斷。",
+    updateSignInRequired: "更新前請先登入 ChatGPT。更新會驗證 ChatGPT 工作階段，否則 Feno Bridge 將需要修復。",
   }),
   ja: Object.freeze({
     openLauncher: "Feno Bridge を開く",
@@ -345,6 +348,7 @@ const NATIVE_COPY = Object.freeze({
     updateTitle: "Feno Bridge を更新",
     updateMessage: "更新のインストール中は Feno Bridge が終了します。再起動には数分かかる場合があります。",
     updateDetail: "Windows では更新状況ウィンドウが開いたままになります。実行中に別のインストーラーを起動しないでください。実行中の Codex タスクが中断される場合があります。",
+    updateSignInRequired: "更新する前に ChatGPT にサインインしてください。更新では ChatGPT セッションを確認するため、サインインしていないと Feno Bridge の修復が必要になります。",
   }),
   ko: Object.freeze({
     openLauncher: "Feno Bridge 열기",
@@ -364,6 +368,7 @@ const NATIVE_COPY = Object.freeze({
     updateTitle: "Feno Bridge 업데이트",
     updateMessage: "업데이트를 설치하는 동안 Feno Bridge가 종료됩니다. 다시 여는 데 몇 분이 걸릴 수 있습니다.",
     updateDetail: "Windows에서는 별도의 업데이트 상태 창이 열린 상태로 유지됩니다. 실행 중에는 다른 설치 프로그램을 시작하지 마세요. 실행 중인 Codex 작업이 중단될 수 있습니다.",
+    updateSignInRequired: "업데이트하기 전에 ChatGPT에 로그인하세요. 업데이트는 ChatGPT 세션을 확인하므로, 로그인하지 않으면 Feno Bridge를 복구해야 합니다.",
   }),
   tr: Object.freeze({
     openLauncher: "Feno Bridge'i aç",
@@ -383,6 +388,7 @@ const NATIVE_COPY = Object.freeze({
     updateTitle: "Feno Bridge'i güncelle",
     updateMessage: "Güncelleme sırasında Feno Bridge kapanacak. Yeniden açılması birkaç dakika sürebilir.",
     updateDetail: "Windows'ta ayrı bir güncelleme durum penceresi açık kalacak. Bu sırada başka kurulum başlatmayın. Etkin Codex görevleri kesilebilir.",
+    updateSignInRequired: "Güncellemeden önce ChatGPT'ye giriş yapın. Güncelleme ChatGPT oturumunu doğrular; giriş yapılmadan kurulursa Feno Bridge onarım ister.",
   }),
 });
 
@@ -1024,6 +1030,13 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:update-install", async () => {
     if (!updateController) throw new Error("Launcher updates are unavailable");
     const copy = nativeCopyFor(stateStore.read().language);
+    // 29.09: this button installed 5.0.55 while ChatGPT was signed out; the runtime upgrade could not
+    // inspect the session and left setup needing a repair. Check the real session first (the flag
+    // alone went stale on 29.09 00:08); a check that a running turn blocks is not a refusal.
+    if (stateStore.read().browserInteractionMode === "automatic" && browserHost) {
+      const browser = await browserHost.refreshAuthentication().catch(() => browserHost.snapshot());
+      if (!browser?.authenticated) throw new Error(copy.updateSignInRequired);
+    }
     const confirmation = await dialog.showMessageBox(mainWindow, {
       type: "warning",
       buttons: [copy.cancel, copy.updateNow],
