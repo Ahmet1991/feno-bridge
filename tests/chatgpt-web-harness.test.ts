@@ -1950,9 +1950,12 @@ describe("ChatGPT outer-native harness v4", () => {
     )).toBe(
       "Sources: [Projects/sample-roadmap](<Projects/sample-roadmap.md>) · [Notes/example](<Notes/example.md>)",
     );
-    // Only the opening bracket: "\[…\]" is itself a LaTeX display pair to Codex (28 Sep).
-    expect(chatGptHtmlToMarkdown("<p>Ordinary [brackets] stay escaped</p>"))
-      .toBe("Ordinary \\[brackets] stay escaped");
+    // "\[…\]" is itself a LaTeX display pair to Codex (28 Sep), and since 29 Sep a bracket that
+    // cannot open a link keeps no escape at all; one that could still keeps its opening escape.
+    expect(chatGptHtmlToMarkdown("<p>Ordinary [brackets] stay literal</p>"))
+      .toBe("Ordinary [brackets] stay literal");
+    expect(chatGptHtmlToMarkdown("<p>Ordinary [brackets](here) stay literal</p>"))
+      .toBe("Ordinary \\[brackets](here) stay literal");
   });
 
   test("buffers citation hydration, tolerates later markup-only rewrites, and rejects text rewrites", () => {
