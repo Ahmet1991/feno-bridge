@@ -18,7 +18,43 @@ turndown.remove(["button", "script", "style"]);
 // escaping `[` alone keeps all of those literal without ever writing the math delimiter pair. Every
 // other `]` escape comes from this rule: source backslashes are doubled first.
 const escapeMarkdownText = turndown.escape.bind(turndown);
-turndown.escape = text => escapeMarkdownText(text).replaceAll("\\]", "]");
+turndown.escape = text => relaxOpeningBracketEscapes(escapeMarkdownText(text).replaceAll("\\]", "]"));
+
+/**
+ * 29.09: Turndown escapes every `[`, so a plain "[1, 2, 3]" reached Codex as "\[1, 2, 3]". An opening
+ * bracket only needs its escape where Markdown could read syntax: a link or image (`](`), a
+ * reference (`][`, `]:`), a footnote (`[^`), or a task box at the start of the text. Elsewhere the
+ * bracket is literal either way, so its escape only changes the text Codex receives.
+ */
+function relaxOpeningBracketEscapes(escaped: string): string {
+  let result = "";
+  for (let index = 0; index < escaped.length; index += 1) {
+    const char = escaped[index]!;
+    if (char !== "\\" || escaped[index + 1] !== "[") {
+      result += char;
+      continue;
+    }
+    // Source backslashes arrive doubled, so this one escapes the bracket only when the run of
+    // backslashes ending here is odd.
+    let run = 0;
+    for (let back = index; back >= 0 && escaped[back] === "\\"; back -= 1) run += 1;
+    const close = escaped.indexOf("]", index + 2);
+    const inside = close < 0 ? "" : escaped.slice(index + 2, close);
+    // The next bracket may itself still carry its escape.
+    const after = close < 0 ? "" : escaped.slice(close + 1, close + 3).replace(/^\\\[/, "[")[0] ?? "";
+    const opensSyntax = close >= 0 && (
+      after === "(" || after === "[" || after === ":" || inside.startsWith("^")
+      || (/^\s*$/.test(result.replace(/\\\\/g, "")) && /^[ xX]$/.test(inside))
+    );
+    if (run % 2 === 1 && !opensSyntax && !inside.includes("\n")) {
+      result += "[";
+      index += 1;
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
 turndown.addRule("tableCellLineBreak", {
   // Turndown writes <br> as a Markdown hard break, "  \n", which ends a GFM table row and spills the
   // rest of the cell out of the table (28 Sep: a four-commit git log cell broke the results table).
