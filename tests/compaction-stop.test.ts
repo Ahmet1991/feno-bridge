@@ -36,6 +36,25 @@ test("the same end after a compaction interception is the requested stop and set
   expect(tracker.update(stopped, 10_000)).toBeTrue();
 });
 
+test("an intercepted response that shows only agent activity settles with an empty answer (29.09)", () => {
+  // The new app shell mounts an answer's unit key only once its text streams, so a response bound to
+  // its agent marker that obeys the interception and writes nothing has no text at all.
+  const agentOnly = { responsePresent: true, running: false, currentText: "", currentHtml: "", completionActionVisible: false };
+  const tracker = new ChatGptCompletionTracker(10, 100);
+  tracker.observeToolBatch(1, "");
+  expect(tracker.update({ ...agentOnly, running: true, stoppedForCompaction: true }, 0)).toBeFalse();
+  expect(tracker.update({ ...agentOnly, stoppedForCompaction: true }, 1)).toBeFalse();
+  expect(tracker.update({ ...agentOnly, stoppedForCompaction: true }, 11)).toBeTrue();
+  // Without the interception an empty response is still no answer.
+  const plain = new ChatGptCompletionTracker(10, 100);
+  expect(plain.update(agentOnly, 0)).toBeFalse();
+  expect(plain.update(agentOnly, 50)).toBeFalse();
+  // A response that is not there cannot settle, interception or not.
+  const absent = new ChatGptCompletionTracker(10, 100);
+  expect(absent.update({ ...agentOnly, responsePresent: false, stoppedForCompaction: true }, 0)).toBeFalse();
+  expect(absent.update({ ...agentOnly, responsePresent: false, stoppedForCompaction: true }, 50)).toBeFalse();
+});
+
 test("a compaction stop reaches the browser helper and cannot be taken back", () => {
   const progress = new ChatGptExternalTurnProgress();
   progress.recordToolBatch(1, 1_000);

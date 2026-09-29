@@ -196,8 +196,18 @@ const CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR = [
   '[data-content-search-unit-key$=":assistant"]',
 ].join(", ");
 
+/** An assistant response that so far shows only agent activity; see submissionDomState. */
+const CHATGPT_AGENT_TURN_IDENTITY_PREFIX = "agent:";
+
 /** Resolve either legacy turn IDs or unit keys without guessing their value format. */
 export function chatGptTurnIdentitySelector(identity: string): string {
+  if (identity.startsWith(CHATGPT_AGENT_TURN_IDENTITY_PREFIX)) {
+    const quotedKey = JSON.stringify(identity.slice(CHATGPT_AGENT_TURN_IDENTITY_PREFIX.length));
+    // The agent marker's own container holds the activity, never the user bubble of the same
+    // exchange. It stops matching once the answer's unit key appears, which rebinds to that unit.
+    return `[data-content-search-turn-key=${quotedKey}]:not(:has([data-content-search-unit-key$=":assistant"]))`
+      + " :has(> [data-chatgpt-agent-turn-start])";
+  }
   const quotedIdentity = JSON.stringify(identity);
   return `[data-turn-id=${quotedIdentity}], [data-content-search-unit-key=${quotedIdentity}]`;
 }
@@ -1847,7 +1857,13 @@ export class ChatGptCompletionTracker {
       return false;
     }
     this.missingPostToolAnswerSince = undefined;
-    if (!chatGptTurnIsComplete(state)) {
+    // An intercepted response bound to its agent marker has no answer text to settle on when it
+    // obeys and writes nothing (29.09); once generation stops, its empty answer settles too.
+    const interceptedWithoutText = state.stoppedForCompaction === true
+      && state.responsePresent
+      && !state.running
+      && state.currentText.length === 0;
+    if (!interceptedWithoutText && !chatGptTurnIsComplete(state)) {
       this.candidate = undefined;
       return false;
     }
@@ -3368,6 +3384,20 @@ export class ChatGptBrowserWorker {
       if ([...userIdentities, ...responseIdentities].some(identity => !knownTurns.has(identity))) {
         throw new Error("ChatGPT conversation turn has no matching identity container");
       }
+      // 29.09: an answer's unit key appears only once its text streams. Until then a response that
+      // thinks or runs tools shows just the agent marker in its exchange, and one that ends with no
+      // text (as a compaction interception asks) never gets a unit at all; three turns failed so
+      // ("did not expose its assistant turn"). The marker stands for the response until then.
+      for (const exchange of document.querySelectorAll("[data-content-search-turn-key]")) {
+        const key = exchange.getAttribute("data-content-search-turn-key")?.trim();
+        if (!key || !exchange.querySelector("[data-chatgpt-agent-turn-start]")) continue;
+        if (exchange.querySelector('[data-content-search-unit-key$=":assistant"]')) continue;
+        const agentIdentity = `${options.agentIdentityPrefix}${key}`;
+        if (knownTurns.has(agentIdentity)) continue;
+        knownTurns.add(agentIdentity);
+        turnIdentities.push(agentIdentity);
+        responseIdentities.push(agentIdentity);
+      }
       return {
         key: observerKey,
         snapshot: {
@@ -3383,6 +3413,7 @@ export class ChatGptBrowserWorker {
       userTurnSelector: CHATGPT_USER_TURN_SELECTOR,
       assistantTurnSelector: CHATGPT_ASSISTANT_TURN_SELECTOR,
       stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR,
+      agentIdentityPrefix: CHATGPT_AGENT_TURN_IDENTITY_PREFIX,
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
     }), signal));

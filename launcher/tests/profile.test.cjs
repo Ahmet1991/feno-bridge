@@ -19,6 +19,27 @@ test("production launcher profile uses the Feno Bridge user-data directory", () 
   assert.equal(production.legacyUserData, path.join(appData, "Codex Web GPT"));
 });
 
+test("a second bridge beside the installed one gets its own homes and window name (Kanal 2)", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const appData = path.join(homeDir, "AppData", "Roaming");
+  const second = resolveLauncherProfile({
+    argv: ["electron", "."],
+    env: {
+      CODEX_CHATGPT_WEB_HOME: path.join(homeDir, ".codex-chatgpt-web-kanal2"),
+      CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(appData, "Feno Bridge"),
+      CODEX_HOME: path.join(homeDir, ".codex-kanal2"),
+      CODEX_WEB_GPT_DISPLAY_NAME: "Feno Bridge Kanal 2",
+    },
+    homeDir,
+    appData,
+  });
+  assert.equal(second.displayName, "Feno Bridge Kanal 2");
+  assert.equal(second.coreHome, path.join(homeDir, ".codex-chatgpt-web-kanal2"));
+  assert.equal(second.codexHome, path.join(homeDir, ".codex-kanal2"));
+  // Without the variable nothing changes.
+  assert.equal(resolveLauncherProfile({ argv: ["electron", "."], env: {}, homeDir, appData }).displayName, "Feno Bridge");
+});
+
 test("legacy launcher data is moved to Feno Bridge without losing files", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "feno-profile-migration-"));
   const legacy = path.join(root, "Codex Web GPT");

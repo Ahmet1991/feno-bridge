@@ -3,6 +3,7 @@ import { SUMMARY_PREFIX, isOnePixelPngDataUrl } from "../../responses/compaction
 import type { CodexParsedRequest } from "../../types";
 import { extractChatGptTurnIdentity } from "./environment";
 import { CHATGPT_MAX_INPUT_IMAGES } from "./prompt";
+import { toolImageReachesRunningMessage } from "./tool-images";
 
 function messageText(item: Record<string, unknown>): string | undefined {
   const content = item.content;
@@ -45,8 +46,10 @@ export function chatGptConversationKey(
 
 /** A retained epoch receives the suffix after its last assistant reply.
  * Tool-returned images from the immediately preceding round were delivered to the browser as
- * MCP results, not as browser image attachments. Carry those images into the next native turn's
- * existing attachment path, once, without replaying the previous round's text or older images.
+ * MCP results, not as browser image attachments. An image the MCP result could not carry (see
+ * toolImageReachesRunningMessage) is carried into the next native turn's existing attachment path,
+ * once, without replaying the previous round's text or older images. One the model already saw in
+ * the retained conversation is not uploaded again.
  */
 export function retainedConversationResumeRequest(
   parsed: CodexParsedRequest,
@@ -72,6 +75,7 @@ export function retainedConversationResumeRequest(
     if (message.role !== "toolResult" || typeof message.content === "string") continue;
     const distinctImages = message.content.filter(part => {
       if (part.type !== "image" || isOnePixelPngDataUrl(part.imageUrl)
+        || toolImageReachesRunningMessage(part.imageUrl)
         || seen.has(part.imageUrl) || images >= CHATGPT_MAX_INPUT_IMAGES) return false;
       seen.add(part.imageUrl);
       images += 1;

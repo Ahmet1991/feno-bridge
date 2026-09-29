@@ -229,6 +229,84 @@ test("submission evidence resolves unit-key identities from the bubble and answe
   }
 });
 
+test("an exchange showing only agent activity stands for its response until the answer unit appears (29.09)", async () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const window = createWindow("<body><main id=\"thread\"></main></body>");
+  const prototypes = [window.document.querySelectorAll("div"), window.document.body.children].map(Object.getPrototypeOf);
+  for (const prototype of prototypes) Object.defineProperty(prototype, Symbol.iterator, {
+    configurable: true, value: Array.prototype[Symbol.iterator],
+  });
+  const observers: (() => void)[] = [];
+  const context = createContext({
+    performance: { timeOrigin: 1 },
+    document: window.document,
+    getComputedStyle: () => ({ visibility: "visible" }),
+    MutationObserver: class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe() {}
+    },
+  });
+  const page = {
+    evaluate: async (callback: Function, options: unknown) => runInContext(`(${callback.toString()})`, context)(options),
+    locator: () => ({}),
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+    captureSubmissionBaseline(page: Page): Promise<{ initialTurnIdentities: string[]; domCache: unknown }>;
+    currentSubmissionEvidence(page: Page, baseline: unknown): Promise<string | undefined>;
+    submissionDomState(page: Page, cache: unknown): Promise<{ turnIdentities: string[]; userIdentities: string[]; responseIdentities: string[] }>;
+  };
+  const thread = window.document.getElementById("thread")!;
+  const change = (html: string) => { thread.innerHTML = html; observers.forEach(notify => notify()); };
+  try {
+    const baseline = await worker.captureSubmissionBaseline(page);
+    // 29.09, a fresh conversation after compaction: the exchange holds the agent marker and its
+    // activity (a thinking title, a summary line) but no unit key; the long prompt is not drawn.
+    change(`<div data-turn-key="fallback-turn-0"><div data-content-search-turn-key="fallback-turn-0"><div>
+      <span hidden data-chatgpt-agent-turn-start></span>
+      <div><button>Hesap Makinesi Sonucunu Görüntüleme</button><div data-markdown-text-style="assistant-message" data-markdown-text-tone="tertiary">Düzeltme yaptım</div></div>
+    </div></div></div>`);
+    let state = await worker.submissionDomState(page, baseline.domCache);
+    expect([...state.userIdentities]).toEqual([]);
+    expect([...state.responseIdentities]).toEqual(["agent:fallback-turn-0"]);
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("assistant_turn");
+    // The answer streams: its unit replaces the marker, and the binding moves to it.
+    change(`<div data-turn-key="fallback-turn-0"><div data-content-search-turn-key="fallback-turn-0"><div>
+      <span hidden data-chatgpt-agent-turn-start></span><div><button>7m düşündü</button></div>
+    </div><div data-content-search-unit-key="fallback-turn-0:1:assistant">
+      <h4 data-conversation-role="assistant">ChatGPT dedi:</h4><div data-markdown-text-style="assistant-message">TUR-3-BITTI</div>
+    </div></div></div>`);
+    state = await worker.submissionDomState(page, baseline.domCache);
+    expect([...state.responseIdentities]).toEqual(["fallback-turn-0:1:assistant"]);
+    expect(chatGptReboundTurnIdentity(baseline.initialTurnIdentities, "agent:fallback-turn-0", state.responseIdentities))
+      .toBe("fallback-turn-0:1:assistant");
+    // A later exchange with its user bubble and activity: the user unit stays the user's.
+    change(`<div data-turn-key="fallback-turn-1"><div data-content-search-turn-key="fallback-turn-1">
+      <div data-content-search-unit-key="fallback-turn-1:0:user"><div data-user-message-bubble="true">devam</div></div>
+      <div><span hidden data-chatgpt-agent-turn-start></span><div><button>Düşünüyor</button></div></div>
+    </div></div>`);
+    state = await worker.submissionDomState(page, baseline.domCache);
+    expect([...state.userIdentities]).toEqual(["fallback-turn-1:0:user"]);
+    expect([...state.responseIdentities]).toEqual(["agent:fallback-turn-1"]);
+    // An exchange without the agent marker (a user turn not yet answered) stands for no response.
+    change(`<div data-turn-key="k2"><div data-content-search-turn-key="k2">
+      <div data-content-search-unit-key="k2:0:user"><div data-user-message-bubble="true">soru</div></div>
+    </div></div>`);
+    state = await worker.submissionDomState(page, baseline.domCache);
+    expect([...state.responseIdentities]).toEqual([]);
+  } finally {
+    for (const prototype of prototypes) delete prototype[Symbol.iterator];
+  }
+});
+
+test("the agent-marker identity selects only the activity of an exchange without an answer unit", () => {
+  expect(chatGptTurnIdentitySelector("agent:fallback-turn-0")).toBe(
+    '[data-content-search-turn-key="fallback-turn-0"]:not(:has([data-content-search-unit-key$=":assistant"]))'
+    + " :has(> [data-chatgpt-agent-turn-start])",
+  );
+  expect(chatGptTurnIdentitySelector("c1:2:assistant"))
+    .toBe('[data-turn-id="c1:2:assistant"], [data-content-search-unit-key="c1:2:assistant"]');
+});
+
 test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
   expect(chatGptReboundTurnIdentity(
     ["conversation-turn-1"],

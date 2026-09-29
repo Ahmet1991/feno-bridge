@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test, onTestFinished } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createHash } from "node:crypto";
@@ -13,6 +13,7 @@ import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation
 import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision, priorChatGptAbortedTurnIds } from "../src/adapters/chatgpt-web/environment";
 import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
+import { toolImagesNeedingDelivery } from "../src/adapters/chatgpt-web/tool-images";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import {
   CODEX_ACTIVE_COMPACTION_REQUEST_MARKER,
@@ -28,6 +29,19 @@ import { estimateChatGptWebUsage } from "../src/adapters/chatgpt-web/usage";
 import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compaction";
 import { parseRequest } from "../src/responses/parser";
 import type { AdapterEvent, CodexContentPart, CodexParsedRequest, CodexProviderConfig, CodexTool } from "../src/types";
+
+/**
+ * The delivery-turn tests: since 29 Sep an image riding in the MCP result is not delivered again, so
+ * these pin CODEX_WEB_GPT_TOOL_IMAGES=attach, the fallback that keeps the delivery turn for every image.
+ */
+function attachToolImages(): void {
+  const previous = process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+  process.env.CODEX_WEB_GPT_TOOL_IMAGES = "attach";
+  onTestFinished(() => {
+    if (previous === undefined) delete process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+    else process.env.CODEX_WEB_GPT_TOOL_IMAGES = previous;
+  });
+}
 
 const tempRoot = join(tmpdir(), `codex-chatgpt-web-harness-${process.pid}-${Date.now()}`);
 mkdirSync(tempRoot, { recursive: true });
@@ -4481,6 +4495,7 @@ test("the adapter delivers minimized-window guidance unchanged with a separate r
 });
 
 test("image-only broker output preserves the image and tells the model and user it is not visible yet", async () => {
+  attachToolImages();
   const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
   const events: AdapterEvent[] = [];
   const [delivered] = await deliverWindowRecoveryFixtures([
@@ -4495,6 +4510,41 @@ test("image-only broker output preserves the image and tells the model and user 
   expect(notice).toContain("do not guess");
   expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
     .toContain("Yerel araçların döndürdüğü 1 görüntü bu tura eklenemedi");
+});
+
+test("an image riding in the tool result reaches the running message and is never delivered again (29 Sep)", async () => {
+  // 28-29 Sep: ChatGPT read every view_image code and Calculator screenshot from the MCP result before
+  // any delivery turn ran. The "cannot be attached" notice only made the model open kod.png twice, and
+  // the delivery turn cost ~20 s to append an "Evet, … uyuşuyor" line.
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const infos: string[] = [];
+  const info = spyOn(console, "info").mockImplementation((...args) => { infos.push(args.join(" ")); });
+  try {
+    const [delivered] = await deliverWindowRecoveryFixtures(
+      [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+      events,
+      { retained: true, browserTurns },
+    );
+    expect(delivered?.content).toEqual([{ type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" }]);
+    expect(browserTurns).toHaveLength(1);
+    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+    expect(text).not.toContain("bu tura eklenemedi");
+    expect(infos.some(line => line.includes("broker image result delivered inline"))).toBeTrue();
+  } finally {
+    info.mockRestore();
+  }
+});
+
+test("only an image the MCP result could not carry waits for the delivery turn", () => {
+  const inline: CodexContentPart = { type: "image", imageUrl: "data:image/png;base64,iVBORw0KGgo=" };
+  const linked: CodexContentPart = { type: "image", imageUrl: "https://example.com/screen.png" };
+  expect(toolImagesNeedingDelivery("text only")).toEqual([]);
+  expect(toolImagesNeedingDelivery([inline, { type: "text", text: "Output:" }])).toEqual([]);
+  expect(toolImagesNeedingDelivery([inline, linked])).toEqual([{ imageUrl: linked.imageUrl }]);
+  attachToolImages();
+  expect(toolImagesNeedingDelivery([inline, linked])).toEqual([{ imageUrl: inline.imageUrl }, { imageUrl: linked.imageUrl }]);
 });
 
 test("text-only broker output does not claim an unseen image", async () => {
@@ -4573,6 +4623,7 @@ test("policy-stop text from an unrelated parallel result does not suppress recov
 });
 
 test("window recovery state survives continuation rounds until the bound screenshot arrives", async () => {
+  attachToolImages();
   const socketPath = brokerTestEndpoint(`wr-life-${process.pid}-${++windowRecoveryFixtureSequence}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -4775,6 +4826,7 @@ test("structured-output turns do not open image continuation or delivery turns f
 });
 
 test("a failed image continuation requeues its image and uses the retained tool-less fallback", async () => {
+  attachToolImages();
   const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
   const events: AdapterEvent[] = [];
   const browserTurns: BrowserTurn[] = [];
@@ -4816,6 +4868,7 @@ test("a failed image continuation requeues its image and uses the retained tool-
 
 
 test("a tool image beside a block claim is delivered with nothing appended to the claim", async () => {
+  attachToolImages();
   const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
   const events: AdapterEvent[] = [];
   const browserTurns: BrowserTurn[] = [];
@@ -4844,6 +4897,7 @@ test("a tool image beside a block claim is delivered with nothing appended to th
 });
 
 test("an image a tool returned mid-turn is delivered by a follow-up turn that attaches it", async () => {
+  attachToolImages();
   const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
   const events: AdapterEvent[] = [];
   const browserTurns: BrowserTurn[] = [];
@@ -4884,6 +4938,7 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
 });
 
 test("more tool screenshots than one message holds keep the newest ten under unique names, and a failed continuation reuses the answer once", async () => {
+  attachToolImages();
   // 28 Sep (trace e589cc8586f5): twelve screenshots in one round. Refs came from the capped list's
   // length, so two were both named codex-tool-image-11, and ChatGPT rejected the continuation's upload.
   const images = Array.from({ length: 12 }, (_, index): CodexContentPart => ({

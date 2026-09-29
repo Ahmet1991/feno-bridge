@@ -93,6 +93,12 @@ export interface ExistingFullSetupCredentials {
   runtimeKey: boolean;
 }
 
+/** The tunnel profile (and alias) base name; unusable values fall back to the production one. */
+export function sideBySideTunnelProfile(value: string | undefined): string {
+  const name = value?.trim();
+  return name && /^[A-Za-z0-9._-]{1,48}$/.test(name) ? name : "codex-chatgpt-web";
+}
+
 export function launcherCapabilityProbeRequired(
   existing: AppConfig | undefined,
   refreshAccountCapabilities = false,
@@ -393,9 +399,13 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
     throw new Error(`${interactionMode === "manual" ? "Zero Risk" : "Automatic"} mode requires its own runtime key`);
   }
   const installedBinary = await installTunnelClient();
+  // tunnel-client finds a running client by alias, and the alias is this profile name. A second
+  // bridge beside the installed one (29.09 "Kanal 2") therefore needs its own, or it adopts the
+  // first bridge's client as its own and would stop that client when it stops its tunnel.
+  const productionBaseName = sideBySideTunnelProfile(process.env.CODEX_WEB_GPT_TUNNEL_PROFILE);
   const productionProfileName = interactionMode === "manual"
-    ? "codex-chatgpt-web-zero-risk"
-    : "codex-chatgpt-web";
+    ? `${productionBaseName}-zero-risk`
+    : productionBaseName;
   const profileName = config.purpose === DEV_CONFIG_PURPOSE
     ? interactionMode === "manual" ? `${DEV_TUNNEL_BASE_NAME}-zero-risk` : DEV_TUNNEL_BASE_NAME
     : productionProfileName;
