@@ -1011,11 +1011,15 @@ class BrowserHost {
     // The hidden home view needs the same renderer-viewport contract as a hidden turn tab (see
     // presentPrimaryView); a new document drops the emulation, so it is reapplied once it loads.
     contents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {
-      if (!mainFrame || inPlace) return;
+      if (this.destroyed || !mainFrame || inPlace) return;
       this.primaryRendererReady = false;
       this.primaryEmulationDirty = true;
     });
     contents.on("did-finish-load", () => {
+      // 30.09: the 5.0.57 release hung in the packaged smoke test (macOS 50 min, Windows past 120 s)
+      // with the main process alive. A load that finishes during shutdown must not reach a window
+      // that is being destroyed: in a packaged app the uncaught error opens a modal that blocks quit.
+      if (this.destroyed) return;
       this.primaryRendererReady = true;
       this.syncViewVisibility();
     });
@@ -1601,6 +1605,7 @@ class BrowserHost {
   }
 
   syncViewVisibility() {
+    if (this.destroyed || this.window.isDestroyed?.()) return;
     const windowVisible = this.window.isVisible() && !this.window.isMinimized();
     const visible = windowVisible
       && browserViewVisible(this.visible, this.surfaceActive, this.boundsReady);
@@ -3245,6 +3250,7 @@ class BrowserHost {
   }
 
   destroy() {
+    this.destroyed = true;
     try {
       const current = JSON.parse(fs.readFileSync(this.descriptorPath, "utf8"));
       if (current.pid === process.pid) fs.rmSync(this.descriptorPath, { force: true });

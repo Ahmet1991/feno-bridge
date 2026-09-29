@@ -3797,3 +3797,49 @@ test("a turn tab sent to sign-in marks the whole ChatGPT session as ended", () =
   BrowserHost.prototype.markSessionEnded.call(fixture);
   assert.deepEqual(warnings, ["browser.session_ended"]);
 });
+
+test("a home page load that finishes during shutdown touches neither the window nor the view", () => {
+  // 30.09: the packaged 5.0.57 smoke test hung with the main process alive (macOS 50 min, Windows
+  // past 120 s). A load finishing after destroy() must not reach the destroyed window: in a packaged
+  // app the uncaught "Object has been destroyed" opens a modal error box that blocks quitting.
+  const handlers = {};
+  const touched = [];
+  const destroyedWindowCall = name => () => {
+    touched.push(name);
+    throw new TypeError("Object has been destroyed");
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    descriptorPath: resolve(__dirname, "missing-browser-descriptor.json"),
+    shellZoomShortcutBindings: new Map(),
+    turnTabs: new Map(),
+    authView: null,
+    resumeListener: null,
+    powerSaveBlockerId: null,
+    window: {
+      off() {},
+      isDestroyed: () => true,
+      isVisible: destroyedWindowCall("window.isVisible"),
+      isMinimized: destroyedWindowCall("window.isMinimized"),
+      getContentSize: destroyedWindowCall("window.getContentSize"),
+    },
+    view: {
+      setBounds: destroyedWindowCall("view.setBounds"),
+      setVisible: destroyedWindowCall("view.setVisible"),
+      webContents: {
+        on: (name, handler) => { handlers[name] ??= handler; },
+        setWindowOpenHandler() {},
+        isDestroyed: () => false,
+        close() {},
+        enableDeviceEmulation: destroyedWindowCall("enableDeviceEmulation"),
+        disableDeviceEmulation: destroyedWindowCall("disableDeviceEmulation"),
+      },
+    },
+  });
+  BrowserHost.prototype.bindWebContents.call(fixture);
+  BrowserHost.prototype.destroy.call(fixture);
+
+  assert.doesNotThrow(() => handlers["did-start-navigation"]({}, "https://chatgpt.com/", false, true));
+  assert.doesNotThrow(() => handlers["did-finish-load"]());
+  assert.doesNotThrow(() => BrowserHost.prototype.syncViewVisibility.call(fixture));
+  assert.deepEqual(touched, []);
+});

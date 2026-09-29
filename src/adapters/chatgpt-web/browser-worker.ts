@@ -4800,7 +4800,24 @@ export class ChatGptBrowserWorker {
       const classified = unitKeyAnswer
         ? { commentaryRoots: [] as HTMLElement[], answerRoots: allMarkdownRoots }
         : selectChatGptAnswerRoots(allMarkdownRoots, streamingStatusContainers);
-      const commentaryRoots = classified.commentaryRoots;
+      // Measured 29.09 in the new app shell: until the answer unit exists, the response is the agent
+      // activity block (the parent of the agent-start marker). It lists the model's commentary as
+      // primary-tone Markdown between ChatGPT's own tool rows and tertiary-tone action summaries, and
+      // ChatGPT removes the whole block once the answer unit appears. So none of it is answer text.
+      const activityContainers = [...root.querySelectorAll<HTMLElement>("[data-chatgpt-agent-turn-start]")]
+        .map(marker => marker.parentElement)
+        .filter((container): container is HTMLElement => container !== null);
+      const activityCommentaryRoots = unitKeyAnswer ? [] : [
+        ...root.querySelectorAll<HTMLElement>('[data-markdown-text-style="assistant-message"]'),
+      ].filter(candidate => candidate.getAttribute("data-markdown-text-tone") !== "tertiary"
+        && candidate.closest("[data-content-search-unit-key]") === null
+        && !candidate.parentElement?.closest("[data-markdown-text-style]")
+        && activityContainers.some(container => container.contains(candidate))
+        && !classified.commentaryRoots.includes(candidate)
+        && !classified.answerRoots.includes(candidate))
+        .filter(renderedInDom);
+      const activityCommentarySet = new Set(activityCommentaryRoots);
+      const commentaryRoots = [...classified.commentaryRoots, ...activityCommentaryRoots];
       const renderedRoots = classified.answerRoots;
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
       const chatGptMarkdownContent = (markdownRoot: HTMLElement): HTMLElement => {
@@ -5140,6 +5157,15 @@ export class ChatGptBrowserWorker {
         }
         return false;
       };
+      // An activity commentary is done once a tool row or later commentary follows it. The last one
+      // before the answer may never get one: ChatGPT drops the block as the answer unit appears. A
+      // finished sentence therefore also counts; the trace tracker still waits for it to hold still.
+      const activityCommentaryComplete = (candidate: HTMLElement): boolean => {
+        for (let sibling = candidate.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
+          if (sibling instanceof HTMLElement && renderedInDom(sibling) && sibling.innerText.trim()) return true;
+        }
+        return /[.!?:…]["'”’)\]]*$/.test(candidate.innerText.trim());
+      };
       root.querySelectorAll<HTMLElement>(
         'button, [role="status"], [aria-busy="true"], [data-testid*="cot"], [data-testid*="reason"], [data-testid*="thought"]',
       ).forEach(candidate => {
@@ -5172,7 +5198,11 @@ export class ChatGptBrowserWorker {
           kind,
           text: traceText(candidate),
           key: traceKey(candidate, kind),
-          ...(kind === "commentary" ? { complete: hasFollowingRenderedSibling(candidate) } : {}),
+          ...(kind === "commentary" ? {
+            complete: activityCommentarySet.has(candidate)
+              ? activityCommentaryComplete(candidate)
+              : hasFollowingRenderedSibling(candidate),
+          } : {}),
           // Footer controls such as the model picker and overflow menu are siblings of the final
           // Markdown inside the assistant turn. They are UI, not model trace. Real action buttons
           // are scoped by ChatGPT's streaming-status container.
