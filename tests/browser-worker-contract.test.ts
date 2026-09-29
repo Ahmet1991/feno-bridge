@@ -4951,6 +4951,68 @@ test("embedded chart hydration cannot replace Markdown answer content with rende
     .toBe(text("<section><div>A</div><div>B</div></section>"));
 });
 
+test("29.09 renderer: CodeMirror blocks keep every line and their language, inline code keeps its backticks", () => {
+  const { createDocument, createWindow } = require("@mixmark-io/domino") as {
+    createDocument(html: string): { body: HTMLElement };
+    createWindow(): { HTMLElement: unknown; Node: unknown };
+  };
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const source = worker.split("// CHATGPT_MARKDOWN_CONTENT_BEGIN")[1]?.split("// CHATGPT_MARKDOWN_CONTENT_END")[0];
+  if (!source) throw new Error("Markdown content projection is missing from browser-worker.ts");
+  const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+  const window = createWindow();
+  const { contentFor } = new Function("HTMLElement", "Node",
+    `${javascript}; return { contentFor: chatGptMarkdownContent };`,
+  )(window.HTMLElement, window.Node) as { contentFor(root: HTMLElement): HTMLElement };
+  const full = ['print("merhaba")', ...Array.from({ length: 60 }, (_, index) => `print(${index + 1})`)].join("\n");
+  // Shape taken from the live DEV DOM: a toolbar ChatGPT excludes from its own copy, then a
+  // CodeMirror editor that rendered only the lines near the viewport and a gap for the rest.
+  const html = (lines: string, gap: boolean) => '<p><span data-markdown-copy="inline-code" class="inline-markdown">dosya_adi_v2.txt</span></p>'
+    + '<div data-markdown-copy="code-block"><div data-markdown-copy="exclude"><div class="truncate">Python</div>'
+    + '<button aria-label="Kopyala">Kopyala</button><button aria-label="Kodu çalıştır">Çalıştır</button></div>'
+    + '<div class="cm-editor"><div class="cm-scroller"><div class="cm-content" data-language="python">'
+    + `${lines}${gap ? '<div class="cm-gap"></div>' : ""}</div></div></div></div>`
+    + "<p>[1, 2, 3]</p>";
+  const visible = Array.from({ length: 19 }, (_, index) => `<div class="cm-line">print(${index + 42})</div>`).join("");
+  const expected = ["`dosya_adi_v2.txt`", "", "```python", full, "```", "", "[1, 2, 3]"].join("\n");
+
+  // The editor's own document is the first source.
+  const withEditor = createDocument(html(visible, true)).body;
+  (withEditor.querySelector(".cm-content") as unknown as { cmTile: unknown }).cmTile = {
+    view: { state: { doc: { toString: () => full } } },
+  };
+  expect(chatGptHtmlToMarkdown(contentFor(withEditor).innerHTML)).toBe(expected);
+
+  // Without it, the code block component's clipboard content (what ChatGPT's Copy button uses).
+  const withClipboard = createDocument(html(visible, true)).body;
+  (withClipboard.querySelector('[data-markdown-copy="code-block"]') as unknown as Record<string, unknown>)["__reactFiber$test"] = {
+    memoizedProps: { className: "x" },
+    return: { memoizedProps: { clipboardContent: full, language: "python" } },
+  };
+  expect(chatGptHtmlToMarkdown(contentFor(withClipboard).innerHTML)).toBe(expected);
+
+  // Rendered lines are trusted only when CodeMirror skipped none.
+  const allRendered = createDocument(html(full.split("\n").map(line => `<div class="cm-line">${line.replace(/"/g, "&quot;")}</div>`).join(""), false)).body;
+  expect(chatGptHtmlToMarkdown(contentFor(allRendered).innerHTML)).toBe(expected);
+
+  // The two shapes the same block takes while it streams carry no language of their own; the
+  // toolbar label gives it, so a block committed mid-stream keeps the fence language.
+  const header = '<div data-markdown-copy="exclude"><div class="truncate">Python</div><button>Kopyala</button></div>';
+  const streaming = [
+    `<div data-markdown-copy="code-block">${header}<div dir="ltr"><code class="whitespace-pre!"><span>print("merhaba")\nprint(</span></code></div></div>`,
+    `<div data-markdown-copy="code-block">${header}<div><pre class="whitespace-pre"><code><span>print</span><span>("merhaba")\nprint(</span></code></pre></div></div>`,
+  ];
+  for (const shape of streaming) {
+    expect(chatGptHtmlToMarkdown(contentFor(createDocument(shape).body).innerHTML))
+      .toBe('```python\nprint("merhaba")\nprint(\n```');
+  }
+
+  // The observed DOM itself is never modified.
+  const original = withEditor.innerHTML;
+  contentFor(withEditor);
+  expect(withEditor.innerHTML).toBe(original);
+});
+
 test("proven MCP progress vetoes completion, not only the health verdicts", () => {
   const tracker = new ChatGptCompletionTracker(500);
   const finishedLooking = {

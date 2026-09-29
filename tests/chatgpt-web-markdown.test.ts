@@ -233,9 +233,16 @@ test("keeps a cell's line breaks inside its table row", () => {
 
 test("never writes the \\[ … \\] pair that Codex renders as LaTeX", () => {
   // 28 Sep: "windows: []" reached Codex as "windows: \\[\\]" and rendered as an empty formula.
-  expect(chatGptHtmlToMarkdown("<p>windows: [] ile doğrulandı</p>")).toBe("windows: \\[] ile doğrulandı");
-  // The opening escape alone still keeps link and task-box syntax literal.
-  expect(chatGptHtmlToMarkdown("<p>[metin](adres) ve [x] kutu</p>")).toBe(String.raw`\[metin](adres) ve \[x] kutu`);
+  // 29.09: a bracket that cannot open syntax keeps no escape at all ("[1, 2, 3]" arrived as "\[1, 2, 3]").
+  expect(chatGptHtmlToMarkdown("<p>windows: [] ile doğrulandı</p>")).toBe("windows: [] ile doğrulandı");
+  expect(chatGptHtmlToMarkdown("<p>[1, 2, 3]</p>")).toBe("[1, 2, 3]");
+  expect(chatGptHtmlToMarkdown("<p>[metin](adres) ve [x] kutu</p>")).toBe(String.raw`\[metin](adres) ve [x] kutu`);
+  // Where it could open syntax, the opening escape still keeps it literal: a link, a reference,
+  // a footnote, and a task box at the start of a list item.
+  expect(chatGptHtmlToMarkdown("<p>[a][b] ve [c]: tanım ve [^1]</p>")).toBe("\\[a][b] ve \\[c]: tanım ve \\[^1]");
+  expect(chatGptHtmlToMarkdown("<ul><li>[ ] yapılacak</li><li>[x] bitti</li></ul>")).toBe("- \\[ ] yapılacak\n- \\[x] bitti");
+  // A source backslash before a bracket stays a literal backslash.
+  expect(chatGptHtmlToMarkdown(String.raw`<p>dosya \[1] son</p>`)).toBe(String.raw`dosya \\[1] son`);
   // A source backslash before a bracket survives as text.
   expect(chatGptHtmlToMarkdown(String.raw`<p>yol C:\a] son</p>`)).toBe(String.raw`yol C:\\a] son`);
   for (const html of ["<p>[a] ve [b]</p>", "<p>dizi [1, 2] ve [3]</p>", "<ul><li>[ ] yapılacak</li></ul>"]) {

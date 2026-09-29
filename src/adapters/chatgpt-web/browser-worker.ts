@@ -4774,6 +4774,75 @@ export class ChatGptBrowserWorker {
       // CHATGPT_MARKDOWN_CONTENT_BEGIN
       const chatGptMarkdownContent = (markdownRoot: HTMLElement): HTMLElement => {
         const content = markdownRoot.cloneNode(true) as HTMLElement;
+        const codeBlockSelector = 'pre, [data-markdown-copy="code-block"]';
+        // 29.09: ChatGPT's newest renderer draws a code block as a CodeMirror editor with no
+        // <code> element, and CodeMirror only renders the lines near the viewport: a 61-line
+        // block reached Codex as lines 42-60, and on another run as lines 1-35. The live editor
+        // still holds the whole document, and a clone carries none of that state, so read each
+        // block's full code from the live DOM here, paired with its clone by position.
+        // While the answer streams the same block is first a plain <code>, then <pre><code>, and only
+        // then the editor; none of the first two carries the language. The fence language has to be
+        // the same in all three, or a block committed mid-stream loses it, so it is read from the
+        // editor, the code block component's props, or the (copy-excluded) toolbar label.
+        const liveBlocks = Array.from(markdownRoot.querySelectorAll(codeBlockSelector));
+        const clonedBlocks = Array.from(content.querySelectorAll(codeBlockSelector));
+        const editorCode = new Map<Element, { text?: string; language?: string }>();
+        const validLanguage = (value: unknown): string | undefined => {
+          const language = typeof value === "string" ? value.trim().toLowerCase() : "";
+          return /^[\w+#.-]{1,40}$/.test(language) ? language : undefined;
+        };
+        if (liveBlocks.length === clonedBlocks.length) {
+          liveBlocks.forEach((live, index) => {
+            if (live.parentElement?.closest(codeBlockSelector)) return;
+            const fiberKey = Object.keys(live).find(key => key.startsWith("__reactFiber$"));
+            const fiberProps: Array<Record<string, unknown>> = [];
+            let fiber = fiberKey
+              ? (live as unknown as Record<string, { return?: unknown; memoizedProps?: Record<string, unknown> }>)[fiberKey]
+              : undefined;
+            for (let depth = 0; fiber && depth < 8; depth += 1) {
+              if (fiber.memoizedProps && typeof fiber.memoizedProps === "object") fiberProps.push(fiber.memoizedProps);
+              fiber = fiber.return as typeof fiber;
+            }
+            const editor = live.querySelector(".cm-content") as (HTMLElement & {
+              cmTile?: { view?: { state?: { doc?: { toString(): string } } } };
+            }) | null;
+            let text: string | undefined;
+            if (editor) {
+              try {
+                const doc = editor.cmTile?.view?.state?.doc?.toString();
+                if (typeof doc === "string") text = doc;
+              } catch {
+                // Editor internals are not an interface; the fallbacks below still apply.
+              }
+              // The copy button's own source: the code block component's clipboard content.
+              if (text === undefined) {
+                const clipboard = fiberProps.find(props => typeof props.clipboardContent === "string")?.clipboardContent;
+                if (typeof clipboard === "string") text = clipboard;
+              }
+              // Rendered lines are the whole document only when CodeMirror skipped nothing.
+              if (text === undefined && !editor.querySelector(".cm-gap")) {
+                text = Array.from(editor.children)
+                  .filter(line => line.classList.contains("cm-line"))
+                  .map(line => (line.textContent ?? "").replace(/\u200b/g, ""))
+                  .join("\n");
+              }
+            }
+            const label = live.querySelector('[data-markdown-copy="exclude"]')?.firstElementChild?.textContent;
+            const language = validLanguage(editor?.getAttribute("data-language"))
+              ?? validLanguage(fiberProps.find(props => typeof props.language === "string")?.language)
+              ?? validLanguage(label);
+            if (text === undefined && language === undefined) return;
+            editorCode.set(clonedBlocks[index]!, {
+              ...(text !== undefined ? { text } : {}),
+              ...(language ? { language } : {}),
+            });
+          });
+        }
+        // ChatGPT marks what its own Markdown copy leaves out (a code block's language label,
+        // copy and run buttons); leave out the same.
+        for (const excluded of Array.from(content.querySelectorAll('[data-markdown-copy="exclude"]'))) {
+          excluded.remove();
+        }
         // Writing cards expose a copy-content boundary separate from their title,
         // format picker and other changing controls. Keep only that owned content.
         const writingCard = '[data-markdown-copy="rich-block"]';
@@ -4800,16 +4869,34 @@ export class ChatGptBrowserWorker {
         // disappear on completion. Project only the code into PRE before fingerprinting
         // and Markdown conversion; otherwise the toolbar changes the committed text and
         // Turndown collapses code newlines as if they were ordinary inline whitespace.
-        const codeBlockSelector = 'pre, [data-markdown-copy="code-block"]';
         for (const block of Array.from(content.querySelectorAll(codeBlockSelector))) {
           if (block.parentElement?.closest(codeBlockSelector)) continue;
+          const editor = editorCode.get(block);
           const codes = block.querySelectorAll("code");
-          if (codes.length !== 1) continue;
-          const code = codes[0]!.cloneNode(true);
+          if (editor?.text === undefined && codes.length !== 1) continue;
+          let code: HTMLElement;
+          if (editor?.text !== undefined) {
+            code = content.ownerDocument.createElement("code");
+            code.textContent = editor.text;
+          } else {
+            code = codes[0]!.cloneNode(true) as HTMLElement;
+          }
+          // Turndown writes the fence language from a `language-*` class on the code element.
+          if (editor?.language && !/(^|\s)language-/.test(code.getAttribute("class") ?? "")) {
+            code.setAttribute("class", `language-${editor.language}`);
+          }
           const pre = block.tagName === "PRE" ? block : content.ownerDocument.createElement("pre");
           block.textContent = "";
           pre.appendChild(code);
           if (pre !== block) block.appendChild(pre);
+        }
+        // The same renderer draws inline code as a marked span rather than <code>, so Turndown
+        // escaped it as prose: `dosya_adi_v2.txt` reached Codex as dosya\_adi\_v2.txt.
+        for (const span of Array.from(content.querySelectorAll('[data-markdown-copy="inline-code"]'))) {
+          if (span.closest(codeBlockSelector)) continue;
+          const code = content.ownerDocument.createElement("code");
+          code.textContent = span.textContent ?? "";
+          span.replaceWith(code);
         }
         // A unit-key answer opens with a visually hidden "ChatGPT said:" heading; it is not answer text.
         for (const heading of Array.from(content.children)) {
