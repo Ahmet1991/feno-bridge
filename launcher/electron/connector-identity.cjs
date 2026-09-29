@@ -1,4 +1,10 @@
-const CURRENT_CONNECTOR_NAME = "Codex Native2";
+// A second bridge beside the installed one ("Kanal 2", 29.09) targets a connector of its own; the
+// runtime reads the same variable (src/config.ts), so both sides always agree on the name.
+const CURRENT_CONNECTOR_NAME = (() => {
+  const name = process.env.CODEX_WEB_GPT_CONNECTOR_NAME?.trim();
+  if (!name || name.length > 80 || name === "Codex Zero Risk" || name === "Codex Native") return "Codex Native2";
+  return name;
+})();
 const DEV_CONNECTOR_NAME = `${CURRENT_CONNECTOR_NAME} DEV`;
 const LEGACY_CONNECTOR_NAMES = Object.freeze(["Codex Native"]);
 

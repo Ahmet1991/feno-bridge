@@ -55,7 +55,8 @@ function resolveLauncherProfile({
       : path.join(appData, "Feno Bridge");
     return {
       kind: PRODUCTION_PROFILE,
-      displayName: "Feno Bridge",
+      // A second bridge beside the installed one names its window so the two cannot be confused.
+      displayName: env.CODEX_WEB_GPT_DISPLAY_NAME?.trim().slice(0, 60) || "Feno Bridge",
       coreHome,
       codexHome: env.CODEX_HOME?.trim()
         ? resolveUserPath(env.CODEX_HOME.trim(), homeDir)

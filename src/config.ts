@@ -19,7 +19,24 @@ export type SubagentProtocol = "compatibility-v1" | "native";
  * ChatGPT caches a connector's public MCP contract by connector identity. The direct turn-token
  * contract therefore has a new identity instead of mutating the retired connector in place.
  */
-export const CHATGPT_CONNECTOR_NAME = "Codex Native2";
+export const CHATGPT_CONNECTOR_NAME = sideBySideConnectorName(process.env.CODEX_WEB_GPT_CONNECTOR_NAME);
+
+/**
+ * 29.09: a second bridge run beside the installed one ("Kanal 2") needs a connector of its own, or
+ * ChatGPT would send its tool calls through the first bridge's tunnel. The launcher that starts it
+ * sets this; anything unusable falls back to the one production connector.
+ */
+function sideBySideConnectorName(value: string | undefined): string {
+  const name = value?.trim();
+  if (!name || name.length > 80 || name === "Codex Zero Risk" || name === "Codex Native") return "Codex Native2";
+  return name;
+}
+
+/** The Responses port a new configuration starts with; a bridge beside another one sets its own. */
+export function defaultResponsesPort(value = process.env.CODEX_WEB_GPT_DEFAULT_PORT): number {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1024 && port <= 65_535 ? port : 17841;
+}
 export const DEV_CHATGPT_CONNECTOR_NAME = `${CHATGPT_CONNECTOR_NAME} DEV`;
 export const ZERO_RISK_CHATGPT_CONNECTOR_NAME = "Codex Zero Risk";
 export const LEGACY_CHATGPT_CONNECTOR_NAMES = ["Codex Native"] as const;
@@ -202,7 +219,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     mode,
     subagentProtocol: "compatibility-v1",
     host: "127.0.0.1",
-    port: 17841,
+    port: defaultResponsesPort(),
     contextWindow: 256_000,
     appName: CHATGPT_CONNECTOR_NAME,
     automaticAppName: CHATGPT_CONNECTOR_NAME,
