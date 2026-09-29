@@ -27,6 +27,8 @@ const {
 
 const TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
 const CHATGPT_ORIGIN = "https://chatgpt.com";
+// Always shows the sign-in controls, and sends a signed-in browser straight home.
+const CHATGPT_LOGIN_URL = "https://chatgpt.com/auth/login";
 const IDLE_BROWSER_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3ECodex%20Web%20GPT%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E#codex-web-gpt-browser-host";
 const PRIMARY_VIEW_BOOTSTRAP_TIMEOUT_MS = 10_000;
 const MAX_BROWSER_VIEW_DIMENSION = 16_384;
@@ -1006,6 +1008,17 @@ class BrowserHost {
 
   bindWebContents() {
     const contents = this.view.webContents;
+    // The hidden home view needs the same renderer-viewport contract as a hidden turn tab (see
+    // presentPrimaryView); a new document drops the emulation, so it is reapplied once it loads.
+    contents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {
+      if (!mainFrame || inPlace) return;
+      this.primaryRendererReady = false;
+      this.primaryEmulationDirty = true;
+    });
+    contents.on("did-finish-load", () => {
+      this.primaryRendererReady = true;
+      this.syncViewVisibility();
+    });
     contents.setWindowOpenHandler(({ url }) => {
       if (allowedAuthUrl(url)) {
         return {
@@ -1551,7 +1564,31 @@ class BrowserHost {
     // the native View can make Windows drop it from the remote-debugging target set, leaving a
     // live descriptor whose ownership id cannot be leased. Keep the View attached and drawable
     // offscreen; only its placement, never its ownership lifetime, follows the launcher UI.
-    this.view.setBounds(visible ? this.bounds : this.hiddenTurnBounds());
+    //
+    // Offscreen is not enough on its own: a WebContentsView of a hidden window renders at 0x0, and
+    // 29.09 every connector verification in a hidden launcher ran at 0x0 and failed ("connector
+    // selection failed and its composer state could not be cleared") while real turns, in tabs with
+    // an emulated viewport, worked. Give the hidden home view that same explicit viewport.
+    const contents = this.view.webContents;
+    if (visible) {
+      this.view.setBounds(this.bounds);
+      if (this.primaryRendererReady && this.primaryEmulationViewport) {
+        contents.disableDeviceEmulation();
+        this.primaryEmulationViewport = null;
+      }
+      if (this.primaryRendererReady) this.primaryEmulationDirty = false;
+    } else {
+      const bounds = this.hiddenTurnBounds();
+      if (this.primaryRendererReady
+        && (this.primaryEmulationDirty !== false
+          || this.primaryEmulationViewport?.width !== bounds.width
+          || this.primaryEmulationViewport?.height !== bounds.height)) {
+        this.enableHiddenTurnViewport(contents, bounds);
+        this.primaryEmulationViewport = { width: bounds.width, height: bounds.height };
+        this.primaryEmulationDirty = false;
+      }
+      this.view.setBounds(bounds);
+    }
     this.view.setVisible(true);
   }
 
@@ -2652,10 +2689,10 @@ class BrowserHost {
         this.authNavigationError = null;
         this.show();
         this.logger.info("browser.login_opened");
-        const current = this.view.webContents.getURL();
-        if (!current.startsWith(CHATGPT_ORIGIN)) {
-          await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
-        }
+        // 29.09 18:57: after ChatGPT ended the session server-side, the page already open showed its
+        // cached signed-in UI (account name, chat list) with no sign-in control, and login mode
+        // locks navigation, so Sign in left the user stuck. Open the sign-in page itself.
+        await this.view.webContents.loadURL(CHATGPT_LOGIN_URL);
         await this.probeAuthentication();
         const authenticated = await this.waitForAuthenticated();
         await this.runSessionInspection(false);

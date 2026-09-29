@@ -731,6 +731,68 @@ test("visible turn tabs establish native bounds before clearing background emula
   assert.equal(tab.deviceEmulationDirty, false);
 });
 
+test("the hidden home view gets the renderer viewport once its page has loaded", () => {
+  // 29.09: in a hidden launcher every connector verification ran on the home view at 0x0 and failed.
+  const events = [];
+  const handlers = {};
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    window: {
+      getContentSize: () => [1120, 720],
+      isMinimized: () => false,
+      isVisible: () => false,
+    },
+    view: {
+      setBounds: bounds => events.push(["home-bounds", bounds]),
+      setVisible: visible => events.push(["home-visible", visible]),
+      webContents: {
+        on: (name, handler) => { handlers[name] ??= handler; },
+        setWindowOpenHandler() {},
+        enableDeviceEmulation: options => events.push(["emulate", options.viewSize]),
+        disableDeviceEmulation: () => events.push(["disable-emulation"]),
+      },
+    },
+  });
+  BrowserHost.prototype.bindWebContents.call(fixture);
+  assert.equal(typeof handlers["did-start-navigation"], "function");
+  assert.equal(typeof handlers["did-finish-load"], "function");
+
+  handlers["did-start-navigation"]({}, "https://chatgpt.com/", false, true);
+  BrowserHost.prototype.presentPrimaryView.call(fixture, false);
+  assert.deepEqual(events.splice(0), [
+    ["home-bounds", { x: 1121, y: 721, width: 1120, height: 720 }],
+    ["home-visible", true],
+  ], "no emulation before the page's renderer exists");
+
+  fixture.syncViewVisibility = () => BrowserHost.prototype.presentPrimaryView.call(fixture, false);
+  handlers["did-finish-load"]();
+  assert.deepEqual(events.splice(0), [
+    ["emulate", { width: 1120, height: 720 }],
+    ["home-bounds", { x: 1121, y: 721, width: 1120, height: 720 }],
+    ["home-visible", true],
+  ]);
+
+  BrowserHost.prototype.presentPrimaryView.call(fixture, false);
+  assert.deepEqual(events.splice(0).filter(([name]) => name === "emulate"), [], "applied once per document");
+
+  handlers["did-start-navigation"]({}, "https://chatgpt.com/#x", true, true);
+  BrowserHost.prototype.presentPrimaryView.call(fixture, false);
+  assert.deepEqual(events.splice(0).filter(([name]) => name === "emulate"), [], "same-document navigation keeps it");
+
+  handlers["did-start-navigation"]({}, "https://chatgpt.com/auth/login", false, true);
+  handlers["did-finish-load"]();
+  assert.deepEqual(events.splice(0).filter(([name]) => name === "emulate"), [["emulate", { width: 1120, height: 720 }]],
+    "a new document is emulated again");
+
+  fixture.bounds = { x: 280, y: 64, width: 840, height: 656 };
+  BrowserHost.prototype.presentPrimaryView.call(fixture, true);
+  assert.deepEqual(events.splice(0), [
+    ["home-bounds", { x: 280, y: 64, width: 840, height: 656 }],
+    ["disable-emulation"],
+    ["home-visible", true],
+  ]);
+  assert.equal(fixture.primaryEmulationViewport, null);
+});
+
 test("manual browser operations wait for the first measured surface", async () => {
   let readinessReads = 0;
   const fixture = {
@@ -946,7 +1008,8 @@ test("concurrent embedded login requests share one authentication operation", as
   const first = BrowserHost.prototype.openLogin.call(fixture);
   const second = BrowserHost.prototype.openLogin.call(fixture);
   assert.equal(first, second);
-  await Promise.resolve();
+  // The login first opens the sign-in page, so let every pending step settle before counting.
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(waits, 1);
   resolveLogin({ authenticated: true });
   assert.deepEqual(await first, { authenticated: true });
@@ -3695,9 +3758,14 @@ test("Sign in re-checks a stale authenticated flag and starts the login when the
     withManualOperation: async (name, action) => { calls.push(name); return await action(); },
     openLogin(...args) { return BrowserHost.prototype.openLogin.apply(this, args); },
   };
+  const loads = [];
+  fixture.view.webContents.loadURL = async url => { loads.push(url); };
   const result = await BrowserHost.prototype.openLogin.call(fixture);
   assert.deepEqual(result, { authenticated: true });
   assert.deepEqual(calls.filter(call => call !== "show"), ["refresh", "ChatGPT login", "probe", "wait-for-login", "inspect"]);
+  // The page already open is chatgpt.com, but after a server-side sign-out it shows cached signed-in
+  // UI without a sign-in control (29.09 18:57); the login must open the sign-in page itself.
+  assert.deepEqual(loads, ["https://chatgpt.com/auth/login"]);
 });
 
 test("Sign in with a session that is still valid only shows the home page", async () => {
