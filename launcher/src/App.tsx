@@ -2561,7 +2561,9 @@ function formatBrowserAddress(url: string | undefined, copy: Copy): string {
 }
 
 function messageOf(value: unknown): string {
-  return value instanceof Error ? value.message : String(value);
+  // Electron prefixes errors thrown by an IPC handler with "Error invoking remote method '<channel>': Error: ".
+  const message = value instanceof Error ? value.message : String(value);
+  return message.replace(/^Error invoking remote method '[^']*': (?:[A-Za-z]*Error: )?/, "");
 }
 
 function platformLabel(value: string): string {

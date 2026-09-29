@@ -232,9 +232,9 @@ export function withoutRetiredTurnHandles(contextJson: string): string {
 }
 
 /**
- * The sentence that hands a live turn token to the model. The false-block correction opens a turn
- * of its own with a freshly registered token and has to say this the same way, so it lives here
- * rather than being spelled a second time where an edit to one copy would silently not reach it.
+ * The sentence that hands a live turn token to the model. The image continuation opens a turn of
+ * its own with a freshly registered token and has to say this the same way, so it lives here rather
+ * than being spelled a second time where an edit to one copy would silently not reach it.
  */
 export function chatGptTurnTokenInstruction(turnToken: string | undefined): string {
   return `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native`

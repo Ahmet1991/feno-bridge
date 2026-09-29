@@ -5,8 +5,6 @@ import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
 import { formatBrowserTurnReactionLog } from "./reaction-timing";
 import { chatGptWebContextOverflowWarning } from "./usage";
 import { ChatGptPersonalizationProofCache } from "./personalization-proof-cache";
-import { claimsBlockedToolCall } from "./block-claim-evidence";
-import { readChatGptToolRecordEvidence, type ChatGptToolRecordEvidence } from "./tool-record-evidence";
 import { selectedEffortMatches } from "./selected-effort";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
@@ -1553,8 +1551,6 @@ export interface BrowserTurn {
   onSubmitted?: () => void;
   /** One inert Bigger Context stage completed its exact acknowledgement boundary. */
   onMultipartStageAcknowledged?: (stageIndex: number) => void | Promise<void>;
-  /** ChatGPT's own record of this turn's tool calls, read only when the answer claims a block. */
-  onToolRecordEvidence?: (evidence: ChatGptToolRecordEvidence) => void | Promise<void>;
   /** Visible ChatGPT reasoning-summary step titles only; never hidden chain-of-thought. */
   onReasoningSummary?: (text: string, continuation?: boolean) => void;
   /** Stable visible ChatGPT prose between status/tool rows. */
@@ -1563,7 +1559,7 @@ export interface BrowserTurn {
   onTextDelta: (delta: string) => void;
   /**
    * Whether this turn's answer reaches Codex as it streams. False for the turns the adapter opens
-   * for itself -- the false-block correction and the image delivery turn -- which suppress their
+   * for itself -- the image delivery turn -- which suppress their
    * stream and append the finished answer. For those, a late ChatGPT edit rewrites text nobody has
    * read yet, so it must not end the turn.
    */
@@ -6196,19 +6192,6 @@ export class ChatGptBrowserWorker {
         + ` (markdownChars=${finalText.length}, domFullScans=${responseDomCache.fullScans ?? 0}, domCacheHits=${responseDomCache.cacheHits ?? 0}`
         + `${pageChars === undefined ? "" : `, pageChars=${pageChars}`})`,
       );
-      // An answer that says a call was blocked is checked against ChatGPT's own record of the turn,
-      // not against its own quote of a refusal (28.09: the record held none). Best effort: the
-      // answer is already final, so an unreadable record leaves the older checks in place.
-      if (turn.onToolRecordEvidence && claimsBlockedToolCall(finalText)) {
-        const evidence = await readChatGptToolRecordEvidence(page).catch(() => undefined);
-        console.info(
-          `[chatgpt-web] browser turn ${turn.traceId} tool record`
-          + (evidence
-            ? ` unansweredCalls=${evidence.unansweredCalls} platformRefusal=${evidence.platformRefusal}`
-            : " unavailable"),
-        );
-        if (evidence) await turn.onToolRecordEvidence(evidence);
-      }
       return finalText;
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")

@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "5.0.55",
+  "version": "5.0.56",
   "private": true,
   "description": "Feno Bridge desktop launcher",
   "author": "miuuyy",
@@ -38,7 +38,7 @@
   },
   "overrides": {
     "@xmldom/xmldom": "0.8.15",
-    "fast-uri": "3.1.6",
+    "fast-uri": "3.1.8",
     "js-yaml": "4.3.2"
   },
   "build": {

@@ -30,13 +30,9 @@ import {
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { CHATGPT_MAX_INPUT_IMAGES, chatGptReadOnlyContextWarning, chatGptTurnTokenInstruction, countChatGptContextImages, type ChatGptWebPromptImage } from "./prompt";
-import { blockClaimEvidenceFor, claimsBlockedToolCall, TurnCallLedger } from "./block-claim-evidence";
-import { falseBlockCorrection, quotesChatGptPlatformRefusal, shouldRecoverFalseBlockClaim } from "./false-block-recovery";
-import type { ChatGptToolRecordEvidence } from "./tool-record-evidence";
 import {
   callObservesWindow,
   isPolicyStop,
-  skyFunctionsIn,
   toolResultHasImage,
   toolResultText,
   WindowRecoveryTracker,
@@ -75,7 +71,6 @@ import {
 } from "./conversation-key";
 
 const windowRecoveryBySession = new WeakMap<ChatGptTurnSession, WindowRecoveryTracker>();
-const callLedgerBySession = new WeakMap<ChatGptTurnSession, TurnCallLedger>();
 /**
  * Images a local tool returned mid-turn, kept rather than counted: a follow-up turn can attach
  * them, which is the only way one reaches the model at all.
@@ -87,12 +82,6 @@ const lastCompletedAnswerBySession = new WeakMap<ChatGptTurnSession, string>();
 const separatedPhaseBySession = new WeakMap<ChatGptTurnSession, number>();
 /** Sessions already given one delivery turn, so a long tool round cannot spawn one per image. */
 const imagesDeliveredSessions = new WeakSet<ChatGptTurnSession>();
-/** Sessions already given one correction, so a repeated claim cannot cost a second browser turn. */
-const falseBlockRecoveredSessions = new WeakSet<ChatGptTurnSession>();
-/** A correction owed by an earlier streamed message, deferred until image continuation is done. */
-const pendingFalseBlockCorrectionSessions = new WeakSet<ChatGptTurnSession>();
-/** ChatGPT's record of the message that claimed the block, kept for a correction deferred past it. */
-const toolRecordBySession = new WeakMap<ChatGptTurnSession, ChatGptToolRecordEvidence>();
 
 const MAX_IMAGE_CONTINUATION_PHASES = 4;
 
@@ -376,7 +365,7 @@ function emitTraceEvents(trace: ChatGptTraceEvent[], emit: (event: AdapterEvent)
 
 /**
  * An image continuation's answer streams into the message that already holds the previous phase's
- * answer and any evidence line, so its first text needs a paragraph break. 27 Sep 23:57 UTC: without
+ * answer, so its first text needs a paragraph break. 27 Sep 23:57 UTC: without
  * one the live answer read "... bu sayıma girmez.Abim, şimdi görüntüler net görünüyor." The break goes
  * once per phase, before the phase's first non-empty text: a phase that runs tools resumes in a new
  * Codex message, which must not start with one.
@@ -902,7 +891,6 @@ export function createChatGptWebAdapter(
       ...(await prepareWith(input)),
       requestImages,
     });
-    const toolRecord: { evidence?: ChatGptToolRecordEvidence } = {};
     const browserTurn = cancellableBrowserTurn(trackBrowserOwner(finalizeCheckpoint(worker.run({
       traceId,
       modelId: parsed.modelId,
@@ -919,7 +907,6 @@ export function createChatGptWebAdapter(
       onReasoningSummary: (text, continuation) => trace.push({ kind: "reasoning", text, ...(continuation ? { continuation: true } : {}) }),
       onCommentary: (text, continuation) => trace.push({ kind: "commentary", text, ...(continuation ? { continuation: true } : {}) }),
       onTextDelta: delta => text.push(delta),
-      onToolRecordEvidence: evidence => { toolRecord.evidence = evidence; },
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),
@@ -945,7 +932,6 @@ export function createChatGptWebAdapter(
       trace,
       text,
       usageInput: checkpointInput.parsed,
-      toolRecord,
       ...(conversationKey ? { conversationKey } : {}),
       ...(releaseRetainedConversation ? { releaseRetainedConversation } : {}),
       retireCapability: async () => {
@@ -1023,7 +1009,6 @@ export function createChatGptWebAdapter(
         requestImages: images.length,
       };
     };
-    const toolRecord: { evidence?: ChatGptToolRecordEvidence } = {};
     const browserRun = worker.run({
       traceId: continuationTraceId,
       modelId: parsed.modelId,
@@ -1048,7 +1033,6 @@ export function createChatGptWebAdapter(
         ...(continuation ? { continuation: true } : {}),
       }),
       onTextDelta: delta => text.push(delta),
-      onToolRecordEvidence: evidence => { toolRecord.evidence = evidence; },
       externalProgress,
       completionFence: {
         begin: async () => broker.beginCompletionFence(await token.promise),
@@ -1076,7 +1060,6 @@ export function createChatGptWebAdapter(
         text,
         usageInput: parsed,
         conversationKey,
-        toolRecord,
         ...(session.runtime.releaseRetainedConversation
           ? { releaseRetainedConversation: session.runtime.releaseRetainedConversation }
           : {}),
@@ -1098,10 +1081,6 @@ export function createChatGptWebAdapter(
   return {
     name: "chatgpt-web",
     async runTurn(parsed, incoming, emit) {
-      // What this bridge actually dispatched, so a claim about a blocked or failed call can be
-      // answered with counts instead of with another instruction the model may ignore. The ledger
-      // is bound to the session below: a turn spans several rounds, and counting per round reported
-      // only the last one.
       const runChatGptWebTurn = async (): Promise<void> => {
         const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
         if (manualRequest !== manualInteraction) {
@@ -1471,11 +1450,6 @@ export function createChatGptWebAdapter(
           windowRecovery = new WindowRecoveryTracker();
           windowRecoveryBySession.set(session, windowRecovery);
         }
-        let toolCallLedger = callLedgerBySession.get(session);
-        if (!toolCallLedger) {
-          toolCallLedger = new TurnCallLedger();
-          callLedgerBySession.set(session, toolCallLedger);
-        }
         const roundKey = chatGptTurnRoundKey(parsed);
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
@@ -1587,7 +1561,7 @@ export function createChatGptWebAdapter(
                 }
                 for (const message of results) {
                   // A minimized window answers with guidance rather than an error, so this reads the
-                  // result the call actually returned. It never touches isError or the ledger below.
+                  // result the call actually returned. It never touches isError.
                   const recovery = batchHasPolicyStop
                     ? undefined
                     : windowRecovery.inspect(callsById.get(message.toolCallId), message);
@@ -1624,7 +1598,6 @@ export function createChatGptWebAdapter(
                     unshownImagesBySession.set(session, newestToolImages(pending));
                     console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
                   }
-                  toolCallLedger.record(skyFunctionsIn(callsById.get(message.toolCallId)), message.isError);
                   session.runtime.externalProgress.recordToolResult();
                   session.markResultDelivered(message.toolCallId);
                 }
@@ -1702,36 +1675,6 @@ export function createChatGptWebAdapter(
                 const phase = session.phaseNumber();
                 const attachedPhaseImages = activeContinuationImagesBySession.get(session) ?? [];
                 let completedOutcome = observedOutcome;
-                // Set when a failed image continuation falls back to the answer the previous phase
-                // already emitted, together with anything the bridge appended to it.
-                let reusedEmittedAnswer = false;
-                const ledger = toolCallLedger.summary();
-                // Bound here so the narrowing survives into the correction block below.
-                const correctionEnvironment = environment;
-                const correctionAnswer = completedOutcome.type === "final" ? completedOutcome.answer : undefined;
-                const correctionEligible = correctionAnswer !== undefined
-                  // A buffered structured answer has no room for a correction, so running the turn
-                  // would spend a browser round on text this turn could never emit.
-                  && !bufferStructuredOutput
-                  // Only a turn that registered tools has a ledger worth setting against the claim.
-                  && correctionEnvironment !== undefined
-                  && session.conversationKey() !== undefined
-                  && !falseBlockRecoveredSessions.has(session)
-                  && shouldRecoverFalseBlockClaim(claimsBlockedToolCall(correctionAnswer), ledger);
-                const pendingFalseBlockCorrection = pendingFalseBlockCorrectionSessions.has(session);
-                const phaseRecord = activeRuntime.toolRecord?.evidence;
-                if (phaseRecord) toolRecordBySession.set(session, phaseRecord);
-                const claimRecord = toolRecordBySession.get(session);
-                // ChatGPT's own record decides when it could be read. A quoted refusal decided alone
-                // until 28.09, when the record showed the quoted refusal had never been sent.
-                const platformRefusal = claimRecord
-                  ? claimRecord.platformRefusal
-                  : correctionAnswer !== undefined && quotesChatGptPlatformRefusal(correctionAnswer);
-                const skipForPlatformRefusal = correctionAnswer !== undefined
-                  && (correctionEligible || pendingFalseBlockCorrection)
-                  && platformRefusal;
-                const correcting = (correctionEligible || pendingFalseBlockCorrection)
-                  && !skipForPlatformRefusal;
                 if (activeToken) await broker.revoke(activeToken);
                 if (completedOutcome.type === "error") {
                   if (phase === 0) throw completedOutcome.error;
@@ -1747,7 +1690,6 @@ export function createChatGptWebAdapter(
                   const lastAnswer = lastCompletedAnswerBySession.get(session);
                   if (lastAnswer === undefined) throw completedOutcome.error;
                   completedOutcome = { type: "final", answer: lastAnswer };
-                  reusedEmittedAnswer = true;
                 }
                 if (completedOutcome.type !== "final") throw new Error("ChatGPT browser outcome was not finalized");
                 if (observedOutcome.type === "final" && activeRuntime.text.value() !== observedOutcome.answer) {
@@ -1767,28 +1709,6 @@ export function createChatGptWebAdapter(
                 if (phase === 0 && bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas([completedOutcome.answer], buffer));
                 }
-                // The answer itself is already verified above; this only adds what the bridge
-                // observed, after that check, so the integrity comparison stays untouched.
-                // Not again for an answer the previous phase already footnoted: 28 Sep, a failed
-                // image continuation printed the same tool-call footer twice under one answer.
-                const blockEvidence = reusedEmittedAnswer
-                  ? undefined
-                  : blockClaimEvidenceFor(completedOutcome.answer, ledger, phaseRecord);
-                if (blockEvidence) {
-                  console.warn(
-                    `[chatgpt-web] answer claimed a blocked or failed tool call`
-                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
-                    + ` windowCaptureNeverReached=${ledger.windowCaptureNeverReached}`,
-                  );
-                  emitRoundBatch(buffer => emitTextDeltas([blockEvidence], buffer));
-                }
-                if (skipForPlatformRefusal) {
-                  console.warn(
-                    `[chatgpt-web] false block claim correction skipped reason=chatgpt_platform_refusal`
-                    + ` record=${claimRecord ? "confirmed" : "unavailable"}`
-                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`,
-                  );
-                }
                 const pendingImages = unshownImagesBySession.get(session) ?? [];
                 const continuationEnvironment = environment;
                 const continuationEligible = observedOutcome.type === "final"
@@ -1799,7 +1719,6 @@ export function createChatGptWebAdapter(
                   && activeRuntime.mode === "tools"
                   && phase < MAX_IMAGE_CONTINUATION_PHASES;
                 if (continuationEligible) {
-                  if (correcting) pendingFalseBlockCorrectionSessions.add(session);
                   const nextPhase = phase + 1;
                   const continuationImages = [...pendingImages];
                   unshownImagesBySession.delete(session);
@@ -1834,10 +1753,6 @@ export function createChatGptWebAdapter(
                     );
                   }
                 }
-                // Deliver a tool's image before any correction: the image is content this turn owes the
-                // user, the correction is best effort, and a failed correction releases the retained
-                // conversation the delivery needs (26.09: "retained ChatGPT conversation is no longer
-                // available" right after a stalled correction).
                 let delivered: string | undefined;
                 let deliveredImageFallback = false;
                 if (completedOutcome.type === "final"
@@ -1861,14 +1776,13 @@ export function createChatGptWebAdapter(
                       traceId,
                       modelId: parsed.modelId,
                       reasoning: parsed.options.reasoning,
-                      // Tool-less on purpose, and no longer for the reason the correction turn used to
-                      // give: looking at an attachment needs no tools, so this turn carries no token
-                      // and cannot hit the retired-channel problem. Whether the model wants to carry
+                      // Tool-less on purpose: looking at an attachment needs no tools, so this turn
+                      // carries no token and cannot hit the retired-channel problem. Whether the model wants to carry
                       // the work on once it can finally see the image is a question about a model, so
                       // the log below counts it rather than the code assuming it.
                       capabilities: { ...turnCapabilities, localToolsEnabled: false },
                       nativeConnector: false,
-                      // Same reason as the correction turn: this answer is appended, not streamed.
+                      // This answer is appended, not streamed, so a late ChatGPT edit is harmless.
                       streamsToCodex: false,
                       prepare: prepareDelivery,
                       prepareResume: prepareDelivery,
@@ -1906,65 +1820,6 @@ export function createChatGptWebAdapter(
                         ? "with_images"
                         : "fallback"}`,
                   );
-                }
-                if (correcting && correctionEnvironment) {
-                  // Once per session: a model that repeats the claim after being shown the record
-                  // is not going to be talked out of it, and a loop would cost real browser turns.
-                  falseBlockRecoveredSessions.add(session);
-                  pendingFalseBlockCorrectionSessions.delete(session);
-                  // Tool-less, like the image delivery below. A correction cannot run tools: its answer
-                  // is not streamed to Codex, so no Codex request is waiting to execute a call it makes.
-                  // 26.09 (trace 5cf96a1718c2): with a live handle the model called tool_search, the
-                  // broker queued it with waiters=0, ChatGPT waited on the result and the turn failed
-                  // after the DOM grace — taking the pending image delivery down with it.
-                  const prepareCorrection = async () => ({
-                    text: falseBlockCorrection(ledger, claimRecord),
-                    images: [],
-                    release: () => {},
-                  });
-                  let corrected: string | undefined;
-                  let failure: string | undefined;
-                  try {
-                    // Its own stream is suppressed — the first answer already reached the client and
-                    // the integrity comparison above is bound to it, so this answer is appended from
-                    // the resolved value instead of joining that stream.
-                    corrected = await worker.run({
-                      traceId,
-                      modelId: parsed.modelId,
-                      reasoning: parsed.options.reasoning,
-                      capabilities: { ...turnCapabilities, localToolsEnabled: false },
-                      nativeConnector: false,
-                      // Its answer is appended, not streamed, so a late ChatGPT edit is harmless.
-                      streamsToCodex: false,
-                      prepare: prepareCorrection,
-                      prepareResume: prepareCorrection,
-                      conversationKey: session.conversationKey(),
-                      requireRetainedConversation: true,
-                      abortSignal: session.abortSignal(),
-                      onTextDelta: () => {},
-                    });
-                  } catch (error) {
-                    // Best effort throughout: the turn already has an answer, and a correction that
-                    // fails must not take it down with it.
-                    failure = error instanceof Error ? error.message : String(error);
-                  }
-                  // Whether this works is a claim about a model, so it is counted rather than
-                  // assumed. The second figure is deliberately not named "still claims a block": on
-                  // 22 Sep a corrected answer that withdrew the claim — "bunu kesin bir güvenlik
-                  // engeli olarak sunmam doğru değildi" — matched the detector, because withdrawing
-                  // a claim means naming it. It says what it measures, a mention, and reading it as
-                  // a failure would have scored a success as one.
-                  console.warn(
-                    `[chatgpt-web] false block claim correction sent`
-                    + ` completedCalls=${ledger.completed} failedCalls=${ledger.failed}`
-                    + ` record=${claimRecord ? `unansweredCalls:${claimRecord.unansweredCalls}` : "unavailable"}`
-                    + ` answered=${corrected !== undefined}`
-                    + ` secondAnswerMentionsBlock=${corrected === undefined ? "?" : claimsBlockedToolCall(corrected)}`
-                    + (failure !== undefined ? ` failure=${JSON.stringify(failure)}` : ""),
-                  );
-                  if (corrected !== undefined && corrected.trim().length > 0) {
-                    emitRoundBatch(buffer => emitTextDeltas([`\n\n${corrected}`], buffer));
-                  }
                 }
                 // Only for images still unshown: a delivered one is no longer unseen, and saying it
                 // was would contradict the answer just appended.

@@ -34,7 +34,6 @@ interface RunMessage {
     compaction?: boolean;
     captureLunaCheckpoint?: boolean;
     externalProgress?: boolean;
-    toolRecordEvidence?: boolean;
   };
 }
 
@@ -179,9 +178,6 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.externalProgress !== undefined && typeof message.turn.externalProgress !== "boolean") {
     throw new Error("Browser helper external progress flag is invalid");
   }
-  if (message.turn.toolRecordEvidence !== undefined && typeof message.turn.toolRecordEvidence !== "boolean") {
-    throw new Error("Browser helper tool record flag is invalid");
-  }
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: "https://chatgpt.com",
@@ -283,12 +279,6 @@ async function run(message: RunMessage): Promise<void> {
         throw new Error("Browser helper could not persist multipart acknowledgement evidence");
       }
     },
-    // Best effort, like the record read itself: the answer is already final and must not fail here.
-    ...(message.turn.toolRecordEvidence ? {
-      onToolRecordEvidence: evidence => {
-        writeProtocol({ type: "event", id: message.id, event: "tool_record_evidence", evidence });
-      },
-    } : {}),
     onReasoningSummary: (text, continuation) => writeProtocol({
       type: "event",
       id: message.id,
@@ -540,4 +530,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "tool-record-evidence"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });

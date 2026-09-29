@@ -10,7 +10,6 @@ import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adap
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
-import type { ChatGptToolRecordEvidence } from "../src/adapters/chatgpt-web/tool-record-evidence";
 import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision, priorChatGptAbortedTurnIds } from "../src/adapters/chatgpt-web/environment";
 import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
@@ -4188,7 +4187,7 @@ describe("adapter liveness covers every path through a turn", () => {
   }, 40_000);
 });
 
-test("an answer claiming a blocked call carries the bridge's own dispatch count", async () => {
+test("an answer claiming a blocked call is emitted exactly as ChatGPT wrote it", async () => {
   const socketPath = brokerTestEndpoint(`cgw-block-claim-${process.pid}-${Date.now()}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -4225,8 +4224,10 @@ test("an answer claiming a blocked call carries the bridge's own dispatch count"
       .filter((event): event is AdapterEvent & { type: "text_delta"; text: string } => event.type === "text_delta")
       .map(event => event.text)
       .join("");
-    expect(answer).toContain(claim);
-    expect(answer).toContain("[Feno Bridge] Bu turda köprü üzerinden hiç araç çağrısı yapılmadı.");
+    // 29.09: the user asked for the bridge's footer to go; it added text and no value.
+    // A read-only turn opens with its local-tools notice; nothing may follow the claim.
+    expect(answer.endsWith(claim)).toBeTrue();
+    expect(answer).not.toContain("[Feno Bridge]");
     expect(events.at(-1)).toMatchObject({ type: "done" });
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
@@ -4307,15 +4308,11 @@ async function deliverWindowRecoveryFixtures(
     retained?: boolean;
     browserTurns?: BrowserTurn[];
     firstAnswer?: string;
-    // Mirrors 26.09: a failed follow-up released the retained conversation for every later one.
-    failCorrection?: boolean;
     failContinuation?: boolean;
     continuationAnswer?: string;
     fallbackAnswer?: string;
     structuredOutput?: boolean;
     followUps?: Array<{ images: number; text: string }>;
-    // What ChatGPT's own record of the first message shows, as the worker would report it.
-    firstRecord?: ChatGptToolRecordEvidence;
   },
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
@@ -4359,14 +4356,10 @@ async function deliverWindowRecoveryFixtures(
         turn.onTextDelta(answer);
         return answer;
       }
-      // Tool-less correction/fallback follow-ups intentionally carry no turn token.
+      // Tool-less fallback follow-ups intentionally carry no turn token.
       if (!token && options?.browserTurns) {
         options.followUps?.push({ images: prepared.images.length, text: prepared.text });
         if (conversationReleased) throw new Error("The retained ChatGPT conversation is no longer available.");
-        if (options.failCorrection && prepared.images.length === 0) {
-          conversationReleased = true;
-          throw new Error("ChatGPT accepted the message but did not expose its assistant turn in the DOM");
-        }
         const answer = "Ekte gördüğüm pencere: Feno Bridge.";
         turn.onTextDelta(answer);
         return answer;
@@ -4385,7 +4378,6 @@ async function deliverWindowRecoveryFixtures(
       delivered.push(...results);
       const answer = options?.firstAnswer ?? "Window recovery fixture complete";
       turn.onTextDelta(answer);
-      if (options?.firstRecord) await turn.onToolRecordEvidence?.(options.firstRecord);
       return answer;
     } finally {
       prepared.release();
@@ -4704,114 +4696,10 @@ test("window recovery state survives continuation rounds until the bound screens
   }
 });
 
-test("the evidence line counts every round of a turn and names the capture that never arrived", async () => {
-  // Reproduces the 20 Sep turn: list_windows and get_window both succeeded in separate rounds, the
-  // screenshot call never reached the bridge, and the answer blamed a block. The shipped line said
-  // one call because the ledger was rebuilt each round.
-  const socketPath = brokerTestEndpoint(`led-${process.pid}-${++windowRecoveryFixtureSequence}`);
-  const provider: CodexProviderConfig = {
-    adapter: "chatgpt-web",
-    baseUrl: `browser://call-ledger-${Date.now()}`,
-    chatgptWeb: {
-      brokerSocketPath: socketPath,
-      turnTimeoutMs: 30_000,
-      localToolsEnabled: true,
-      solAvailable: true,
-      extraHighAvailable: true,
-      proAvailable: true,
-    },
-  };
-  const broker = TurnBroker.forSocket(socketPath);
-  const worker = ChatGptBrowserWorker.forProvider(provider);
-  const originalRun = worker.run.bind(worker);
-  const claim = "Bu araç OpenAI'ın güvenlik kontrolleri tarafından engellendi.";
-  const steps = [
-    "globalThis.windows = await sky.list_windows();",
-    "globalThis.w = await sky.get_window({ id: 589952, app: 'process:C:\\GitHubDesktop.exe' });",
-  ];
-  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
-    const prepared = await turn.prepare();
-    try {
-      const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
-      if (!token) throw new Error("turn token missing from call ledger prompt");
-      const claimed = await callTurnBroker<{ bindingId: string }>(socketPath, { method: "claim", token });
-      for (const code of steps) {
-        await invokeAfterBrowserBoundary(turn, () => callTurnBroker<BrokerToolResult>(socketPath, {
-          method: "invoke",
-          bindingId: claimed.bindingId,
-          wireName: "js",
-          freeform: false,
-          arguments: { code, title: "Pencere adımı" },
-        }, 30_000));
-      }
-      turn.onTextDelta(claim);
-      return claim;
-    } finally {
-      prepared.release();
-    }
-  };
 
-  const request = rawWireRequest(environmentXml);
-  request.context.tools = [
-    ...(request.context.tools ?? []),
-    { name: "js", description: "Control a native window", parameters: { type: "object" } },
-  ];
-  const adapter = createChatGptWebAdapter(provider, { broker });
-  const emittedCall = (events: AdapterEvent[]) => {
-    const start = events.find(
-      (event): event is Extract<AdapterEvent, { type: "tool_call_start" }> => event.type === "tool_call_start",
-    );
-    const delta = events.find(
-      (event): event is Extract<AdapterEvent, { type: "tool_call_delta" }> => event.type === "tool_call_delta",
-    );
-    if (!start || !delta) throw new Error("call ledger round did not emit a tool call");
-    return { id: start.id, name: start.name, arguments: JSON.parse(delta.arguments) as Record<string, unknown> };
-  };
-  const appendResult = (
-    call: { id: string; name: string; arguments: Record<string, unknown> },
-    text: string,
-    timestamp: number,
-  ) => {
-    request.context.messages.push(
-      {
-        role: "assistant",
-        content: [{ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments }],
-        timestamp,
-      },
-      { role: "toolResult", toolCallId: call.id, toolName: call.name, content: text, isError: false, timestamp: timestamp + 1 },
-    );
-    const rawInput = (request._rawBody as { input: unknown[] }).input;
-    rawInput.push(
-      { type: "function_call", call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) },
-      { type: "function_call_output", call_id: call.id, output: text },
-    );
-  };
-  try {
-    const first: AdapterEvent[] = [];
-    await adapter.runTurn!(request, { headers: new Headers() }, event => first.push(event));
-    appendResult(emittedCall(first), "Wall time: 0.2588 seconds\nOutput:\n[{\"id\":589952}]", 3);
-
-    const second: AdapterEvent[] = [];
-    await adapter.runTurn!(request, { headers: new Headers() }, event => second.push(event));
-    appendResult(emittedCall(second), "Wall time: 0.0494 seconds\nOutput:\n{\"id\":589952}", 5);
-
-    const final: AdapterEvent[] = [];
-    await adapter.runTurn!(request, { headers: new Headers() }, event => final.push(event));
-    const answer = final
-      .filter((event): event is AdapterEvent & { type: "text_delta"; text: string } => event.type === "text_delta")
-      .map(event => event.text)
-      .join("");
-    expect(answer).toContain(claim);
-    expect(answer).toContain("2 araç çağrısı Codex'te çalıştı");
-    expect(answer).toContain("get_window_state");
-    expect(answer).toContain("köprüye hiç ulaşmadı");
-  } finally {
-    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
-    await broker.close();
-  }
-});
-
-test("a block claim the ledger contradicts is corrected by one retained, tool-less turn", async () => {
+test("a block claim in a tool turn opens no correction turn and gets no footer", async () => {
+  // 29.09: the correction turn made the model retract a real Computer Use stop, and the user asked
+  // for the footer and the correction to go. One browser turn, and the answer exactly as written.
   const socketPath = brokerTestEndpoint(`cgw-false-block-${process.pid}-${Date.now()}`);
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -4828,24 +4716,13 @@ test("a block claim the ledger contradicts is corrected by one retained, tool-le
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);
   const turns: BrowserTurn[] = [];
-  const prompts: string[] = [];
-  let firstToken: string | undefined;
-  let correctionToken: string | undefined;
+  const claim = "Bu araç OpenAI'ın güvenlik kontrolleri tarafından engellendi.";
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     turns.push(turn);
-    const prepared = await (turns.length === 1 ? turn.prepare() : turn.prepareResume!());
-    prompts.push(prepared.text);
-    const token = prepared.text.match(/turn_token (turn_[A-Za-z0-9_-]+)/)?.[1];
-    if (turns.length === 1) firstToken = token;
-    else correctionToken = token;
+    const prepared = await turn.prepare();
     prepared.release();
-    // The first answer is the fabrication this repairs; the second is what the model said once it
-    // was shown the record, quoted from the 21 Sep measurement.
-    const answer = turns.length === 1
-      ? "Bu araç OpenAI'ın güvenlik kontrolleri tarafından engellendi."
-      : "Haklısın, bir araç çıktısına dayanmayan bir hata metni aktardım.";
-    turn.onTextDelta(answer);
-    return answer;
+    turn.onTextDelta(claim);
+    return claim;
   };
 
   try {
@@ -4856,116 +4733,13 @@ test("a block claim the ledger contradicts is corrected by one retained, tool-le
       event => events.push(event),
     );
 
-    // Exactly two browser turns: the original and one correction, never a third.
-    expect(turns).toHaveLength(2);
-    const correction = turns[1]!;
-    expect(firstToken).toBeDefined();
-    // 26.09 (trace 5cf96a1718c2): a correction with a live handle called tool_search, the broker
-    // queued it with no Codex request waiting (the answer is not streamed), ChatGPT waited on the
-    // result and the turn failed after the DOM grace. A correction cannot run tools, so it has none.
-    expect(correction.capabilities.localToolsEnabled).toBeFalse();
-    expect(correction.nativeConnector).toBeFalse();
-    expect(correctionToken).toBeUndefined();
-    expect(correction.requireRetainedConversation).toBeTrue();
-    expect(correction.conversationKey).toBe(turns[0]!.conversationKey!);
-    expect(prompts[1]).toContain("köprüden dönen hiçbir araç çıktısında yok");
-    expect(prompts[1]).toContain("Bu cevapta araç çağırma");
-
+    expect(turns).toHaveLength(1);
     const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
-    expect(text).toContain("Bu araç OpenAI'ın güvenlik kontrolleri");
-    expect(text).toContain("[Feno Bridge]");
-    expect(text).toContain("Haklısın, bir araç çıktısına dayanmayan");
+    expect(text).toBe(claim);
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     await TurnBroker.forSocket(socketPath).close();
-  }
-});
-
-test("ChatGPT's own platform refusal skips correction while preserving bridge evidence", async () => {
-  const events: AdapterEvent[] = [];
-  const browserTurns: BrowserTurn[] = [];
-  const followUps: Array<{ images: number; text: string }> = [];
-  const refusal = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
-  await deliverWindowRecoveryFixtures(
-    [{ wireName: "js", code: "nodeRepl.write('done')", content: "ok" }],
-    events,
-    {
-      retained: true,
-      browserTurns,
-      followUps,
-      firstAnswer: refusal,
-    },
-  );
-
-  // The fixture keeps the successful tool round in one browser turn. A correction would add one.
-  expect(browserTurns).toHaveLength(1);
-  expect(followUps).toHaveLength(0);
-  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
-  expect(text).toContain(refusal);
-  expect(text).toContain("[Feno Bridge] Bu turda köprüye ulaşan 1 araç çağrısı Codex'te çalıştı ve sonucuyla döndü.");
-});
-
-test("28.09: a quoted refusal that ChatGPT's own record never contained is corrected, not trusted", async () => {
-  // The capability test's click had nothing under it in ChatGPT's record and never reached the
-  // bridge; the answer still quoted ChatGPT's refusal, and v5.0.40 believed the quote.
-  const events: AdapterEvent[] = [];
-  const browserTurns: BrowserTurn[] = [];
-  const followUps: Array<{ images: number; text: string }> = [];
-  const warnings: string[] = [];
-  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
-  const refusal = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
-  try {
-    await deliverWindowRecoveryFixtures(
-      [{ wireName: "js", code: "nodeRepl.write('done')", content: "ok" }],
-      events,
-      {
-        retained: true,
-        browserTurns,
-        followUps,
-        firstAnswer: `TEST 10 ❌ Tıklama çağrısı ChatGPT tarafından engellendi: “${refusal}”`,
-        firstRecord: { unansweredCalls: 1, platformRefusal: false },
-      },
-    );
-
-    expect(followUps).toHaveLength(1);
-    expect(followUps[0]!.text).toContain("Köprü ChatGPT'nin bu sohbet için tuttuğu kaydı da okudu");
-    expect(followUps[0]!.text).not.toContain("aynen koru");
-    expect(warnings.some(line => line.includes("false block claim correction sent")
-      && line.includes("record=unansweredCalls:1"))).toBeTrue();
-    expect(warnings.some(line => line.includes("correction skipped"))).toBeFalse();
-    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
-    expect(text).toContain("ChatGPT'nin kendi sohbet kaydında bu turdaki 1 araç çağrısının altında ne bir sonuç");
-  } finally {
-    warning.mockRestore();
-  }
-});
-
-test("a refusal ChatGPT's own record does contain skips the correction whatever the answer's wording", async () => {
-  const events: AdapterEvent[] = [];
-  const browserTurns: BrowserTurn[] = [];
-  const followUps: Array<{ images: number; text: string }> = [];
-  const warnings: string[] = [];
-  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
-  try {
-    await deliverWindowRecoveryFixtures(
-      [{ wireName: "js", code: "nodeRepl.write('done')", content: "ok" }],
-      events,
-      {
-        retained: true,
-        browserTurns,
-        followUps,
-        firstAnswer: "Bu araç çağrısı güvenlik engeline takıldı.",
-        firstRecord: { unansweredCalls: 0, platformRefusal: true },
-      },
-    );
-
-    expect(followUps).toHaveLength(0);
-    expect(warnings.some(line => line.includes("correction skipped reason=chatgpt_platform_refusal record=confirmed"))).toBeTrue();
-    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
-    expect(text).toContain("ChatGPT'nin kendi sohbet kaydında bu turda bir platform red mesajı var.");
-  } finally {
-    warning.mockRestore();
   }
 });
 
@@ -5037,42 +4811,8 @@ test("a failed image continuation requeues its image and uses the retained tool-
   }
 });
 
-test("the final image-continuation platform refusal skips the deferred false-block correction", async () => {
-  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
-  const events: AdapterEvent[] = [];
-  const browserTurns: BrowserTurn[] = [];
-  const followUps: Array<{ images: number; text: string }> = [];
-  const warnings: string[] = [];
-  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
-  const refusal = "Bu araç çağrısı, isteğin güvenlik durumunu belirleyemediğimiz için OpenAI tarafından engellendi.";
-  try {
-    await deliverWindowRecoveryFixtures(
-      [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
-      events,
-      {
-        retained: true,
-        browserTurns,
-        followUps,
-        firstAnswer: "Bu araç çağrısı güvenlik engeline takıldı.",
-        continuationAnswer: refusal,
-      },
-    );
 
-    expect(browserTurns).toHaveLength(2);
-    expect(followUps.map(turn => turn.images)).toEqual([1]);
-    const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
-    expect(text).toContain(refusal);
-    expect(warnings.some(line => line.includes("image continuation chain phases=1 final=without_images"))).toBeTrue();
-    expect(warnings.some(line => line.includes("false block claim correction skipped reason=chatgpt_platform_refusal"))).toBeTrue();
-    expect(warnings.some(line => line.includes("false block claim correction sent"))).toBeFalse();
-  } finally {
-    warning.mockRestore();
-  }
-});
-
-test("a tool image is delivered before a block-claim correction, which cannot take it down", async () => {
-  // 26.09 (trace 5cf96a1718c2): the correction ran first, stalled, released the retained
-  // conversation, and the screenshot delivery then failed with "no longer available".
+test("a tool image beside a block claim is delivered with nothing appended to the claim", async () => {
   const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
   const events: AdapterEvent[] = [];
   const browserTurns: BrowserTurn[] = [];
@@ -5084,23 +4824,19 @@ test("a tool image is delivered before a block-claim correction, which cannot ta
       retained: true,
       browserTurns,
       followUps,
-      failCorrection: true,
       firstAnswer: "Bu araç çağrısı güvenlik engeline takıldı.",
     },
   );
 
-  // Tool-capable image continuation first, deferred correction second (tool-less, no image).
-  expect(followUps.map(turn => turn.images)).toEqual([1, 0]);
-  expect(followUps[1]!.text).toContain("Bu cevapta araç çağırma");
-  expect(browserTurns[2]!.capabilities.localToolsEnabled).toBeFalse();
+  // The tool-capable image continuation is the only follow-up: no correction turn after it.
+  expect(followUps.map(turn => turn.images)).toEqual([1]);
+  expect(browserTurns).toHaveLength(2);
 
   const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
-  // The image reached the model although the correction failed afterwards.
-  expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
+  expect(text).not.toContain("[Feno Bridge]");
   expect(text).not.toContain("bu tura eklenemedi");
-  expect(text).toContain("köprüye ulaşan 1 araç çağrısı Codex'te çalıştı");
   // The continuation's answer is its own paragraph (27 Sep: "... girmez.Abim, şimdi ...").
-  expect(text).toContain("bu sayıma girmez.\n\nEkte gördüğüm pencere");
+  expect(text).toBe("Bu araç çağrısı güvenlik engeline takıldı.\n\nEkte gördüğüm pencere: Feno Bridge.");
   expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
 });
 
@@ -5144,10 +4880,9 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   expect(text).not.toContain("bu tura eklenemedi");
 });
 
-test("more tool screenshots than one message holds keep the newest ten under unique names, and a failed continuation keeps one footer", async () => {
+test("more tool screenshots than one message holds keep the newest ten under unique names, and a failed continuation reuses the answer once", async () => {
   // 28 Sep (trace e589cc8586f5): twelve screenshots in one round. Refs came from the capped list's
-  // length, so two were both named codex-tool-image-11, ChatGPT rejected the continuation's upload,
-  // and the fallback printed the tool-call footer a second time under the same answer.
+  // length, so two were both named codex-tool-image-11, and ChatGPT rejected the continuation's upload.
   const images = Array.from({ length: 12 }, (_, index): CodexContentPart => ({
     type: "image",
     imageUrl: `data:image/jpeg;base64,/9j/4AAQAAA${String.fromCharCode(65 + index)}`,
@@ -5185,9 +4920,9 @@ test("more tool screenshots than one message holds keep the newest ten under uni
   } finally {
     continuation.release();
   }
-  expect(warnings.filter(line => line.includes("answer claimed a blocked or failed tool call"))).toHaveLength(1);
   const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
-  expect(text.split("köprüye ulaşan 12 araç çağrısı").length - 1).toBe(1);
+  expect(text.split("Bu araç çağrısı güvenlik engeline takıldı.").length - 1).toBe(1);
+  expect(text).not.toContain("[Feno Bridge]");
   expect(text).toContain("Yedek tur görüntüleri inceledi.");
 });
 
