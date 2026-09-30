@@ -75,6 +75,7 @@ import {
   LauncherBrowserTurnCancelledError,
   LauncherRetainedConversationUnavailableError,
   LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
+  LAUNCHER_RETAINED_TURN_START_TIMEOUT_MS,
   LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
   notifyLauncherTurn,
 } from "../../launcher-browser-host";
@@ -5346,7 +5347,7 @@ export class ChatGptBrowserWorker {
         ? { connectorIdentity: this.config.appName }
         : {}),
       ...(turn.requireRetainedConversation ? { requireRetainedConversation: true } : {}),
-    }).catch(error => {
+    }, turn.conversationKey ? LAUNCHER_RETAINED_TURN_START_TIMEOUT_MS : undefined).catch(error => {
       if (error instanceof LauncherBrowserTurnCancelledError) throw chatGptBrowserTabClosedError();
       if (error instanceof LauncherRetainedConversationUnavailableError) {
         throw chatGptRetainedConversationUnavailableError();

@@ -400,6 +400,11 @@ export type LauncherTurnActivity =
     };
 
 export const LAUNCHER_TURN_START_TIMEOUT_MS = 5_000;
+/**
+ * A keyed turn's lease may reopen its saved ChatGPT conversation (up to 20 s for the page to show the
+ * conversation, plus tab creation). 30.09: at 5 s the helper gave up and asked again mid-restore.
+ */
+export const LAUNCHER_RETAINED_TURN_START_TIMEOUT_MS = 45_000;
 export const LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS = 10_000;
 export const LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS = 5_000;
 export const LAUNCHER_TURN_END_TIMEOUT_MS = 15_000;

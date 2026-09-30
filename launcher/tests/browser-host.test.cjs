@@ -4060,3 +4060,32 @@ test("a page that never shows the conversation is closed and the restore reports
   assert.equal(warnings[0][1].samePage, true);
   assert.equal(warnings[0][1].assistantTurns, 0);
 });
+
+test("a repeated start request during a restore waits for that restore instead of taking its tab", async () => {
+  // 30.09 live: the helper gave up after 5 s and asked again while the first request was reopening
+  // the saved conversation; the repeat got the half-restored tab as a new one and navigated it away.
+  const index = new RetainedConversationIndex({ ttlMs: 60_000 });
+  index.remember(RETAINED_KEY, "Codex Native2", RETAINED_PAGE);
+  let finishRestore;
+  let restores = 0;
+  const fixture = leaseFixture(
+    index,
+    async (traceId) => {
+      restores += 1;
+      fixture.turnTabs.set("tab-restoring", { id: "tab-restoring", traceId, status: "running", interactionMode: "automatic" });
+      await new Promise(resolve => { finishRestore = resolve; });
+      return { id: "tab-restoring", surfaceId: "surface-restoring" };
+    },
+    async () => assert.fail("neither request may start a fresh conversation"),
+  );
+
+  const first = BrowserHost.prototype.beginTurn.call(fixture, "trace_race", false, process.pid, RETAINED_KEY, "Codex Native2");
+  await new Promise(resolve => setImmediate(resolve));
+  const repeated = BrowserHost.prototype.beginTurn.call(fixture, "trace_race", false, process.pid, RETAINED_KEY, "Codex Native2");
+  finishRestore();
+  const expected = { surfaceId: "surface-restoring", tabId: "tab-restoring", reused: true, connectorBound: false };
+  assert.deepEqual(await first, expected);
+  assert.deepEqual(await repeated, expected);
+  assert.equal(restores, 1);
+  assert.equal(fixture.pendingTurnLeases.size, 0);
+});
