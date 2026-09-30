@@ -8,6 +8,8 @@ import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError, chatGptRetainedConversationUnavailableError } from "../src/adapters/chatgpt-web/adapter-error";
 import { compileChatGptWebPromptWithinPageCapacity } from "../src/adapters/chatgpt-web/capacity";
 import {
+  COMPACTION_HANDOFF_REMINDER,
+  MAX_COMPACTION_HANDOFF_ATTEMPTS,
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
   cancelAllStructuredCompactions,
   cancelStructuredCompactionNativeTurn,
@@ -1849,6 +1851,51 @@ test("a compaction failure that never classified itself still names its reason",
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
     chatGptTurnSessions.clear();
     await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a checkpoint answered in text is asked for once more in the same retained conversation (30.09)", async () => {
+  // 30.09 DEV: ChatGPT answered the handoff request in text, the compaction failed, and Codex's retry
+  // went down the fresh 9-part multipart fallback (127 s before a reply).
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-handoff-reminder-"));
+  const broker = TurnBroker.forSocket(defaultBrokerEndpoint(root));
+  const sourceRequest = request(false);
+  const source = new ChatGptTurnSession({
+    mode: "read-only", browser: Promise.resolve("source complete"),
+    physicalSettlement: Promise.resolve(), trace: new ChatGptTraceFeed(), text: new ChatGptTextFeed(),
+    usageInput: sourceRequest, conversationKey: chatGptConversationKey(sourceRequest, "provider")!, cancel() {},
+  });
+  const turns: BrowserTurn[] = [];
+  const prompts: string[] = [];
+  try {
+    await expect(requestRetainedCompactionHandoff(
+      { run: async (turn: BrowserTurn) => {
+        turns.push(turn);
+        const prepared = await turn.prepare();
+        prompts.push(prepared.text);
+        if (turns.length === 1) {
+          prepared.release();
+          return "Here is the checkpoint summary as plain text.";
+        }
+        const token = prepared.text.match(/turn_token (control_\w+)/)![1]!;
+        const handoffId = prepared.text.match(/handoff_id (handoff_\w+)/)![1]!;
+        await callTurnBroker(broker.socketPath, { method: "submit_compaction_handoff", token, handoffId, summary: "Exact summary" });
+        prepared.release();
+        return "Checkpoint submitted.";
+      } } as never,
+      request(true), source, broker,
+      { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+      "trace_handoff_reminder",
+    )).resolves.toBe("Exact summary");
+    expect(turns).toHaveLength(MAX_COMPACTION_HANDOFF_ATTEMPTS);
+    expect(turns.map(turn => turn.requireRetainedConversation)).toEqual([true, true]);
+    expect(turns.map(turn => turn.retainConversation === true)).toEqual([true, false]);
+    expect(prompts[0]).not.toContain(COMPACTION_HANDOFF_REMINDER);
+    expect(prompts[1]!.startsWith(COMPACTION_HANDOFF_REMINDER)).toBeTrue();
+    expect(prompts[1]!.match(/turn_token (control_\w+)/)![1]).not.toBe(prompts[0]!.match(/turn_token (control_\w+)/)![1]);
+  } finally {
+    await broker.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

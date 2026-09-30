@@ -24,6 +24,13 @@ import type { ChatGptTurnSession } from "./turn-execution";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
 
+/** The first handoff request plus one reminder in the same retained conversation. */
+export const MAX_COMPACTION_HANDOFF_ATTEMPTS = 2;
+export const COMPACTION_HANDOFF_REMINDER = [
+  "Your previous reply did not submit the checkpoint through the compaction control tool, so Codex did not receive it.",
+  "Submit it now through that tool exactly as instructed below. A checkpoint written only as reply text is lost.",
+].join(" ");
+
 function brokerContent(content: string | CodexContentPart[]): unknown[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return content.map(part => {
@@ -311,6 +318,53 @@ export async function requestRetainedCompactionHandoff(
   const operationSignal = signal
     ? AbortSignal.any([signal, deadline.signal])
     : deadline.signal;
+  try {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await attemptRetainedCompactionHandoff(
+          worker,
+          parsed,
+          broker,
+          capabilities,
+          traceId,
+          conversationKey,
+          operationSignal,
+          operationTimeoutMs,
+          attempt,
+        );
+      } catch (error) {
+        // 30.09: ChatGPT sometimes answers the handoff request in text instead of calling the
+        // control tool. Failing then sent Codex's retry down the fresh multipart fallback (9 parts,
+        // 127 s before a reply). The retained conversation is still there, so ask once more in it.
+        if (attempt >= MAX_COMPACTION_HANDOFF_ATTEMPTS
+          || operationSignal.aborted
+          || !(error instanceof ChatGptWebAdapterError)
+          || error.code !== "compaction_handoff_missing") {
+          throw error;
+        }
+        console.warn(
+          `[chatgpt-web] compaction handoff missing trace=${traceId}; asking again in the same conversation`
+          + ` (attempt ${attempt + 1}/${MAX_COMPACTION_HANDOFF_ATTEMPTS})`,
+        );
+      }
+    }
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+}
+
+/** One handoff request in the retained conversation; `attempt` > 1 reminds ChatGPT of the missing call. */
+async function attemptRetainedCompactionHandoff(
+  worker: ChatGptBrowserWorker,
+  parsed: CodexParsedRequest,
+  broker: TurnBroker,
+  capabilities: ChatGptWebCapabilities,
+  traceId: string,
+  conversationKey: string,
+  operationSignal: AbortSignal,
+  operationTimeoutMs: number,
+  attempt: number,
+): Promise<string> {
   const browserAbort = new AbortController();
   const abortBrowser = () => browserAbort.abort(operationSignal.reason);
   let transaction: CompactionTransactionHandle | undefined;
@@ -325,7 +379,10 @@ export async function requestRetainedCompactionHandoff(
       }
     }, () => {});
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
-    const instruction = structuredCompactionHandoffInstruction(transaction);
+    const instruction = [
+      ...(attempt > 1 ? [COMPACTION_HANDOFF_REMINDER] : []),
+      structuredCompactionHandoffInstruction(transaction),
+    ].join("\n");
     const prepare = async () => ({ text: instruction, images: [], release: () => {} });
     browser = worker.run({
       traceId,
@@ -339,6 +396,9 @@ export async function requestRetainedCompactionHandoff(
       prepareResume: prepare,
       conversationKey,
       requireRetainedConversation: true,
+      // Keep the conversation for a reminder while one is still allowed. The compaction owner
+      // retires it after the handoff either way.
+      ...(attempt < MAX_COMPACTION_HANDOFF_ATTEMPTS ? { retainConversation: true } : {}),
       abortSignal: browserAbort.signal,
       onTextDelta: () => {},
     });
@@ -380,7 +440,6 @@ export async function requestRetainedCompactionHandoff(
       ).catch(() => {});
     }
     operationSignal.removeEventListener("abort", abortBrowser);
-    clearTimeout(deadlineTimer);
   }
 }
 
