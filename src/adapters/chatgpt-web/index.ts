@@ -169,6 +169,12 @@ const imageHoldRuntimes = new WeakSet<object>();
 
 const IMAGE_HOLD_NOTICE = "[Feno Bridge] Not run. The image you opened with view_image is waiting to be shown to you, and no tool call runs in this message until then. End this message now with a one-line note; the image will be attached to the next message, where you look at it and carry on with the task (making this call again there only if you still need it).";
 
+/**
+ * The view_image result itself when the hold applies. The general notice left the choice to the
+ * model, which then opened the same image two or three more times, each held (~45 s, 30.09 23:50).
+ */
+const VIEW_IMAGE_HOLD_NOTICE = "[Feno Bridge] This image cannot be shown inside the already-running ChatGPT message, and opening it again will not show it. End this message now with a one-line note: no further tool call runs in this message. The image will be attached to the next message, where you look at it and carry on with the task.";
+
 function isViewImageCall(request: BrokerToolRequest | undefined): boolean {
   return request !== undefined && /(?:^|[._])view_image$/.test(request.wireName);
 }
@@ -423,9 +429,15 @@ function brokerContent(content: string | CodexContentPart[]): unknown[] {
   });
 }
 
-function brokerResult(message: CodexToolResultMessage, recoveryNote?: string): BrokerToolResult {
+function brokerResult(
+  message: CodexToolResultMessage,
+  recoveryNote?: string,
+  holdNotice?: string,
+): BrokerToolResult {
   const content = brokerContent(message.content);
-  const imageNotice = toolImagesNeedingDelivery(message.content).length > 0 ? BROKER_IMAGE_NOTICE : undefined;
+  const imageNotice = toolImagesNeedingDelivery(message.content).length > 0
+    ? holdNotice ?? BROKER_IMAGE_NOTICE
+    : undefined;
   const text = typeof message.content === "string"
     ? message.content
     : message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
@@ -1733,12 +1745,24 @@ export function createChatGptWebAdapter(
                       + ` chars=${recovery.text.length} sha256=${signature}`,
                     );
                   }
+                  const undeliveredImages = toolImagesNeedingDelivery(message.content);
+                  // Only while ending the message does bring the image: a continuation has to be
+                  // left, or the hold would end the work with the image still unseen.
+                  const holdsForImage = undeliveredImages.length > 0
+                    && isViewImageCall(callsById.get(message.toolCallId))
+                    && session.phaseNumber() < MAX_IMAGE_CONTINUATION_PHASES
+                    && !attachmentLimitBySession.has(session)
+                    && !bufferStructuredOutput
+                    && session.conversationKey() !== undefined;
                   await broker.completeTool(
                     turnToken,
                     message.toolCallId,
-                    brokerResult(message, recovery?.kind === "recover" ? recovery.note : undefined),
+                    brokerResult(
+                      message,
+                      recovery?.kind === "recover" ? recovery.note : undefined,
+                      holdsForImage ? VIEW_IMAGE_HOLD_NOTICE : undefined,
+                    ),
                   );
-                  const undeliveredImages = toolImagesNeedingDelivery(message.content);
                   if (undeliveredImages.length > 0) {
                     // Kept for the delivery turn below. The cap is ChatGPT's own attachment limit,
                     // and the newest images are the ones the answer is about, so a long tool round
@@ -1748,15 +1772,7 @@ export function createChatGptWebAdapter(
                       ...undeliveredImages,
                     ]));
                     console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
-                    // Only while ending the message does bring the image: a continuation has to be
-                    // left, or the hold would end the work with the image still unseen.
-                    if (isViewImageCall(callsById.get(message.toolCallId))
-                      && session.phaseNumber() < MAX_IMAGE_CONTINUATION_PHASES
-                      && !attachmentLimitBySession.has(session)
-                      && !bufferStructuredOutput
-                      && session.conversationKey() !== undefined) {
-                      imageHoldRuntimes.add(session.runtime);
-                    }
+                    if (holdsForImage) imageHoldRuntimes.add(session.runtime);
                   } else if (toolResultHasImage(message.content)) {
                     console.info(`[chatgpt-web] broker image result delivered inline trace=${session.traceId}`);
                   }

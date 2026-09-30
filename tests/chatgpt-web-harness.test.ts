@@ -5005,8 +5005,9 @@ test("after a view_image the running message cannot show, its later calls are he
   ].map(fixture => ({ ...fixture, content: "never run" })), results: [] as BrokerToolResult[] };
   const warnings: string[] = [];
   const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  let viewed: BrokerToolResult | undefined;
   try {
-    await deliverWindowRecoveryFixtures(
+    [viewed] = await deliverWindowRecoveryFixtures(
       [{ wireName: "view_image", arguments: { path: "calc.png" }, content: [image] }],
       [],
       { retained: true, browserTurns, heldCalls: held },
@@ -5015,6 +5016,9 @@ test("after a view_image the running message cannot show, its later calls are he
     warning.mockRestore();
   }
 
+  // The view_image result says so itself: with the general notice the model opened the same image
+  // two or three more times, each held (30.09 23:50).
+  expect(JSON.stringify(viewed?.content)).toContain("End this message now with a one-line note: no further tool call runs");
   // Neither held call reached Codex (the fixture fails on an unexpected tool call); both were
   // answered at once with the instruction to end the message.
   expect(held.results).toHaveLength(2);
