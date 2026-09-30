@@ -101,7 +101,8 @@ function attachmentLimitFinalNotice(count: number, notice: string): string {
  * Tool images a follow-up message attached, per retained conversation (sha256 of the image URL).
  * The next Codex turn carries the previous round's unseen tool images into its own attachments;
  * one a follow-up already attached is in that conversation, and uploading it again only spent the
- * account's attachment limit (every image went up twice on 30.09).
+ * account's attachment limit (every image went up twice on 30.09). An image the model moved past
+ * (see passOverUnshownImages) is recorded here too, so the next turn does not upload it either.
  */
 const attachedToolImagesByConversation = new Map<string, Set<string>>();
 const MAX_TRACKED_IMAGE_CONVERSATIONS = 64;
@@ -122,6 +123,25 @@ function recordAttachedToolImages(conversationKey: string, images: ReadonlyArray
     }
   }
   for (const image of images) attached.add(toolImageDigest(image.imageUrl));
+}
+
+/**
+ * A tool call made after an image result means the model went on without that image: each result
+ * told it the image arrives only once the message ends. 30.09 22:58: seven screenshots a finished
+ * round had moved past went up with a continuation after its last step, which spent seven of the
+ * account's attachments and got the finished answer repeated. Such images are not attached later,
+ * by this message's continuation or by the next Codex turn.
+ */
+function passOverUnshownImages(session: ChatGptTurnSession): void {
+  const passed = unshownImagesBySession.get(session);
+  if (!passed?.length) return;
+  unshownImagesBySession.delete(session);
+  const conversationKey = session.conversationKey();
+  if (conversationKey) recordAttachedToolImages(conversationKey, passed);
+  console.info(
+    `[chatgpt-web] ${passed.length} unseen tool image(s) passed over by the next tool call, not attached`
+    + ` trace=${session.traceId}`,
+  );
 }
 
 function sessionUnshownImageNotice(session: ChatGptTurnSession): string | undefined {
@@ -464,6 +484,45 @@ export function separatePhaseText(
     deltas: needsBreak ? deltas.map((delta, index) => index === first ? `\n\n${delta}` : delta) : deltas,
     separatedPhase: phase,
   };
+}
+
+/**
+ * 30.09 22:58: an image continuation after a finished round wrote its 653-character answer again,
+ * word for word, and Codex received the answer twice. A continuation's text is held while it only
+ * repeats the previous answer, released whole as soon as it says anything else, and never sent if
+ * the phase ends that way.
+ */
+const continuationEchoBySession = new WeakMap<ChatGptTurnSession, {
+  phase: number;
+  held: string[];
+  released: boolean;
+}>();
+
+const echoText = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+export function passContinuationText(
+  echo: { phase: number; held: string[]; released: boolean } | undefined,
+  deltas: string[],
+  phase: number,
+  previousAnswer: string | undefined,
+): { deltas: string[]; echo: { phase: number; held: string[]; released: boolean } | undefined } {
+  if (phase === 0 || !previousAnswer?.trim()) return { deltas, echo };
+  const current = echo?.phase === phase ? echo : { phase, held: [], released: false };
+  if (current.released) return { deltas, echo: current };
+  current.held.push(...deltas);
+  const said = current.held.join("");
+  if (echoText(previousAnswer).startsWith(echoText(said))) return { deltas: [], echo: current };
+  // The whole previous answer again and then something new: only the new part is sent.
+  const repeated = previousAnswer.trim();
+  const released = said.trimStart().startsWith(repeated)
+    ? [said.trimStart().slice(repeated.length)]
+    : current.held;
+  return { deltas: released, echo: { phase, held: [], released: true } };
+}
+
+function heldContinuationEcho(session: ChatGptTurnSession, phase: number): number {
+  const echo = continuationEchoBySession.get(session);
+  return echo?.phase === phase && !echo.released ? echo.held.join("").length : 0;
 }
 
 function emitTextDeltas(deltas: string[], emit: (event: AdapterEvent) => void): void {
@@ -1705,8 +1764,16 @@ export function createChatGptWebAdapter(
                 session.appendRoundReasoning(roundKey, trace.map(event => event.text));
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
               };
-              const emitNewText = (deltas: string[]) => {
+              const emitNewText = (newDeltas: string[]) => {
                 if (bufferStructuredOutput) return;
+                const passed = passContinuationText(
+                  continuationEchoBySession.get(session),
+                  newDeltas,
+                  session.phaseNumber(),
+                  lastCompletedAnswerBySession.get(session),
+                );
+                if (passed.echo) continuationEchoBySession.set(session, passed.echo);
+                const deltas = passed.deltas;
                 const separated = separatePhaseText(
                   deltas,
                   session.phaseNumber(),
@@ -1759,6 +1826,7 @@ export function createChatGptWebAdapter(
                       );
                       return armNextTools()!;
                     }
+                    passOverUnshownImages(session);
                   }
                   return { type: "tools" as const, requests };
                 }).catch(error => toolWaitAbort.signal.aborted
@@ -1809,9 +1877,11 @@ export function createChatGptWebAdapter(
                 if (observedOutcome.type === "final") {
                   lastCompletedAnswerBySession.set(session, observedOutcome.answer);
                   if (phase > 0) {
+                    const echoed = heldContinuationEcho(session, phase);
                     console.warn(
                       `[chatgpt-web] image continuation phase=${phase} images=${attachedPhaseImages.length}`
-                      + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)} completed`,
+                      + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)} completed`
+                      + (echoed > 0 ? ` (repeated the previous answer, ${echoed} chars not sent)` : ""),
                     );
                     const attachedIn = session.conversationKey();
                     if (attachedIn) recordAttachedToolImages(attachedIn, attachedPhaseImages);

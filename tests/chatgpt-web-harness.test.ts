@@ -4339,6 +4339,8 @@ async function deliverWindowRecoveryFixtures(
     followUps?: Array<{ images: number; text: string }>;
     /** Calls the same message makes after the fixtures' results, one at a time. None reaches Codex. */
     heldCalls?: { fixtures: WindowRecoveryAdapterFixture[]; results: BrokerToolResult[] };
+    /** Calls the same message makes after the fixtures' results, one at a time, run by Codex. */
+    laterCalls?: WindowRecoveryAdapterFixture[];
   },
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
@@ -4413,6 +4415,17 @@ async function deliverWindowRecoveryFixtures(
           }, 30_000)
         )));
       }
+      for (const fixture of options?.laterCalls ?? []) {
+        await invokeAfterBrowserBoundary(turn, () => (
+          callTurnBroker<BrokerToolResult>(socketPath, {
+            method: "invoke",
+            bindingId: claimed.bindingId,
+            wireName: fixture.wireName ?? "js",
+            freeform: false,
+            arguments: windowRecoveryFixtureArguments(fixture),
+          }, 30_000)
+        ));
+      }
       const answer = options?.firstAnswer ?? "Window recovery fixture complete";
       turn.onTextDelta(answer);
       return answer;
@@ -4444,51 +4457,61 @@ async function deliverWindowRecoveryFixtures(
     const firstEvents: AdapterEvent[] = [];
     await adapter.runTurn!(initial, { headers: new Headers() }, event => firstEvents.push(event));
 
-    const emitted: Array<{ id: string; name: string; arguments?: Record<string, unknown> }> = [];
-    for (const event of firstEvents) {
-      if (event.type === "tool_call_start") emitted.push({ id: event.id, name: event.name });
-      if (event.type === "tool_call_delta") emitted.at(-1)!.arguments = JSON.parse(event.arguments) as Record<string, unknown>;
-    }
+    const emittedCalls = (events: AdapterEvent[]) => {
+      const calls: Array<{ id: string; name: string; arguments?: Record<string, unknown> }> = [];
+      for (const event of events) {
+        if (event.type === "tool_call_start") calls.push({ id: event.id, name: event.name });
+        if (event.type === "tool_call_delta") calls.at(-1)!.arguments = JSON.parse(event.arguments) as Record<string, unknown>;
+      }
+      return calls;
+    };
+    let emitted = emittedCalls(firstEvents);
     expect(emitted).toHaveLength(fixtures.length);
 
-    const continuation = structuredClone(initial);
-    const rawInput = (continuation._rawBody as { input: unknown[] }).input;
-    for (const fixture of fixtures) {
-      const expectedArguments = windowRecoveryFixtureArguments(fixture);
-      const call = emitted.find(candidate => (
-        candidate.name === (fixture.wireName ?? "js")
-        && JSON.stringify(candidate.arguments) === JSON.stringify(expectedArguments)
-      ));
-      if (!call) throw new Error(`window recovery fixture call was not emitted: ${JSON.stringify(expectedArguments)}`);
-      continuation.context.messages.push(
-        {
-          role: "assistant",
-          content: [{ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments ?? {} }],
-          timestamp: 3,
-        },
-        {
-          role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: fixture.content,
-          isError: false,
-          timestamp: 4,
-        },
-      );
-      rawInput.push(
-        { type: "function_call", call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
-        {
-          type: "function_call_output",
-          call_id: call.id,
-          output: typeof fixture.content === "string"
-            ? fixture.content
-            : fixture.content.filter(part => part.type === "text").map(part => part.text).join("\n"),
-        },
-      );
+    // Each later call is made alone, after the previous round's results, so each is its own round.
+    const rounds = [fixtures, ...(options?.laterCalls ?? []).map(fixture => [fixture])];
+    let continuation = initial;
+    let finalEvents: AdapterEvent[] = [];
+    for (const [round, roundFixtures] of rounds.entries()) {
+      continuation = structuredClone(continuation);
+      const rawInput = (continuation._rawBody as { input: unknown[] }).input;
+      for (const fixture of roundFixtures) {
+        const expectedArguments = windowRecoveryFixtureArguments(fixture);
+        const call = emitted.find(candidate => (
+          candidate.name === (fixture.wireName ?? "js")
+          && JSON.stringify(candidate.arguments) === JSON.stringify(expectedArguments)
+        ));
+        if (!call) throw new Error(`window recovery fixture call was not emitted: ${JSON.stringify(expectedArguments)}`);
+        continuation.context.messages.push(
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments ?? {} }],
+            timestamp: 3 + round * 2,
+          },
+          {
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name,
+            content: fixture.content,
+            isError: false,
+            timestamp: 4 + round * 2,
+          },
+        );
+        rawInput.push(
+          { type: "function_call", call_id: call.id, name: call.name, arguments: JSON.stringify(call.arguments ?? {}) },
+          {
+            type: "function_call_output",
+            call_id: call.id,
+            output: typeof fixture.content === "string"
+              ? fixture.content
+              : fixture.content.filter(part => part.type === "text").map(part => part.text).join("\n"),
+          },
+        );
+      }
+      finalEvents = [];
+      await adapter.runTurn!(continuation, { headers: new Headers() }, event => finalEvents.push(event));
+      emitted = emittedCalls(finalEvents);
     }
-
-    const finalEvents: AdapterEvent[] = [];
-    await adapter.runTurn!(continuation, { headers: new Headers() }, event => finalEvents.push(event));
     expect(finalEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
     completedEvents?.push(...finalEvents);
     return delivered;
@@ -5003,6 +5026,57 @@ test("after a view_image the running message cannot show, its later calls are he
   const prompt = await browserTurns[1]!.prepare();
   expect(prompt.images.map(entry => entry.imageUrl)).toEqual([image.imageUrl]);
   prompt.release();
+});
+
+test("a screenshot the model moved past with another call is not attached after the message (30 Sep)", async () => {
+  // 30.09 22:58: seven screenshots a finished round had gone past went up after its last step.
+  attachToolImages();
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const browserTurns: BrowserTurn[] = [];
+  const events: AdapterEvent[] = [];
+  const infos: string[] = [];
+  const info = spyOn(console, "info").mockImplementation((...args) => infos.push(args.join(" ")));
+  try {
+    await deliverWindowRecoveryFixtures(
+      [{ wireName: "js", code: "await sky.get_window_state({ include_screenshot: true })", content: [image] }],
+      events,
+      {
+        retained: true,
+        browserTurns,
+        laterCalls: [{ wireName: "js", code: "await sky.click({ x: 1, y: 2 })", content: "clicked" }],
+      },
+    );
+  } finally {
+    info.mockRestore();
+  }
+  expect(infos.some(line => line.includes("1 unseen tool image(s) passed over by the next tool call"))).toBeTrue();
+  // No continuation turn, and no claim that an image went unshown: the model went on without it.
+  expect(browserTurns).toHaveLength(1);
+  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+  expect(text).not.toContain("bu tura eklenemedi");
+});
+
+test("an image continuation that only repeats the answer does not send it to Codex twice (30 Sep)", async () => {
+  attachToolImages();
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+  const answer = "## ADIM 16\n\n144\n\n## ADIM 20\n\nTUR-2-BITTI";
+  const events: AdapterEvent[] = [];
+  const browserTurns: BrowserTurn[] = [];
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  try {
+    await deliverWindowRecoveryFixtures(
+      [{ wireName: "js", code: "nodeRepl.write('image captured')", content: [image] }],
+      events,
+      { retained: true, browserTurns, firstAnswer: answer, continuationAnswer: answer },
+    );
+  } finally {
+    warning.mockRestore();
+  }
+  expect(browserTurns).toHaveLength(2);
+  const text = events.filter(event => event.type === "text_delta").map(event => event.text).join("");
+  expect(text.split("TUR-2-BITTI")).toHaveLength(2);
+  expect(warnings.some(line => line.includes(`repeated the previous answer, ${answer.length} chars not sent`))).toBeTrue();
 });
 
 test("more tool screenshots than one message holds keep the newest ten under unique names, and a failed continuation reuses the answer once", async () => {
