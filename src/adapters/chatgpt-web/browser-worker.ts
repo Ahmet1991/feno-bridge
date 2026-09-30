@@ -155,6 +155,8 @@ const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
  */
 export const CHATGPT_UI_SETTLE_MS = 250;
 export const CHATGPT_SEND_ENABLE_GRACE_MS = 5_000;
+/** How long a refused pre-send effort check is re-read before the effort is chosen again. */
+export const CHATGPT_PRESEND_EFFORT_SETTLE_MS = 4_000;
 
 const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "aria-hidden",
@@ -3267,6 +3269,33 @@ export class ChatGptBrowserWorker {
     return selectedMode;
   }
 
+  /**
+   * The pre-send check, with room for a composer that is still re-rendering. 30.09 21:31 UTC
+   * (5.0.63): an image continuation reused its tab the instant the previous phase ended, ChatGPT was
+   * still redrawing the effort control (3 px tall when the files were attached), and the check
+   * failed the whole Codex task with "model controls are unavailable". A refusal is re-checked for
+   * a few seconds, and a selection that is really gone is made once more: Enter has not been
+   * pressed yet, so choosing again is as safe here as before the prompt was attached.
+   */
+  private async confirmEffortBeforeSend(
+    page: Page,
+    mode: SelectedChatGptWebModelMode,
+    reselect: () => Promise<SelectedChatGptWebModelMode>,
+    settleMs = CHATGPT_PRESEND_EFFORT_SETTLE_MS,
+  ): Promise<SelectedChatGptWebModelMode> {
+    // A mode with no effort control has nothing to prove; assertSelectedEffort accepts it too.
+    if (!mode.selection) return mode;
+    const deadline = Date.now() + settleMs;
+    for (;;) {
+      if (await this.selectedEffortHolds(page, mode)) return mode;
+      if (Date.now() >= deadline) break;
+      await settleChatGptUi();
+    }
+    const reselected = await reselect();
+    await this.assertSelectedEffort(page, reselected);
+    return reselected;
+  }
+
   /** Whether the pre-send check would accept this selection as it stands; never throws. */
   private async selectedEffortHolds(page: Page, mode: SelectedChatGptWebModelMode): Promise<boolean> {
     if (!mode.selection) return false;
@@ -6050,7 +6079,13 @@ export class ChatGptBrowserWorker {
               turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               undefined,
               { onSendActivated: async () => {
-                await this.assertSelectedEffort(page, mode);
+                mode = await this.confirmEffortBeforeSend(page, mode, () => this.selectModelAndEffort(
+                  page,
+                  turn.modelId,
+                  mode.effort,
+                  browserCapabilities,
+                  checkpoint => diagnostics.capture(page, `multipart-${index + 1}-presend-${checkpoint}`),
+                ));
                 submissionRejection.begin(page);
               } },
               undefined,
@@ -6213,7 +6248,13 @@ export class ChatGptBrowserWorker {
           turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
           turn.externalProgress,
           { ...turn, onSendActivated: async () => {
-            await this.assertSelectedEffort(page, mode);
+            mode = await this.confirmEffortBeforeSend(page, mode, () => this.selectModelAndEffort(
+              page,
+              turn.modelId,
+              mode.effort,
+              browserCapabilities,
+              checkpoint => diagnostics.capture(page, `presend-${checkpoint}`),
+            ));
             submissionRejection.begin(page);
             await turn.onSendActivated?.();
           } },
