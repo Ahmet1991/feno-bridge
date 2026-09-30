@@ -83,6 +83,27 @@ const lastCompletedAnswerBySession = new WeakMap<ChatGptTurnSession, string>();
 const separatedPhaseBySession = new WeakMap<ChatGptTurnSession, number>();
 /** Sessions already given one delivery turn, so a long tool round cannot spawn one per image. */
 const imagesDeliveredSessions = new WeakSet<ChatGptTurnSession>();
+/**
+ * ChatGPT's own attachment-limit notice, once an image continuation met it. A delivery turn needs
+ * the same attachments, so it is not attempted, and the user is told why the images stayed unseen.
+ */
+const attachmentLimitBySession = new WeakMap<ChatGptTurnSession, string>();
+
+function attachmentLimitFinalNotice(count: number, notice: string): string {
+  const cause = notice
+    ? `ChatGPT'nin dosya eki limiti dolu ("${notice}")`
+    : "ChatGPT dosya eklerinin hiçbirini kabul etmedi (büyük olasılıkla dosya eki limiti dolu)";
+  return `\n\n[Feno Bridge] ${cause}; yerel araçların döndürdüğü ${count} görüntü modele gösterilemedi,`
+    + " bu görüntülere dayanan görsel bir inceleme doğrulanmış değil. Limit açılınca yeni bir turda devam et.";
+}
+
+function sessionUnshownImageNotice(session: ChatGptTurnSession): string | undefined {
+  const count = (unshownImagesBySession.get(session) ?? []).length;
+  const limit = attachmentLimitBySession.get(session);
+  return count > 0 && limit !== undefined
+    ? attachmentLimitFinalNotice(count, limit)
+    : unshownImageFinalNotice(count);
+}
 
 const MAX_IMAGE_CONTINUATION_PHASES = 4;
 
@@ -1526,7 +1547,7 @@ export function createChatGptWebAdapter(
               if (bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([settled.answer], buffer));
               }
-              const unshownImageNotice = unshownImageFinalNotice((unshownImagesBySession.get(session) ?? []).length);
+              const unshownImageNotice = sessionUnshownImageNotice(session);
               if (unshownImageNotice && !bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
               }
@@ -1703,6 +1724,10 @@ export function createChatGptWebAdapter(
                   const pending = newestToolImages([...attachedPhaseImages, ...(unshownImagesBySession.get(session) ?? [])]);
                   activeContinuationImagesBySession.delete(session);
                   if (pending.length > 0) unshownImagesBySession.set(session, pending);
+                  const limitError = completedOutcome.error;
+                  if (limitError instanceof ChatGptWebAdapterError && limitError.code === "chatgpt_attachment_limit") {
+                    attachmentLimitBySession.set(session, limitError.message.match(/\("([^"]*)"\)/)?.[1] ?? "");
+                  }
                   const lastAnswer = lastCompletedAnswerBySession.get(session);
                   if (lastAnswer === undefined) throw completedOutcome.error;
                   completedOutcome = { type: "final", answer: lastAnswer };
@@ -1733,7 +1758,8 @@ export function createChatGptWebAdapter(
                   && continuationEnvironment !== undefined
                   && session.conversationKey() !== undefined
                   && activeRuntime.mode === "tools"
-                  && phase < MAX_IMAGE_CONTINUATION_PHASES;
+                  && phase < MAX_IMAGE_CONTINUATION_PHASES
+                  && !attachmentLimitBySession.has(session);
                 if (continuationEligible) {
                   const nextPhase = phase + 1;
                   const continuationImages = [...pendingImages];
@@ -1775,7 +1801,8 @@ export function createChatGptWebAdapter(
                   && !bufferStructuredOutput
                   && pendingImages.length > 0
                   && session.conversationKey() !== undefined
-                  && !imagesDeliveredSessions.has(session)) {
+                  && !imagesDeliveredSessions.has(session)
+                  && !attachmentLimitBySession.has(session)) {
                   // The one path that gets a tool's image in front of the model: attachments are
                   // uploaded while a turn is being composed, so an image that arrived mid-generation
                   // needs a turn of its own. Once per session — a delivery turn per screenshot in a
@@ -1839,7 +1866,7 @@ export function createChatGptWebAdapter(
                 }
                 // Only for images still unshown: a delivered one is no longer unseen, and saying it
                 // was would contradict the answer just appended.
-                const unshownImageNotice = unshownImageFinalNotice((unshownImagesBySession.get(session) ?? []).length);
+                const unshownImageNotice = sessionUnshownImageNotice(session);
                 if (unshownImageNotice && !bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
                 }

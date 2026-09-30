@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
-import { ChatGptBrowserWorker, waitForChatGptGenerationStopped } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptAttachmentLimitError, ChatGptBrowserWorker, waitForChatGptGenerationStopped } from "../src/adapters/chatgpt-web/browser-worker";
 import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
 
 // 30.09: two ways a retained ChatGPT conversation used to be dropped and then resent in full.
@@ -47,6 +47,8 @@ interface TurnScenario {
   cleanlyStopped?: boolean;
   /** Abort the turn with this reason instead of failing it at browser_page. */
   abort?: "superseded" | "plain";
+  /** Fail with this error instead of the browser_page timeout. */
+  failure?: Error;
 }
 
 async function launcherTurnEnd(scenario: TurnScenario): Promise<Record<string, unknown>> {
@@ -91,7 +93,7 @@ async function launcherTurnEnd(scenario: TurnScenario): Promise<Record<string, u
           abort.abort(scenario.abort === "superseded" ? chatGptTurnSupersededError() : undefined);
           throw new DOMException("ChatGPT web turn aborted", "AbortError");
         }
-        throw new Error("ChatGPT browser stage timed out: browser_page");
+        throw scenario.failure ?? new Error("ChatGPT browser stage timed out: browser_page");
       },
     });
     const runExclusive = (ChatGptBrowserWorker.prototype as unknown as {
@@ -105,7 +107,7 @@ async function launcherTurnEnd(scenario: TurnScenario): Promise<Record<string, u
       retainConversation: true,
       prepareResume: async () => ({}),
       abortSignal: abort.signal,
-    })).rejects.toThrow(scenario.abort ? "aborted" : "browser_page");
+    })).rejects.toThrow(scenario.abort ? "aborted" : scenario.failure?.message ?? "browser_page");
     expect(acquiredLauncherPages.size + launcherSendStarted.size + cleanlyStoppedLauncherTurns.size).toBe(0);
     return endBody!;
   } finally {
@@ -160,6 +162,27 @@ test("steering keeps no conversation that is not clean, and an ordinary abort ke
     expect(end).toMatchObject({ phase: "end", status: "aborted" });
     expect(end.retain).toBeUndefined();
     expect(end.superseded).toBeUndefined();
+  }
+});
+
+test("an attachment limit met before anything was sent keeps the reused conversation (30.09)", async () => {
+  // Live: an image continuation met ChatGPT's file attachment limit and its conversation was
+  // dropped, so the fallback turn found it "no longer available".
+  const limit = new ChatGptAttachmentLimitError("Dosya eki limitine ulaştın 30 Eyl 21:45 sonra tekrar dene");
+  expect(await launcherTurnEnd({ reused: true, pageAcquired: true, sendStarted: false, failure: limit })).toMatchObject({
+    phase: "end",
+    status: "failed",
+    retain: true,
+    untouched: true,
+  });
+  // Once sending started, or for any other failure after the page was acquired, it is released.
+  for (const scenario of [
+    { reused: true, pageAcquired: true, sendStarted: true, failure: limit },
+    { reused: true, pageAcquired: true, sendStarted: false, failure: new Error("ChatGPT did not accept all prompt attachments") },
+  ]) {
+    const end = await launcherTurnEnd(scenario);
+    expect(end.retain).toBeUndefined();
+    expect(end.untouched).toBeUndefined();
   }
 });
 

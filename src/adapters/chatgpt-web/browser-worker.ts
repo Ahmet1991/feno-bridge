@@ -891,6 +891,42 @@ export class ChatGptPromptAttachmentIntegrityError extends ChatGptWebAdapterErro
   }
 }
 
+/**
+ * 30.09: ChatGPT refused every attachment for hours ("Dosya eki limitine ulaştın · 30 Eyl 21:45
+ * sonra tekrar dene"). The notice sits inside the composer rather than in an alert, so the turn
+ * waited 60 s and only reported that ChatGPT "did not accept all prompt attachments".
+ */
+export class ChatGptAttachmentLimitError extends ChatGptWebAdapterError {
+  /** ChatGPT's own words, when it showed its notice; it mostly refused silently. */
+  readonly notice: string | undefined;
+
+  constructor(notice: string | undefined, cause?: unknown) {
+    super(
+      notice !== undefined
+        ? `ChatGPT's file attachment limit is reached ("${notice}"). Images and files cannot be attached until then.`
+        : "ChatGPT accepted none of the attachments; its file attachment limit is the likely cause. Images and files cannot be attached for now.",
+      { status: 429, errorType: "rate_limit_error", code: "chatgpt_attachment_limit", retryable: false, cause },
+    );
+    this.name = "ChatGptAttachmentLimitError";
+    this.notice = notice;
+  }
+}
+
+/**
+ * The composer's own attachment-limit notice, in whatever language the UI uses, if one is shown.
+ * The editor is excluded: the prompt typed into it can say "limit" too.
+ */
+export async function chatGptAttachmentLimitNotice(composerForm: Pick<Locator, "evaluate">): Promise<string | undefined> {
+  return composerForm.evaluate(form => {
+    const editor = '[contenteditable="true"], .ProseMirror, textarea';
+    const blocks = [...form.querySelectorAll<HTMLElement>("div, section, p, [role=status], [role=alert]")]
+      .filter(node => !node.closest(editor) && !node.querySelector(editor))
+      .map(node => (node.innerText ?? "").replace(/\s+/g, " ").trim())
+      .filter(text => /limit/i.test(text) && text.length <= 300);
+    return blocks.sort((a, b) => b.length - a.length)[0];
+  }).catch(() => undefined);
+}
+
 const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dialog"]')
   .filter({ hasText: /Too many requests|太多要求|太多请求|リクエストが多すぎます|요청이 너무 많습니다|요청을 너무 빠르게|너무 많은 요청/i })
   .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁|リクエストの頻度が高すぎます|요청을 너무 빠르게|요청이 너무 많습니다|너무 많은 요청/i })
@@ -4764,13 +4800,38 @@ export class ChatGptBrowserWorker {
       timeout: Math.min(20_000, remainingMs(acceptanceReserveMs)),
     });
     await input.setInputFiles(files, { timeout: remainingMs(acceptanceReserveMs) });
+    const acceptanceDeadline = Date.now() + Math.min(60_000, remainingMs(0));
+    let acceptanceSettled = false;
+    const accepted = Promise.all(files.map(file => (
+      composerForm.getByRole("group", { name: file.name, exact: true })
+        .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
+        .waitFor({ state: "visible", timeout: Math.max(1, acceptanceDeadline - Date.now()) })
+    ))).finally(() => { acceptanceSettled = true; });
+    accepted.catch(() => {});
+    // When ChatGPT shows its limit notice, it does so within seconds; without watching for it the
+    // stage waited out 60 s.
+    const limited = (async (): Promise<string> => {
+      while (!acceptanceSettled && Date.now() < acceptanceDeadline) {
+        const notice = await chatGptAttachmentLimitNotice(composerForm);
+        if (notice) return notice;
+        await new Promise(resolveSleep => setTimeout(resolveSleep, 500));
+      }
+      return new Promise<never>(() => {});
+    })();
     try {
-      await Promise.all(files.map(file => (
-        composerForm.getByRole("group", { name: file.name, exact: true })
-          .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
-          .waitFor({ state: "visible", timeout: Math.min(60_000, remainingMs(0)) })
-      )));
+      const notice = await Promise.race([accepted.then(() => undefined), limited]);
+      if (notice !== undefined) throw new ChatGptAttachmentLimitError(notice);
     } catch (error) {
+      if (error instanceof ChatGptAttachmentLimitError) throw error;
+      const notice = await chatGptAttachmentLimitNotice(composerForm);
+      if (notice) throw new ChatGptAttachmentLimitError(notice, error);
+      // Live on 30.09 the limit mostly showed no notice at all: the page ignored the files without
+      // even sending them to ChatGPT. Not one attachment in the composer is that same refusal.
+      const anyAttachment = await composerForm
+        .locator('[role="group"], .composer-attachment-surface')
+        .count()
+        .catch(() => 1);
+      if (anyAttachment === 0) throw new ChatGptAttachmentLimitError(undefined, error);
       const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
         .map(text => text.replace(/\s+/g, " ").trim())
         .filter(Boolean);
@@ -5538,15 +5599,19 @@ export class ChatGptBrowserWorker {
       // behind a heavy parallel turn) received nothing. Releasing it made Codex's retries resend the
       // whole history as a fresh multipart conversation that ChatGPT refused at part 5, five times
       // over, so the launcher may keep it for the retry.
+      const sendStarted = this.launcherSendStarted?.has(turn.traceId) === true;
       const untouched = terminal === "failed"
         && reused
         && turn.retainConversation === true
-        && this.acquiredLauncherPages?.has(turn.traceId) !== true;
+        && (this.acquiredLauncherPages?.has(turn.traceId) !== true
+          // 30.09: ChatGPT's attachment limit refuses the files before anything is sent. The
+          // conversation is intact, and dropping it left the fallback image turn "no longer
+          // available" and made the next request resend the whole history.
+          || (originalError instanceof ChatGptAttachmentLimitError && !sendStarted));
       // 30.09: a steering message (a newer native instruction) superseded this response, and the
       // conversation was dropped, so the steered request resent the whole history as a fresh
       // conversation (6 parts, 112 s of silence). Keep it when it is in a clean state: nothing was
       // sent into a reused conversation, or the response was stopped and its generation ended.
-      const sendStarted = this.launcherSendStarted?.has(turn.traceId) === true;
       const continuesAfterSteering = terminal === "aborted"
         && turn.abortSignal?.reason instanceof ChatGptTurnSupersededError
         && turn.retainConversation === true
