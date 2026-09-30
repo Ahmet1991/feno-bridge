@@ -891,6 +891,46 @@ export class ChatGptPromptAttachmentIntegrityError extends ChatGptWebAdapterErro
   }
 }
 
+/**
+ * 30.09: ChatGPT refused every attachment for hours ("Dosya eki limitine ulaştın · 30 Eyl 21:45
+ * sonra tekrar dene"). The notice sits inside the composer rather than in an alert, so the turn
+ * waited 60 s and only reported that ChatGPT "did not accept all prompt attachments".
+ */
+export class ChatGptAttachmentLimitError extends ChatGptWebAdapterError {
+  /** ChatGPT's own words, when it showed its notice; it mostly refused silently. */
+  readonly notice: string | undefined;
+
+  constructor(notice: string | undefined, cause?: unknown) {
+    super(
+      notice !== undefined
+        ? `ChatGPT's file attachment limit is reached ("${notice}"). Images and files cannot be attached until then.`
+        : "ChatGPT accepted none of the attachments; its file attachment limit is the likely cause. Images and files cannot be attached for now.",
+      { status: 429, errorType: "rate_limit_error", code: "chatgpt_attachment_limit", retryable: false, cause },
+    );
+    this.name = "ChatGptAttachmentLimitError";
+    this.notice = notice;
+  }
+}
+
+/**
+ * The composer's own attachment-limit notice, in whatever language the UI uses, if one is shown.
+ * The editor is excluded: the prompt typed into it can say "limit" too.
+ */
+export async function chatGptAttachmentLimitNotice(composerForm: Pick<Locator, "evaluate">): Promise<string | undefined> {
+  try {
+    return await composerForm.evaluate(form => {
+      const editor = '[contenteditable="true"], .ProseMirror, textarea';
+      const blocks = [...form.querySelectorAll<HTMLElement>("div, section, p, [role=status], [role=alert]")]
+        .filter(node => !node.closest(editor) && !node.querySelector(editor))
+        .map(node => (node.innerText ?? "").replace(/\s+/g, " ").trim())
+        .filter(text => /limit/i.test(text) && text.length <= 300);
+      return blocks.sort((a, b) => b.length - a.length)[0];
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dialog"]')
   .filter({ hasText: /Too many requests|太多要求|太多请求|リクエストが多すぎます|요청이 너무 많습니다|요청을 너무 빠르게|너무 많은 요청/i })
   .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁|リクエストの頻度が高すぎます|요청을 너무 빠르게|요청이 너무 많습니다|너무 많은 요청/i })
@@ -1412,6 +1452,28 @@ export function remainingStageBudgetMs(
 
 export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
+/**
+ * 30.09: a 186k-token conversation kept ChatGPT's React renderer busy in back-to-back renders of
+ * about 2.3 s each while the model worked (one 45 s trace: six renders of 2.2-2.5 s in a row). The
+ * multi-read reconcile probe could not finish inside its 5 s budget. Every timeout was taken for a
+ * dead connection, and each same-page rebind cost about 40 s until the second failed the turn with
+ * "DOM remained unresponsive". A page that still answers a trivial read is busy, not detached.
+ */
+export const CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS = 30_000;
+/** How long a busy page that still answers is waited on, since it was last read, before a rebind. */
+export const CHATGPT_BUSY_PAGE_PATIENCE_MS = 5 * 60_000;
+
+export async function chatGptPageAnswers(
+  page: Pick<Page, "evaluate">,
+  timeoutMs = CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  try {
+    await withChatGptBrowserObservationTimeout(page.evaluate(() => 1), timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export class ChatGptBrowserObservationTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -3412,6 +3474,7 @@ export class ChatGptBrowserWorker {
     page: Page,
     cache?: ChatGptSubmissionDomCache,
     signal?: AbortSignal,
+    probeTimeoutMs = CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS,
   ): Promise<ChatGptSubmissionDomState> {
     throwIfPromptAttachmentAborted(signal);
     const observed = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(page.evaluate(options => {
@@ -3524,7 +3587,7 @@ export class ChatGptBrowserWorker {
       agentIdentityPrefix: CHATGPT_AGENT_TURN_IDENTITY_PREFIX,
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
-    }), signal));
+    }), signal), probeTimeoutMs);
     const snapshot = observed.snapshot ?? cache?.snapshot;
     if (!snapshot) throw new Error("ChatGPT turn DOM revision cache has no baseline snapshot");
     if (observed.snapshot && cache) {
@@ -3725,15 +3788,17 @@ export class ChatGptBrowserWorker {
     binding: ChatGptAssistantTurnBinding,
     signal?: AbortSignal,
     allowMcpContinuationUserTurn = false,
+    probeTimeoutMs = CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS,
   ): Promise<ChatGptAssistantTurnBinding> {
     const boundCount = await withChatGptBrowserObservationTimeout(
       withBrowserTurnAbort(binding.locator.count(), signal),
+      probeTimeoutMs,
     );
     if (boundCount === 1) return binding;
     if (boundCount > 1) {
       throw new Error(`ChatGPT exposed ${boundCount} DOM nodes for the bound assistant turn`);
     }
-    const state = await this.submissionDomState(page, baseline.domCache, signal);
+    const state = await this.submissionDomState(page, baseline.domCache, signal, probeTimeoutMs);
     const acceptedTurns = new Set(binding.acceptedTurnIdentities);
     const newUsers = state.userIdentities.filter(identity => !acceptedTurns.has(identity));
     const hasNewUserTurn = newUsers.length > 0;
@@ -4739,13 +4804,39 @@ export class ChatGptBrowserWorker {
       timeout: Math.min(20_000, remainingMs(acceptanceReserveMs)),
     });
     await input.setInputFiles(files, { timeout: remainingMs(acceptanceReserveMs) });
+    const acceptanceTimeoutMs = Math.min(60_000, remainingMs(0));
+    const acceptanceDeadline = Date.now() + acceptanceTimeoutMs;
+    let acceptanceSettled = false;
+    const accepted = Promise.all(files.map(file => (
+      composerForm.getByRole("group", { name: file.name, exact: true })
+        .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
+        .waitFor({ state: "visible", timeout: acceptanceTimeoutMs })
+    ))).finally(() => { acceptanceSettled = true; });
+    accepted.catch(() => {});
+    // When ChatGPT shows its limit notice, it does so within seconds; without watching for it the
+    // stage waited out 60 s.
+    const limited = (async (): Promise<string> => {
+      while (!acceptanceSettled && Date.now() < acceptanceDeadline) {
+        const notice = await chatGptAttachmentLimitNotice(composerForm);
+        if (notice) return notice;
+        await new Promise(resolveSleep => setTimeout(resolveSleep, 500));
+      }
+      return new Promise<never>(() => {});
+    })();
     try {
-      await Promise.all(files.map(file => (
-        composerForm.getByRole("group", { name: file.name, exact: true })
-          .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
-          .waitFor({ state: "visible", timeout: Math.min(60_000, remainingMs(0)) })
-      )));
+      const notice = await Promise.race([accepted.then(() => undefined), limited]);
+      if (notice !== undefined) throw new ChatGptAttachmentLimitError(notice);
     } catch (error) {
+      if (error instanceof ChatGptAttachmentLimitError) throw error;
+      const notice = await chatGptAttachmentLimitNotice(composerForm);
+      if (notice) throw new ChatGptAttachmentLimitError(notice, error);
+      // Live on 30.09 the limit mostly showed no notice at all: the page ignored the files without
+      // even sending them to ChatGPT. Not one attachment in the composer is that same refusal.
+      const anyAttachment = await composerForm
+        .locator('[role="group"], .composer-attachment-surface')
+        .count()
+        .catch(() => 1);
+      if (anyAttachment === 0) throw new ChatGptAttachmentLimitError(undefined, error);
       const alerts = (await page.locator('[role="alert"]').allInnerTexts().catch(() => []))
         .map(text => text.replace(/\s+/g, " ").trim())
         .filter(Boolean);
@@ -5513,15 +5604,19 @@ export class ChatGptBrowserWorker {
       // behind a heavy parallel turn) received nothing. Releasing it made Codex's retries resend the
       // whole history as a fresh multipart conversation that ChatGPT refused at part 5, five times
       // over, so the launcher may keep it for the retry.
+      const sendStarted = this.launcherSendStarted?.has(turn.traceId) === true;
       const untouched = terminal === "failed"
         && reused
         && turn.retainConversation === true
-        && this.acquiredLauncherPages?.has(turn.traceId) !== true;
+        && (this.acquiredLauncherPages?.has(turn.traceId) !== true
+          // 30.09: ChatGPT's attachment limit refuses the files before anything is sent. The
+          // conversation is intact, and dropping it left the fallback image turn "no longer
+          // available" and made the next request resend the whole history.
+          || (originalError instanceof ChatGptAttachmentLimitError && !sendStarted));
       // 30.09: a steering message (a newer native instruction) superseded this response, and the
       // conversation was dropped, so the steered request resent the whole history as a fresh
       // conversation (6 parts, 112 s of silence). Keep it when it is in a clean state: nothing was
       // sent into a reused conversation, or the response was stopped and its generation ended.
-      const sendStarted = this.launcherSendStarted?.has(turn.traceId) === true;
       const continuesAfterSteering = terminal === "aborted"
         && turn.abortSignal?.reason instanceof ChatGptTurnSupersededError
         && turn.retainConversation === true
@@ -6197,6 +6292,18 @@ export class ChatGptBrowserWorker {
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       const responseDomCache: ChatGptResponseDomCache = {};
       let consecutiveObservationRebinds = 0;
+      let lastPageReadAt = Date.now();
+      let busyPageSince: number | undefined;
+      let busyPageLogged = false;
+      const markPageRead = (): void => {
+        lastPageReadAt = Date.now();
+        if (busyPageSince === undefined) return;
+        console.info(
+          `[chatgpt-web] browser turn ${turn.traceId} page readable again after`
+          + ` ${Math.round((lastPageReadAt - busyPageSince) / 1000)}s busy`,
+        );
+        busyPageSince = undefined;
+      };
       let internalObservationFaults = 0;
       let observedThisIteration = false;
       let completionFenceRevision: number | undefined;
@@ -6246,6 +6353,11 @@ export class ChatGptBrowserWorker {
         if (!snapshot.responsePresent) {
           try {
             const progressBeforeReconcile = turn.externalProgress?.snapshot();
+            // A page known to be busy gets the liveness budget per read: live on 30.09 the plain
+            // read took up to 12 s there, so no 5 s reconcile finished in five minutes.
+            const probeTimeoutMs = busyPageSince === undefined
+              ? CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS
+              : CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS;
             const rebound = await withChatGptBrowserObservationTimeout(
               this.reconcileAssistantTurnBinding(
                 page,
@@ -6253,7 +6365,10 @@ export class ChatGptBrowserWorker {
                 responseTurn,
                 turn.abortSignal,
                 chatGptExternalToolCallsAreInFlight(progressBeforeReconcile),
+                probeTimeoutMs,
               ),
+              // The reconcile makes two reads in sequence.
+              2 * probeTimeoutMs,
             );
             if (rebound.identity !== responseTurn.identity) {
               responseTurn = rebound;
@@ -6261,8 +6376,20 @@ export class ChatGptBrowserWorker {
               responseDomCache.snapshot = undefined;
               snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
             }
+            markPageRead();
           } catch (error) {
             if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !launcherSurfaceId) throw error;
+            if (Date.now() - lastPageReadAt < CHATGPT_BUSY_PAGE_PATIENCE_MS && await chatGptPageAnswers(page)) {
+              busyPageSince ??= Date.now();
+              if (!busyPageLogged) {
+                busyPageLogged = true;
+                console.warn(
+                  `[chatgpt-web] browser turn ${turn.traceId} page is busy, not detached: waiting instead of rebinding`
+                  + ` (${redactChatGptUiDiagnostic(error.message)})`,
+                );
+              }
+              continue;
+            }
             consecutiveObservationRebinds += 1;
             if (consecutiveObservationRebinds > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
               throw new Error(
@@ -6288,7 +6415,10 @@ export class ChatGptBrowserWorker {
           }
         }
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
-        if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
+        if (snapshot.responsePresent) {
+          consecutiveObservationRebinds = 0;
+          markPageRead();
+        }
         // The page was read successfully, so the fault budget is genuinely consecutive even when
         // this iteration goes on to `continue` for a rebind, confirmation, or liveness pause.
         internalObservationFaults = 0;

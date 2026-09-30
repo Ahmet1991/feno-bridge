@@ -20,7 +20,7 @@ import {
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { toolImagesNeedingDelivery } from "./tool-images";
+import { toolImageReachesRunningMessage, toolImagesNeedingDelivery } from "./tool-images";
 import { describeCauseChain } from "../../lib/errors";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
@@ -83,12 +83,60 @@ const lastCompletedAnswerBySession = new WeakMap<ChatGptTurnSession, string>();
 const separatedPhaseBySession = new WeakMap<ChatGptTurnSession, number>();
 /** Sessions already given one delivery turn, so a long tool round cannot spawn one per image. */
 const imagesDeliveredSessions = new WeakSet<ChatGptTurnSession>();
+/**
+ * ChatGPT's own attachment-limit notice, once an image continuation met it. A delivery turn needs
+ * the same attachments, so it is not attempted, and the user is told why the images stayed unseen.
+ */
+const attachmentLimitBySession = new WeakMap<ChatGptTurnSession, string>();
+
+function attachmentLimitFinalNotice(count: number, notice: string): string {
+  const cause = notice
+    ? `ChatGPT'nin dosya eki limiti dolu ("${notice}")`
+    : "ChatGPT dosya eklerinin hiçbirini kabul etmedi (büyük olasılıkla dosya eki limiti dolu)";
+  return `\n\n[Feno Bridge] ${cause}; yerel araçların döndürdüğü ${count} görüntü modele gösterilemedi,`
+    + " bu görüntülere dayanan görsel bir inceleme doğrulanmış değil. Limit açılınca yeni bir turda devam et.";
+}
+
+/**
+ * Tool images a follow-up message attached, per retained conversation (sha256 of the image URL).
+ * The next Codex turn carries the previous round's unseen tool images into its own attachments;
+ * one a follow-up already attached is in that conversation, and uploading it again only spent the
+ * account's attachment limit (every image went up twice on 30.09).
+ */
+const attachedToolImagesByConversation = new Map<string, Set<string>>();
+const MAX_TRACKED_IMAGE_CONVERSATIONS = 64;
+
+function toolImageDigest(imageUrl: string): string {
+  return createHash("sha256").update(imageUrl).digest("hex");
+}
+
+function recordAttachedToolImages(conversationKey: string, images: ReadonlyArray<{ imageUrl: string }>): void {
+  let attached = attachedToolImagesByConversation.get(conversationKey);
+  if (!attached) {
+    attached = new Set();
+    attachedToolImagesByConversation.set(conversationKey, attached);
+    while (attachedToolImagesByConversation.size > MAX_TRACKED_IMAGE_CONVERSATIONS) {
+      const oldest = attachedToolImagesByConversation.keys().next();
+      if (oldest.done) break;
+      attachedToolImagesByConversation.delete(oldest.value);
+    }
+  }
+  for (const image of images) attached.add(toolImageDigest(image.imageUrl));
+}
+
+function sessionUnshownImageNotice(session: ChatGptTurnSession): string | undefined {
+  const count = (unshownImagesBySession.get(session) ?? []).length;
+  const limit = attachmentLimitBySession.get(session);
+  return count > 0 && limit !== undefined
+    ? attachmentLimitFinalNotice(count, limit)
+    : unshownImageFinalNotice(count);
+}
 
 const MAX_IMAGE_CONTINUATION_PHASES = 4;
 
 // The v5.0.48 wording ("if it is visible to you, use it") made the model reopen the same files: 32
 // view_image calls for 12 images on 28 Sep, against 12 with this one. Keep it.
-const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that cannot be attached to the already-running ChatGPT message. The image will be shown to you in a new message after you finish this message. If you need to see it, do not guess; end this message with a short note.";
+const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that the already-running ChatGPT message cannot show you, and calling the tool again will not show it either. The image will be attached to a new message as soon as you finish this one. If you need to see it, do not guess and do not retry: end this message now with a short note, and continue once the image arrives.";
 
 function imageContinuationTraceId(parentTraceId: string, phase: number): string {
   return createHash("sha256")
@@ -127,7 +175,14 @@ function unshownImageFinalNotice(count: number): string | undefined {
  * continuation). Numbering whatever is kept makes every name unique by construction.
  */
 export function newestToolImages(images: Array<{ imageUrl: string; detail?: string }>): ChatGptWebPromptImage[] {
-  return images.slice(-CHATGPT_MAX_INPUT_IMAGES).map((image, index) => ({
+  // The same screenshot opened again is one attachment, kept at its latest position: on 30.09 one
+  // continuation uploaded four copies of preview.png.
+  const latest = new Map<string, { imageUrl: string; detail?: string }>();
+  for (const image of images) {
+    latest.delete(image.imageUrl);
+    latest.set(image.imageUrl, image);
+  }
+  return [...latest.values()].slice(-CHATGPT_MAX_INPUT_IMAGES).map((image, index) => ({
     ...image,
     ref: `codex-tool-image-${index + 1}`,
   }));
@@ -310,11 +365,14 @@ function structuredContent(text: string): unknown | undefined {
 
 function brokerContent(content: string | CodexContentPart[]): unknown[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
-  return content.map(part => {
-    if (part.type === "text") return { type: "text", text: part.text };
+  // An image the running message cannot show is left out: with it in the result the model read
+  // neither the image nor the note beside it, and re-opened the image five times (30.09).
+  return content.flatMap((part): unknown[] => {
+    if (part.type === "text") return [{ type: "text", text: part.text }];
+    if (!toolImageReachesRunningMessage(part.imageUrl)) return [];
     const parsed = parseDataUrl(part.imageUrl);
-    if (parsed) return { type: "image", data: parsed.base64, mimeType: parsed.mediaType };
-    return { type: "resource_link", uri: part.imageUrl, name: "Codex tool image", mimeType: "image/*" };
+    if (parsed) return [{ type: "image", data: parsed.base64, mimeType: parsed.mediaType }];
+    return [{ type: "resource_link", uri: part.imageUrl, name: "Codex tool image", mimeType: "image/*" }];
   });
 }
 
@@ -565,7 +623,10 @@ export function createChatGptWebAdapter(
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
     const resumeInput = conversationKey
-      ? retainedConversationResumeRequest(checkpointInput.parsed)
+      ? retainedConversationResumeRequest(
+        checkpointInput.parsed,
+        imageUrl => attachedToolImagesByConversation.get(conversationKey)?.has(toolImageDigest(imageUrl)) === true,
+      )
       : undefined;
     const retainConversation = conversationKey !== undefined;
     const releaseRetainedConversation = conversationKey && retainedLauncherDescriptor
@@ -1516,7 +1577,7 @@ export function createChatGptWebAdapter(
               if (bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([settled.answer], buffer));
               }
-              const unshownImageNotice = unshownImageFinalNotice((unshownImagesBySession.get(session) ?? []).length);
+              const unshownImageNotice = sessionUnshownImageNotice(session);
               if (unshownImageNotice && !bufferStructuredOutput) {
                 emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
               }
@@ -1693,6 +1754,10 @@ export function createChatGptWebAdapter(
                   const pending = newestToolImages([...attachedPhaseImages, ...(unshownImagesBySession.get(session) ?? [])]);
                   activeContinuationImagesBySession.delete(session);
                   if (pending.length > 0) unshownImagesBySession.set(session, pending);
+                  const limitError = completedOutcome.error;
+                  if (limitError instanceof ChatGptWebAdapterError && limitError.code === "chatgpt_attachment_limit") {
+                    attachmentLimitBySession.set(session, limitError.message.match(/\("([^"]*)"\)/)?.[1] ?? "");
+                  }
                   const lastAnswer = lastCompletedAnswerBySession.get(session);
                   if (lastAnswer === undefined) throw completedOutcome.error;
                   completedOutcome = { type: "final", answer: lastAnswer };
@@ -1708,6 +1773,8 @@ export function createChatGptWebAdapter(
                       `[chatgpt-web] image continuation phase=${phase} images=${attachedPhaseImages.length}`
                       + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)} completed`,
                     );
+                    const attachedIn = session.conversationKey();
+                    if (attachedIn) recordAttachedToolImages(attachedIn, attachedPhaseImages);
                     activeContinuationImagesBySession.delete(session);
                   }
                 }
@@ -1723,7 +1790,8 @@ export function createChatGptWebAdapter(
                   && continuationEnvironment !== undefined
                   && session.conversationKey() !== undefined
                   && activeRuntime.mode === "tools"
-                  && phase < MAX_IMAGE_CONTINUATION_PHASES;
+                  && phase < MAX_IMAGE_CONTINUATION_PHASES
+                  && !attachmentLimitBySession.has(session);
                 if (continuationEligible) {
                   const nextPhase = phase + 1;
                   const continuationImages = [...pendingImages];
@@ -1765,7 +1833,8 @@ export function createChatGptWebAdapter(
                   && !bufferStructuredOutput
                   && pendingImages.length > 0
                   && session.conversationKey() !== undefined
-                  && !imagesDeliveredSessions.has(session)) {
+                  && !imagesDeliveredSessions.has(session)
+                  && !attachmentLimitBySession.has(session)) {
                   // The one path that gets a tool's image in front of the model: attachments are
                   // uploaded while a turn is being composed, so an image that arrived mid-generation
                   // needs a turn of its own. Once per session — a delivery turn per screenshot in a
@@ -1829,7 +1898,7 @@ export function createChatGptWebAdapter(
                 }
                 // Only for images still unshown: a delivered one is no longer unseen, and saying it
                 // was would contradict the answer just appended.
-                const unshownImageNotice = unshownImageFinalNotice((unshownImagesBySession.get(session) ?? []).length);
+                const unshownImageNotice = sessionUnshownImageNotice(session);
                 if (unshownImageNotice && !bufferStructuredOutput) {
                   emitRoundBatch(buffer => emitTextDeltas([unshownImageNotice], buffer));
                 }

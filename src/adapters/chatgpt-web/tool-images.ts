@@ -2,15 +2,21 @@ import type { CodexContentPart } from "../../types";
 import { parseDataUrl } from "../image";
 
 /**
- * Whether a tool's image reaches the running ChatGPT message by itself. An image with a data URL rides
- * in the MCP result, and ChatGPT shows that to the model inside the running message: on 28-29 Sep every
- * view_image code and Calculator screenshot was read correctly before any delivery turn ran, and
- * upstream, which has no delivery turn, read them all (6/6). An image sent as a resource link is not
- * visible. CODEX_WEB_GPT_TOOL_IMAGES=attach treats every image as unseen again, should ChatGPT stop
- * showing MCP images.
+ * Whether a tool's image reaches the running ChatGPT message by itself.
+ *
+ * On 28-29 Sep an image riding in the MCP result was shown to the model: every view_image code and
+ * Calculator screenshot was read before any delivery turn ran. By the evening of 30 Sep it no longer
+ * was. ChatGPT still stored the image, but the model answered "the call returned no image" 0/3 times
+ * for kod.png on DEV and 0/2 on the installed bridge, even for a 140 px code. It re-opened the image
+ * up to five times, ignoring the note beside it, then fell back to reading the file with Python.
+ * The same image attached to a follow-up message was read correctly 2/2.
+ *
+ * So every image is delivered by attachment again. CODEX_WEB_GPT_TOOL_IMAGES=inline trusts the MCP
+ * result instead, for when ChatGPT shows those images again. An image sent as a resource link was
+ * never visible.
  */
 export function toolImageReachesRunningMessage(imageUrl: string): boolean {
-  if (process.env.CODEX_WEB_GPT_TOOL_IMAGES?.trim().toLowerCase() === "attach") return false;
+  if (process.env.CODEX_WEB_GPT_TOOL_IMAGES?.trim().toLowerCase() !== "inline") return false;
   return parseDataUrl(imageUrl) !== null;
 }
 

@@ -67,6 +67,8 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(tokenMatches).toHaveLength(1);
   expect(compiled.text).toContain("[retired turn handle]");
   expect(transportOnly).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
+  // 30.09: the model handed a plan to a nested `codex exec` that ran unsupervised with no network.
+  expect(transportOnly).toContain("do not start the codex CLI (such as `codex` or `codex exec`) from a shell to hand the work to another Codex unless the user explicitly asks to run that CLI.");
   expect(transportOnly).toContain("Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.");
   expect(transportOnly).toContain("Use actual Codex Native results as evidence for local observations and effects.");
   expect(transportOnly).toContain("When the needed local capability is deferred behind a discovery tool, invoke that discovery tool first, then inspect the newly loaded exact tool before acting; do not substitute a similarly named capability.");
@@ -517,6 +519,51 @@ test("a long task keeps the newest images and drops the overflow instead of fail
   expect(compiled.text).toContain("older image not attached");
   expect(compiled.text).toContain("step 1");
   expect(compiled.text).toContain("step 13");
+});
+
+test("an image shown again is attached once, and the least recently shown overflow first (30.09)", () => {
+  // Live: ten context images that were five distinct ones, preview.png opened four times.
+  const image = (marker: string) => ({
+    type: "image" as const,
+    imageUrl: `data:image/png;base64,${marker}`,
+  });
+  // A is shown first and again last; B..K are ten more distinct images in between.
+  const shown = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "K", "A"];
+  const replayed: CodexParsedRequest = {
+    modelId: CHATGPT_WEB_MODEL_ID,
+    context: {
+      systemPrompt: ["preserve-system"],
+      messages: shown.map((marker, index) => ({
+        role: "user" as const,
+        content: [{ type: "text" as const, text: `step ${index + 1}` }, image(marker)],
+        timestamp: index + 1,
+      })),
+    },
+    stream: true,
+    options: { reasoning: "high" },
+  };
+
+  const compiled = compileChatGptWebPrompt(
+    replayed,
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    "turn_12345678901234567890123456789012",
+  );
+
+  // Eleven distinct images: B, least recently shown, is the one left out; A survives because it
+  // was shown again last, and K's second showing costs no second upload.
+  expect(compiled.images.map(entry => entry.imageUrl.slice("data:image/png;base64,".length)))
+    .toEqual(["A", "C", "D", "E", "F", "G", "H", "I", "J", "K"]);
+  expect(compiled.text.match(/older image not attached/g)).toHaveLength(1);
+  const encoded = compiled.text.match(/<codex_context_json>\n(.+)\n<\/codex_context_json>/s)?.[1];
+  const envelope = JSON.parse(encoded!) as { messages: Array<{ content: unknown }> };
+  const refOf = (index: number) => (envelope.messages[index]!.content as Array<Record<string, unknown>>)
+    .find(part => part.type === "image_attachment")?.attachment_ref;
+  expect(refOf(0)).toBe("codex-input-image-1");
+  expect(refOf(12)).toBe("codex-input-image-1");
+  expect(refOf(1)).toBeUndefined();
+  expect(refOf(10)).toBe("codex-input-image-10");
+  expect(refOf(11)).toBe("codex-input-image-10");
+  expect(new Set(compiled.images.map(entry => entry.ref)).size).toBe(10);
 });
 
 test("Web compaction attaches the newest ten images as files and never embeds their base64 in prompt text", () => {

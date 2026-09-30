@@ -53,6 +53,8 @@ export function chatGptConversationKey(
  */
 export function retainedConversationResumeRequest(
   parsed: CodexParsedRequest,
+  /** An image a follow-up message already attached in this conversation is not uploaded again. */
+  alreadyAttached: (imageUrl: string) => boolean = () => false,
 ): CodexParsedRequest | undefined {
   const lastAssistant = parsed.context.messages.findLastIndex(message => message.role === "assistant");
   if (lastAssistant < 0 || lastAssistant === parsed.context.messages.length - 1) return undefined;
@@ -76,6 +78,7 @@ export function retainedConversationResumeRequest(
     const distinctImages = message.content.filter(part => {
       if (part.type !== "image" || isOnePixelPngDataUrl(part.imageUrl)
         || toolImageReachesRunningMessage(part.imageUrl)
+        || alreadyAttached(part.imageUrl)
         || seen.has(part.imageUrl) || images >= CHATGPT_MAX_INPUT_IMAGES) return false;
       seen.add(part.imageUrl);
       images += 1;

@@ -271,8 +271,32 @@ const DROPPED_IMAGE_NOTE =
  * survive.
  */
 interface ImageBudget {
-  seen: number;
-  dropped: number;
+  /** Distinct images left out because more than the per-message limit remain. */
+  dropped: ReadonlySet<string>;
+  /** The attachment already carrying each distinct image. */
+  refs: Map<string, string>;
+}
+
+/**
+ * Codex history repeats an image every time a tool shows it again. On 30.09 one conversation
+ * carried ten images that were five distinct ones (preview.png opened four times in 45 seconds),
+ * and every fresh conversation uploaded all ten, 15 MB of data URLs. Identical bytes are one
+ * image, so each distinct image is attached once and every later mention refers to that same
+ * attachment. Past the per-message limit the images used least recently are left out first.
+ */
+function droppedContextImages(messages: readonly CodexMessage[]): Set<string> {
+  const lastUse = new Map<string, true>();
+  for (const message of messages) {
+    if (message.role === "assistant" || typeof message.content === "string") continue;
+    for (const part of message.content) {
+      if (part.type !== "image" || isOnePixelPngDataUrl(part.imageUrl)) continue;
+      // Re-inserting keeps the map ordered by last use, oldest first.
+      lastUse.delete(part.imageUrl);
+      lastUse.set(part.imageUrl, true);
+    }
+  }
+  const excess = lastUse.size - CHATGPT_MAX_INPUT_IMAGES;
+  return new Set(excess > 0 ? [...lastUse.keys()].slice(0, excess) : []);
 }
 
 function inputContent(
@@ -289,10 +313,13 @@ function inputContent(
   }
   return semantic.map(part => {
     if (part.type === "text") return { type: "text", text: part.text };
-    budget.seen += 1;
-    if (budget.seen <= budget.dropped) return { type: "text", text: DROPPED_IMAGE_NOTE };
-    const ref = `codex-input-image-${images.length + 1}`;
-    images.push({ ref, imageUrl: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) });
+    if (budget.dropped.has(part.imageUrl)) return { type: "text", text: DROPPED_IMAGE_NOTE };
+    let ref = budget.refs.get(part.imageUrl);
+    if (!ref) {
+      ref = `codex-input-image-${images.length + 1}`;
+      budget.refs.set(part.imageUrl, ref);
+      images.push({ ref, imageUrl: part.imageUrl, ...(part.detail ? { detail: part.detail } : {}) });
+    }
     return { type: "image_attachment", attachment_ref: ref, ...(part.detail ? { detail: part.detail } : {}) };
   });
 }
@@ -922,6 +949,11 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      // 30.09: asked to "start from the top", the model ran `codex exec --dangerously-bypass-
+      // approvals-and-sandbox` to hand the plan to "Codex". The nested CLI went straight to
+      // api.openai.com, had no network inside the task (os error 10013), and was left running
+      // unsupervised for 40 minutes while the model reported that the work had started.
+      "You are the model working this Codex task. Do the requested work yourself with these tools; do not start the codex CLI (such as `codex` or `codex exec`) from a shell to hand the work to another Codex unless the user explicitly asks to run that CLI. A nested Codex runs outside this task, unsupervised, and its work never reaches this conversation.",
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
       "Use actual Codex Native results as evidence for local observations and effects.",
       "Report the actual error when a tool fails. Do not claim that an action was refused or prevented without an explicit tool result or platform error supporting it. If approval is required, use the declared Codex approval flow; a denial does not authorize retrying the action through another tool. Without an error or execution result, say the action was not executed and its cause is unconfirmed.",
@@ -1043,8 +1075,8 @@ export function compileChatGptWebPrompt(
     const images: ChatGptWebPromptImage[] = [];
     const contextImages = countChatGptContextImages(sourceMessages);
     const budget: ImageBudget = {
-      seen: 0,
-      dropped: Math.max(0, contextImages - CHATGPT_MAX_INPUT_IMAGES),
+      dropped: droppedContextImages(sourceMessages),
+      refs: new Map(),
     };
     const skillFiles: ChatGptSkillFile[] = [];
     const messages = sourceMessages.map(message => {
