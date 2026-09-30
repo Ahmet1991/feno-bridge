@@ -4337,6 +4337,8 @@ async function deliverWindowRecoveryFixtures(
     fallbackAnswer?: string;
     structuredOutput?: boolean;
     followUps?: Array<{ images: number; text: string }>;
+    /** Calls the same message makes after the fixtures' results, one at a time. None reaches Codex. */
+    heldCalls?: { fixtures: WindowRecoveryAdapterFixture[]; results: BrokerToolResult[] };
   },
 ): Promise<BrokerToolResult[]> {
   const socketPath = brokerTestEndpoint(`wr-${process.pid}-${++windowRecoveryFixtureSequence}`);
@@ -4400,6 +4402,17 @@ async function deliverWindowRecoveryFixtures(
         }, 30_000)
       ))));
       delivered.push(...results);
+      for (const fixture of options?.heldCalls?.fixtures ?? []) {
+        options!.heldCalls!.results.push(await invokeAfterBrowserBoundary(turn, () => (
+          callTurnBroker<BrokerToolResult>(socketPath, {
+            method: "invoke",
+            bindingId: claimed.bindingId,
+            wireName: fixture.wireName ?? "js",
+            freeform: false,
+            arguments: windowRecoveryFixtureArguments(fixture),
+          }, 30_000)
+        )));
+      }
       const answer = options?.firstAnswer ?? "Window recovery fixture complete";
       turn.onTextDelta(answer);
       return answer;
@@ -4953,6 +4966,43 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   expect(text).toContain("Ekte gördüğüm pencere: Feno Bridge.");
   // A delivered image is no longer unseen, so the turn must not also report it as unshown.
   expect(text).not.toContain("bu tura eklenemedi");
+});
+
+test("after a view_image the running message cannot show, its later calls are held until the image is attached (30 Sep)", async () => {
+  // 30.09 22:41: the model kept the message open after view_image and spent nine minutes on OCR
+  // scripts against a Calculator screenshot the next message would have shown it.
+  attachToolImages();
+  const image: CodexContentPart = { type: "image", imageUrl: "data:image/png;base64,iVBORw0KGgo=" };
+  const browserTurns: BrowserTurn[] = [];
+  const held = { fixtures: [
+    { wireName: "js", code: "python ocr.py" },
+    { wireName: "js", code: "python ocr.py --retry" },
+  ].map(fixture => ({ ...fixture, content: "never run" })), results: [] as BrokerToolResult[] };
+  const warnings: string[] = [];
+  const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  try {
+    await deliverWindowRecoveryFixtures(
+      [{ wireName: "view_image", arguments: { path: "calc.png" }, content: [image] }],
+      [],
+      { retained: true, browserTurns, heldCalls: held },
+    );
+  } finally {
+    warning.mockRestore();
+  }
+
+  // Neither held call reached Codex (the fixture fails on an unexpected tool call); both were
+  // answered at once with the instruction to end the message.
+  expect(held.results).toHaveLength(2);
+  for (const result of held.results) {
+    expect(result.isError).toBeTrue();
+    expect(JSON.stringify(result.content)).toContain("End this message now");
+  }
+  expect(warnings.filter(line => line.includes("broker held calls=1 (js) until the view_image"))).toHaveLength(2);
+  // Ending the message brought the image in the tool-capable continuation.
+  expect(browserTurns).toHaveLength(2);
+  const prompt = await browserTurns[1]!.prepare();
+  expect(prompt.images.map(entry => entry.imageUrl)).toEqual([image.imageUrl]);
+  prompt.release();
 });
 
 test("more tool screenshots than one message holds keep the newest ten under unique names, and a failed continuation reuses the answer once", async () => {

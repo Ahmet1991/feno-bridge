@@ -138,6 +138,21 @@ const MAX_IMAGE_CONTINUATION_PHASES = 4;
 // view_image calls for 12 images on 28 Sep, against 12 with this one. Keep it.
 const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that the already-running ChatGPT message cannot show you, and calling the tool again will not show it either. The image will be attached to a new message as soon as you finish this one. If you need to see it, do not guess and do not retry: end this message now with a short note, and continue once the image arrives.";
 
+/**
+ * Browser turns (runtimes) whose model asked to look at an image with view_image that the running
+ * message cannot show. 30.09 22:41: the model read that notice, kept the message open, and spent
+ * nine minutes on OCR scripts against a calculator screenshot it could have seen one message later.
+ * An explicit view_image is a request to see, so every later call of that message is answered with
+ * IMAGE_HOLD_NOTICE instead of being run, until the model ends it and the image is attached.
+ */
+const imageHoldRuntimes = new WeakSet<object>();
+
+const IMAGE_HOLD_NOTICE = "[Feno Bridge] Not run. The image you opened with view_image is waiting to be shown to you, and no tool call runs in this message until then. End this message now with a one-line note; the image will be attached to the next message, and you can make this call there if you still need it.";
+
+function isViewImageCall(request: BrokerToolRequest | undefined): boolean {
+  return request !== undefined && /(?:^|[._])view_image$/.test(request.wireName);
+}
+
 function imageContinuationTraceId(parentTraceId: string, phase: number): string {
   return createHash("sha256")
     .update(`${parentTraceId}:image-continuation:${phase}`)
@@ -1662,6 +1677,15 @@ export function createChatGptWebAdapter(
                       ...undeliveredImages,
                     ]));
                     console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
+                    // Only while ending the message does bring the image: a continuation has to be
+                    // left, or the hold would end the work with the image still unseen.
+                    if (isViewImageCall(callsById.get(message.toolCallId))
+                      && session.phaseNumber() < MAX_IMAGE_CONTINUATION_PHASES
+                      && !attachmentLimitBySession.has(session)
+                      && !bufferStructuredOutput
+                      && session.conversationKey() !== undefined) {
+                      imageHoldRuntimes.add(session.runtime);
+                    }
                   } else if (toolResultHasImage(message.content)) {
                     console.info(`[chatgpt-web] broker image result delivered inline trace=${session.traceId}`);
                   }
@@ -1700,7 +1724,8 @@ export function createChatGptWebAdapter(
               const externalProgress = session.runtime.mode === "tools"
                 ? session.runtime.externalProgress
                 : undefined;
-              const armNextTools = () => turnToken
+              const heldRuntime = session.runtime;
+              const armNextTools = (): Promise<{ type: "tools"; requests: BrokerToolRequest[] }> | undefined => turnToken
                 ? broker.nextToolBatch(turnToken, toolWaitAbort.signal).then(async requests => {
                   if (!externalProgress) {
                     throw new Error("ChatGPT broker returned tools for a read-only browser turn");
@@ -1719,6 +1744,21 @@ export function createChatGptWebAdapter(
                       );
                     }
                     externalProgress.assertToolBatchActive(revision);
+                    if (imageHoldRuntimes.has(heldRuntime)) {
+                      for (const request of requests) {
+                        await broker.completeTool(turnToken, request.callId, {
+                          content: [{ type: "text", text: IMAGE_HOLD_NOTICE }],
+                          isError: true,
+                        });
+                        externalProgress.recordToolResult();
+                      }
+                      console.warn(
+                        `[chatgpt-web] broker held calls=${requests.length}`
+                        + ` (${requests.map(request => request.wireName).join(",")}) until the view_image`
+                        + ` image is shown trace=${session.traceId}`,
+                      );
+                      return armNextTools()!;
+                    }
                   }
                   return { type: "tools" as const, requests };
                 }).catch(error => toolWaitAbort.signal.aborted
