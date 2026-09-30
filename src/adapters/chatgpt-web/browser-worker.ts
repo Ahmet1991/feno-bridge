@@ -1550,9 +1550,14 @@ function throwIfPromptAttachmentAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("ChatGPT prompt attachment aborted", "AbortError");
 }
 
-function withBrowserTurnAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+export function withBrowserTurnAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+  if (signal.aborted) {
+    // The operation is already running. Left unobserved, its rejection when the ending turn closes
+    // the page was unhandled and killed the helper process (30.09, locator.count after an abort).
+    promise.catch(() => {});
+    return Promise.reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
+  }
   return new Promise<T>((resolvePromise, rejectPromise) => {
     const onAbort = () => rejectPromise(new DOMException("ChatGPT web turn aborted", "AbortError"));
     signal.addEventListener("abort", onAbort, { once: true });
@@ -1823,6 +1828,7 @@ export class ChatGptCompletionTracker {
   private lastToolBatchRevision = 0;
   private postToolAnswerBaselineText?: string;
   private missingPostToolAnswerSince?: number;
+  private lastReadText = "";
 
   constructor(
     private readonly stableMs = CHATGPT_COMPLETION_SETTLE_MS,
@@ -1841,10 +1847,21 @@ export class ChatGptCompletionTracker {
     // The caller acknowledges the batch only after this projection is captured. The outer Codex
     // harness therefore cannot execute the tool until this exact pre-tool answer boundary exists.
     this.postToolAnswerBaselineText = currentText;
+    this.lastReadText = currentText;
     this.lastToolBatchRevision = revision;
     this.missingPostToolAnswerSince = undefined;
     this.candidate = undefined;
     return true;
+  }
+
+  /**
+   * Captures the boundary from the newest answer text this turn managed to read, for a page that
+   * cannot be read at all. ChatGPT cannot write past a tool call before its result returns, and the
+   * result cannot return before this acknowledgement, so that text is still the pre-tool answer or
+   * a prefix of it.
+   */
+  observeToolBatchFromLastRead(revision: number): boolean {
+    return this.observeToolBatch(revision, this.lastReadText);
   }
 
   update(
@@ -1855,6 +1872,7 @@ export class ChatGptCompletionTracker {
     },
     now = Date.now(),
   ): boolean {
+    this.lastReadText = state.currentText;
     const signature = `${state.currentText}\0${state.currentHtml ?? state.currentText}`;
     // An outstanding tool call proves the model has more to say, whatever the rendered message
     // currently looks like. Completing here would return a truncated answer and retire the turn
@@ -1895,6 +1913,68 @@ export class ChatGptCompletionTracker {
     }
     return now - this.candidate.since >= this.stableMs;
   }
+}
+
+/**
+ * How long a tool batch waits for a fresh DOM boundary before it is released on the last read
+ * text. A readable page acknowledges within a second; the MCP call behind the batch expires at 90
+ * seconds, and the command itself still has to run inside that window.
+ */
+export const CHATGPT_TOOL_BOUNDARY_FALLBACK_MS = 10_000;
+
+/**
+ * 30.09: ChatGPT asked for a command while its page was too heavy to read (785k characters of
+ * text; every DOM probe outlasted its budget). The batch waited for a boundary read that never
+ * came, its MCP call hit the 90-second deadline, and the whole Codex task failed with "ChatGPT
+ * stopped responding". The observation loop cannot fix this from inside, because it is the thing
+ * that is stuck, so an independent timer releases a batch the loop has not acknowledged in time.
+ *
+ * Returns the function that stops the watch.
+ */
+export function watchChatGptToolBoundary(
+  progress: ChatGptTurnProgressReader,
+  tracker: ChatGptCompletionTracker,
+  traceId: string,
+  delayMs = CHATGPT_TOOL_BOUNDARY_FALLBACK_MS,
+): () => void {
+  const stopped = new AbortController();
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const release = async (revision: number): Promise<void> => {
+    if (stopped.signal.aborted || !tracker.needsToolBatchObservation(revision)) return;
+    tracker.observeToolBatchFromLastRead(revision);
+    console.warn(
+      `[chatgpt-web] browser turn ${traceId} released tool batch ${revision} on its last read answer`
+      + ` after ${delayMs}ms without a fresh DOM boundary`,
+    );
+    await progress.acknowledgeToolBatch(revision);
+  };
+  let armedRevision = 0;
+  const arm = (revision: number): void => {
+    if (revision <= armedRevision) return;
+    armedRevision = revision;
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      void release(revision).catch(error => {
+        console.warn(
+          `[chatgpt-web] browser turn ${traceId} could not release tool batch ${revision}:`
+          + ` ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }, delayMs);
+    timers.add(timer);
+  };
+  void (async () => {
+    let snapshot = progress.snapshot();
+    for (;;) {
+      arm(snapshot.lastToolBatchRevision);
+      snapshot = await progress.waitForChange(snapshot.revision, stopped.signal);
+    }
+  })().catch(() => {});
+  return () => {
+    stopped.abort();
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+  };
 }
 
 export class ChatGptTurnDomHealthTracker {
@@ -5527,6 +5607,7 @@ export class ChatGptBrowserWorker {
     let managedPage: Page | undefined;
     let diagnosticPage: Page | undefined;
     const submissionRejection = new ChatGptSubmissionRejectionObserver();
+    let stopToolBoundaryWatch: (() => void) | undefined;
     this.reactionTimings?.set(turn.traceId, { startedAt: reactionStartedAt, stages: new Map() });
     try {
       if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
@@ -6010,6 +6091,9 @@ export class ChatGptBrowserWorker {
       ));
       await diagnostics.capture(page, "file-attachment-complete");
       const completionTracker = new ChatGptCompletionTracker();
+      if (turn.externalProgress) {
+        stopToolBoundaryWatch = watchChatGptToolBoundary(turn.externalProgress, completionTracker, turn.traceId);
+      }
       if (retainedPath !== undefined && !prepared.multipart) {
         await this.assertRetainedConversation(page, turn, "before_submission", retainedPath);
       }
@@ -6434,6 +6518,7 @@ export class ChatGptBrowserWorker {
       }
       throw error;
     } finally {
+      stopToolBoundaryWatch?.();
       this.reactionTimings?.delete(turn.traceId);
       submissionRejection.dispose();
       prepared.release();

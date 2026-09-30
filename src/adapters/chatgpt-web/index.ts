@@ -155,7 +155,11 @@ function abortError(signal?: AbortSignal): Error {
 
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortError(signal));
+  if (signal.aborted) {
+    // Observe the abandoned operation so its later rejection is not an unhandled one.
+    promise.catch(() => {});
+    return Promise.reject(abortError(signal));
+  }
   return new Promise<T>((resolveWait, rejectWait) => {
     const onAbort = () => rejectWait(abortError(signal));
     signal.addEventListener("abort", onAbort, { once: true });

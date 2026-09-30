@@ -154,7 +154,11 @@ function abortReason(signal: AbortSignal): Error {
 
 function withCompactionAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortReason(signal));
+  if (signal.aborted) {
+    // Observe the abandoned operation so its later rejection is not an unhandled one.
+    promise.catch(() => {});
+    return Promise.reject(abortReason(signal));
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(abortReason(signal));
     signal.addEventListener("abort", onAbort, { once: true });
