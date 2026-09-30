@@ -150,4 +150,6 @@ test("YAYINLA wrapper offers the same one-command dry-run", async () => {
   expect(exitCode, stderr).toBe(0);
   expect(stdout).toContain("YAYIN_PLANI v9.8.7");
   expect(stdout).toContain("DRY_RUN_OK");
-});
+  // cmd, the batch file and a Bun script start in turn; the Windows release runner once needed more
+  // than bun's 5-second default for that (v5.0.63 build, 30.09).
+}, 30_000);

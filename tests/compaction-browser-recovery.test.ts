@@ -233,3 +233,81 @@ test("later multipart stages re-select the staging effort only when the pre-send
     rmSync(diagnostics, { recursive: true, force: true });
   }
 });
+
+function presendFixture(refusals: (label: string) => boolean) {
+  const diagnostics = mkdtempSync(join(tmpdir(), "presend-effort-"));
+  const capabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+  const finalResponse = new Error("fixture reached final response observation");
+  const actions: string[] = [];
+  let stage = "";
+  let selections = 0;
+  const url = "https://chatgpt.com/?temporary-chat=true";
+  const frame = {};
+  const page = Object.assign(new EventEmitter(), {
+    evaluate: async () => ({}), isClosed: () => false, mainFrame: () => frame, url: () => url,
+  });
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    config: { appName: "Codex Native2", browserDiagnosticsPath: diagnostics },
+    runStage: async (_trace: string, name: string, _timeout: number, action: (signal: AbortSignal) => Promise<unknown>) => {
+      stage = name;
+      return action(new AbortController().signal);
+    },
+    prepareTemporaryChatSurface: async () => {},
+    selectModelAndEffort: async (_page: unknown, model: string, effort: string) => {
+      selections += 1;
+      actions.push(`effort:${effort}`);
+      return { ...resolveChatGptWebModelMode(model, effort, capabilities), selection: { url, label: `pick-${selections}` } };
+    },
+    assertSelectedEffort: async (_page: unknown, mode: { selection: { label: string } }) => {
+      if (refusals(mode.selection.label)) {
+        throw new Error("ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.");
+      }
+    },
+    captureSubmissionBaseline: async () => ({}),
+    attachPrompt: async () => { actions.push("attach"); },
+    attachPromptWithCompactionRetry: async () => { actions.push("attach"); },
+    attachFiles: async () => {},
+    sendAttachedPrompt: async (...args: unknown[]) => {
+      const lifecycle = args[5] as { onSendActivated(): Promise<void> };
+      await lifecycle.onSendActivated();
+      actions.push("send");
+      return "user_turn";
+    },
+    waitForNewAssistantTurn: async () => {
+      if (stage === "send") throw finalResponse;
+      return {};
+    },
+  });
+  const run = () => worker.runBrowserTurn({
+    traceId: "presend_effort_fixture",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities,
+    compaction: true,
+    prepare: async () => ({ text: "Continue with the attached image", images: [], release: () => {} }),
+  }, undefined, page);
+  return { actions, finalResponse, run, cleanup: () => rmSync(diagnostics, { recursive: true, force: true }) };
+}
+
+test("a pre-send effort check refused while the composer redraws is read again, not failed (30.09)", async () => {
+  // 30.09 21:31 UTC: an image continuation reused its tab the instant the previous phase ended; the
+  // effort control was still being redrawn and the whole Codex task failed on this check.
+  let refusals = 2;
+  const fixture = presendFixture(() => refusals-- > 0);
+  try {
+    await expect(fixture.run()).rejects.toBe(fixture.finalResponse);
+    expect(fixture.actions).toEqual(["effort:high", "attach", "send"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("a selection that stays refused before send is chosen once more, then sent", async () => {
+  const fixture = presendFixture(label => label === "pick-1");
+  try {
+    await expect(fixture.run()).rejects.toBe(fixture.finalResponse);
+    expect(fixture.actions).toEqual(["effort:high", "attach", "effort:high", "send"]);
+  } finally {
+    fixture.cleanup();
+  }
+}, 20_000);
