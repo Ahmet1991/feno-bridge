@@ -1412,6 +1412,28 @@ export function remainingStageBudgetMs(
 
 export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
+/**
+ * 30.09: a 186k-token conversation kept ChatGPT's React renderer busy in back-to-back renders of
+ * about 2.3 s each while the model worked (one 45 s trace: six renders of 2.2-2.5 s in a row). The
+ * multi-read reconcile probe could not finish inside its 5 s budget. Every timeout was taken for a
+ * dead connection, and each same-page rebind cost about 40 s until the second failed the turn with
+ * "DOM remained unresponsive". A page that still answers a trivial read is busy, not detached.
+ */
+export const CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS = 30_000;
+/** How long a busy page that still answers is waited on, since it was last read, before a rebind. */
+export const CHATGPT_BUSY_PAGE_PATIENCE_MS = 5 * 60_000;
+
+export async function chatGptPageAnswers(
+  page: Pick<Page, "evaluate">,
+  timeoutMs = CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
+  try {
+    await withChatGptBrowserObservationTimeout(page.evaluate(() => 1), timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export class ChatGptBrowserObservationTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -3412,6 +3434,7 @@ export class ChatGptBrowserWorker {
     page: Page,
     cache?: ChatGptSubmissionDomCache,
     signal?: AbortSignal,
+    probeTimeoutMs = CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS,
   ): Promise<ChatGptSubmissionDomState> {
     throwIfPromptAttachmentAborted(signal);
     const observed = await withChatGptBrowserObservationTimeout(withBrowserTurnAbort(page.evaluate(options => {
@@ -3524,7 +3547,7 @@ export class ChatGptBrowserWorker {
       agentIdentityPrefix: CHATGPT_AGENT_TURN_IDENTITY_PREFIX,
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
-    }), signal));
+    }), signal), probeTimeoutMs);
     const snapshot = observed.snapshot ?? cache?.snapshot;
     if (!snapshot) throw new Error("ChatGPT turn DOM revision cache has no baseline snapshot");
     if (observed.snapshot && cache) {
@@ -3725,15 +3748,17 @@ export class ChatGptBrowserWorker {
     binding: ChatGptAssistantTurnBinding,
     signal?: AbortSignal,
     allowMcpContinuationUserTurn = false,
+    probeTimeoutMs = CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS,
   ): Promise<ChatGptAssistantTurnBinding> {
     const boundCount = await withChatGptBrowserObservationTimeout(
       withBrowserTurnAbort(binding.locator.count(), signal),
+      probeTimeoutMs,
     );
     if (boundCount === 1) return binding;
     if (boundCount > 1) {
       throw new Error(`ChatGPT exposed ${boundCount} DOM nodes for the bound assistant turn`);
     }
-    const state = await this.submissionDomState(page, baseline.domCache, signal);
+    const state = await this.submissionDomState(page, baseline.domCache, signal, probeTimeoutMs);
     const acceptedTurns = new Set(binding.acceptedTurnIdentities);
     const newUsers = state.userIdentities.filter(identity => !acceptedTurns.has(identity));
     const hasNewUserTurn = newUsers.length > 0;
@@ -6197,6 +6222,18 @@ export class ChatGptBrowserWorker {
       const domHealthTracker = new ChatGptTurnDomHealthTracker();
       const responseDomCache: ChatGptResponseDomCache = {};
       let consecutiveObservationRebinds = 0;
+      let lastPageReadAt = Date.now();
+      let busyPageSince: number | undefined;
+      let busyPageLogged = false;
+      const markPageRead = (): void => {
+        lastPageReadAt = Date.now();
+        if (busyPageSince === undefined) return;
+        console.info(
+          `[chatgpt-web] browser turn ${turn.traceId} page readable again after`
+          + ` ${Math.round((lastPageReadAt - busyPageSince) / 1000)}s busy`,
+        );
+        busyPageSince = undefined;
+      };
       let internalObservationFaults = 0;
       let observedThisIteration = false;
       let completionFenceRevision: number | undefined;
@@ -6246,6 +6283,11 @@ export class ChatGptBrowserWorker {
         if (!snapshot.responsePresent) {
           try {
             const progressBeforeReconcile = turn.externalProgress?.snapshot();
+            // A page known to be busy gets the liveness budget per read: live on 30.09 the plain
+            // read took up to 12 s there, so no 5 s reconcile finished in five minutes.
+            const probeTimeoutMs = busyPageSince === undefined
+              ? CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS
+              : CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS;
             const rebound = await withChatGptBrowserObservationTimeout(
               this.reconcileAssistantTurnBinding(
                 page,
@@ -6253,7 +6295,10 @@ export class ChatGptBrowserWorker {
                 responseTurn,
                 turn.abortSignal,
                 chatGptExternalToolCallsAreInFlight(progressBeforeReconcile),
+                probeTimeoutMs,
               ),
+              // The reconcile makes two reads in sequence.
+              2 * probeTimeoutMs,
             );
             if (rebound.identity !== responseTurn.identity) {
               responseTurn = rebound;
@@ -6261,8 +6306,20 @@ export class ChatGptBrowserWorker {
               responseDomCache.snapshot = undefined;
               snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
             }
+            markPageRead();
           } catch (error) {
             if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !launcherSurfaceId) throw error;
+            if (Date.now() - lastPageReadAt < CHATGPT_BUSY_PAGE_PATIENCE_MS && await chatGptPageAnswers(page)) {
+              busyPageSince ??= Date.now();
+              if (!busyPageLogged) {
+                busyPageLogged = true;
+                console.warn(
+                  `[chatgpt-web] browser turn ${turn.traceId} page is busy, not detached: waiting instead of rebinding`
+                  + ` (${redactChatGptUiDiagnostic(error.message)})`,
+                );
+              }
+              continue;
+            }
             consecutiveObservationRebinds += 1;
             if (consecutiveObservationRebinds > MAX_CHATGPT_BROWSER_PAGE_REBINDS) {
               throw new Error(
@@ -6288,7 +6345,10 @@ export class ChatGptBrowserWorker {
           }
         }
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
-        if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
+        if (snapshot.responsePresent) {
+          consecutiveObservationRebinds = 0;
+          markPageRead();
+        }
         // The page was read successfully, so the fault budget is genuinely consecutive even when
         // this iteration goes on to `continue` for a rebind, confirmation, or liveness pause.
         internalObservationFaults = 0;
