@@ -3,6 +3,7 @@ const path = require("node:path");
 const { createHash, randomBytes } = require("node:crypto");
 const { clipboard, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
+const { RetainedConversationIndex } = require("./retained-conversations.cjs");
 const {
   runBrowserHelperOperation,
   verifyConnectorWithBrowserHelper,
@@ -65,6 +66,23 @@ const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
 // through a normal workday so a later Codex turn can resume the same conversation. The existing
 // five-tab cap still evicts the oldest idle retained tab when capacity is needed.
 const RETAINED_TURN_TAB_TTL_MS = 12 * 60 * 60 * 1000;
+// A reopened retained conversation must show its exact page, an assistant turn and a composer in
+// this time; otherwise the turn starts a fresh conversation as before.
+const RETAINED_CONVERSATION_RESTORE_TIMEOUT_MS = 20_000;
+// The same assistant-turn evidence the helper requires before resuming a retained conversation
+// (CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR in browser-worker.ts).
+const RETAINED_CONVERSATION_RESTORE_PROBE = `(() => ({
+  path: location.pathname,
+  assistantTurns: document.querySelectorAll([
+    '[data-testid^="conversation-turn-"][data-turn="assistant"]',
+    '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
+    '[data-content-search-unit-key$=":assistant"]',
+  ].join(", ")).length,
+  composer: Boolean(document.querySelector('#prompt-textarea, form [contenteditable="true"]')),
+}))()`;
+// A retained conversation whose page could not even be acquired twice in a row is released: the
+// tab itself is likely broken, and a fresh conversation is the better retry.
+const MAX_UNTOUCHED_RETAINED_FAILURES = 1;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];
@@ -347,6 +365,7 @@ class BrowserHost {
     showWindow = () => {},
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
+    retainedConversationsPath = null,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -382,6 +401,11 @@ class BrowserHost {
     this.visible = false;
     this.surfaceActive = true;
     this.turnTabs = new Map();
+    this.retainedConversations = new RetainedConversationIndex({
+      filePath: retainedConversationsPath,
+      ttlMs: RETAINED_TURN_TAB_TTL_MS,
+      logger,
+    });
     this.automaticTurnHandoffs = new Map();
     this.heavyPhase = { holder: null, queue: [] };
     this.closedTurnOwners = new Map();
@@ -628,6 +652,61 @@ class BrowserHost {
       throw error;
     }
     return tab;
+  }
+
+  /**
+   * Reopens a retained conversation whose tab is gone (restart, eviction or expiry) in a new turn
+   * tab. Resolves the tab only once that exact page shows an assistant turn and a composer; anything
+   * else closes the tab and resolves null, so the turn starts a fresh conversation as before.
+   */
+  async restoreTurnTab(
+    traceId,
+    helperPid,
+    conversationKey,
+    connectorIdentity,
+    url,
+    timeoutMs = RETAINED_CONVERSATION_RESTORE_TIMEOUT_MS,
+  ) {
+    let tab;
+    try {
+      tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity);
+    } catch (error) {
+      this.logger.warn("browser.tab_restore_failed", {
+        traceId,
+        stage: "tab",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    const contents = tab.view.webContents;
+    const expectedPath = new URL(url).pathname;
+    let probe = null;
+    try {
+      // ChatGPT's client routing can abort the committed load; the probe below is the evidence.
+      await contents.loadURL(url).catch(() => {});
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        if (contents.isDestroyed() || this.turnTabs.get(tab.id) !== tab) {
+          throw new Error("the tab closed while the conversation was loading");
+        }
+        probe = await contents.executeJavaScript(RETAINED_CONVERSATION_RESTORE_PROBE, true).catch(() => null);
+        if (probe?.path === expectedPath && probe.assistantTurns > 0 && probe.composer === true) return tab;
+        if (Date.now() >= deadline) throw new Error("the conversation did not render in time");
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    } catch (error) {
+      this.logger.warn("browser.tab_restore_failed", {
+        tabId: tab.id,
+        traceId,
+        stage: "conversation",
+        message: error instanceof Error ? error.message : String(error),
+        samePage: probe?.path === expectedPath,
+        assistantTurns: probe?.assistantTurns ?? null,
+        composer: probe?.composer ?? null,
+      });
+      this.removeTurnTab(tab, true);
+      return null;
+    }
   }
 
   createManualTurnTab(traceId, helperPid, conversationKey, prompt, manualSubmitTimeoutMs) {
@@ -1629,6 +1708,16 @@ class BrowserHost {
     return this.snapshot();
   }
 
+  turnTabPageUrl(tab) {
+    const contents = tab?.view?.webContents;
+    if (contents && !contents.isDestroyed?.()) {
+      try {
+        return contents.getURL();
+      } catch {}
+    }
+    return tab?.url;
+  }
+
   removeTurnTab(tab, abortRunning) {
     if (!this.turnTabs.has(tab.id)) return;
     const handoffs = this.automaticTurnHandoffs?.get(tab.id) || [];
@@ -2447,12 +2536,28 @@ class BrowserHost {
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       this.logger.info("browser.tab_reused", { tabId: existing.id, traceId });
+      if (reused) this.retainedConversations?.markBusy(existing.conversationKey);
       return {
         surfaceId: existing.surfaceId,
         tabId: existing.id,
         reused,
         connectorBound: existing.connectorBound === true,
       };
+    }
+    const restorable = this.retainedConversations?.restorable(conversationKey, connectorIdentity);
+    if (restorable) {
+      const restored = await this.restoreTurnTab(traceId, helperPid, conversationKey, connectorIdentity, restorable.url);
+      if (restored) {
+        this.retainedConversations.markBusy(conversationKey);
+        this.selectedTabId = restored.id;
+        if (reveal) this.show();
+        else this.syncViewVisibility();
+        this.publishState?.(this.snapshot());
+        this.logger.info("browser.tab_restored", { tabId: restored.id, traceId, tabCount: this.turnTabs.size });
+        this.writeDescriptor();
+        return { surfaceId: restored.surfaceId, tabId: restored.id, reused: true, connectorBound: false };
+      }
+      this.retainedConversations.forget(conversationKey);
     }
     if (requireRetainedConversation) {
       const error = new Error("The retained ChatGPT conversation is no longer available");
@@ -2558,6 +2663,7 @@ class BrowserHost {
     message,
     retain = false,
     connectorBound = false,
+    untouched = false,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2634,14 +2740,40 @@ class BrowserHost {
       && (!tab.connectorIdentity || connectorBound)) {
       tab.connectorBound = connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
+      tab.untouchedFailures = 0;
+      this.retainedConversations?.remember(tab.conversationKey, tab.connectorIdentity, this.turnTabPageUrl(tab));
       if (hideAfterTurn && !this.activeTraceId) this.hide();
       this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       return { cancelledByUser };
     }
+    // 30.09: behind a heavy parallel turn the helper could not even acquire the page of a reused
+    // conversation (browser_page timed out after 60 s), so nothing reached it. Releasing it made
+    // Codex's retry resend the whole history as a fresh multipart conversation that ChatGPT refused
+    // at part 5, five times over. Keep the untouched conversation for the retry, once.
+    // A reopened tab has not proven its connector binding yet, so it is released like any failure.
+    if (status === "failed"
+      && untouched
+      && retain
+      && tab.conversationKey
+      && (!tab.connectorIdentity || tab.connectorBound === true)
+      && (tab.untouchedFailures ?? 0) < MAX_UNTOUCHED_RETAINED_FAILURES) {
+      tab.untouchedFailures = (tab.untouchedFailures ?? 0) + 1;
+      tab.status = "ready";
+      tab.message = "Waiting for Codex to retry the turn";
+      tab.lastHeartbeatAt = Date.now();
+      this.retainedConversations?.remember(tab.conversationKey, tab.connectorIdentity, this.turnTabPageUrl(tab));
+      if (hideAfterTurn && !this.activeTraceId) this.hide();
+      this.logger.info("browser.tab_retained", { tabId: tab.id, traceId, untouched: true });
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor();
+      return { cancelledByUser };
+    }
     // A browser tab represents an active Codex turn, not durable task history. The result already
     // lives in Codex, so release the terminal browser document without touching concurrent turns.
+    // A conversation this turn may have written into is no longer a clean resume point.
+    this.retainedConversations?.forget(tab.conversationKey);
     this.removeTurnTab(tab, false);
     if (hideAfterTurn && !this.activeTraceId) this.hide();
     this.logger.info("browser.tab_released", { tabId: tab.id, traceId, status: tab.status });

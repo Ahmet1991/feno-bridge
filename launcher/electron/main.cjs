@@ -1246,6 +1246,8 @@ async function start() {
     publishState: (state) => send("launcher:browser-state", state),
     showWindow: showMainWindow,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
+    // Beside the browser profile whose ChatGPT account owns these conversations.
+    retainedConversationsPath: launcherSmokeTest ? null : path.join(app.getPath("userData"), "retained-conversations.json"),
   });
   if (!launcherSmokeTest) await browserHost.ready();
   const updaterRuntimeRoot = runtimeRootProvider();

@@ -2610,6 +2610,8 @@ export class ChatGptBrowserWorker {
   private readonly personalizationProofCache = new ChatGptPersonalizationProofCache();
   /** The launcher surface a Page belongs to; a surface outlives the per-turn CDP connection. */
   private readonly launcherSurfaceByPage = new WeakMap<Page, string>();
+  /** Launcher turns whose leased page was acquired; a turn that fails before this left its conversation untouched. */
+  private readonly acquiredLauncherPages = new Set<string>();
 
   private proofKey(page: Page): Page | string {
     return this.launcherSurfaceByPage?.get(page) ?? page;
@@ -5401,6 +5403,14 @@ export class ChatGptBrowserWorker {
       throw error;
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      // 30.09: a reused conversation whose page was never acquired (browser_page timed out behind a
+      // heavy parallel turn) received nothing, so the launcher may keep it for Codex's retry instead
+      // of forcing a full-history resend.
+      const untouched = terminal === "failed"
+        && reused
+        && turn.retainConversation === true
+        && this.acquiredLauncherPages?.has(turn.traceId) !== true;
+      this.acquiredLauncherPages?.delete(turn.traceId);
       try {
         const release = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
           phase: "end",
@@ -5409,6 +5419,7 @@ export class ChatGptBrowserWorker {
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
+          ...(untouched ? { retain: true, untouched: true } : {}),
           ...(terminal === "completed" && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
             ? { connectorBound: true }
             : {}),
@@ -5565,6 +5576,7 @@ export class ChatGptBrowserWorker {
         return connection.page;
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
+      if (launcherSurfaceId) this.acquiredLauncherPages?.add(turn.traceId);
       diagnosticPage = page;
       const rebindLauncherPage = async (
         attempt: number,

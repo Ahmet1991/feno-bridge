@@ -3843,3 +3843,220 @@ test("a home page load that finishes during shutdown touches neither the window 
   assert.doesNotThrow(() => BrowserHost.prototype.syncViewVisibility.call(fixture));
   assert.deepEqual(touched, []);
 });
+
+// 30.09: retained conversations outlive their tabs (restart, eviction, expiry) and an untouched
+// failed turn keeps its conversation for Codex's retry.
+const { RetainedConversationIndex } = require("../electron/retained-conversations.cjs");
+const RETAINED_KEY = "e".repeat(64);
+const RETAINED_PAGE = "https://chatgpt.com/c/6abc309d-db8c-83eb-b94e-161ee410b9bb?temporary-chat=true";
+const RETAINED_PATH = "/c/6abc309d-db8c-83eb-b94e-161ee410b9bb";
+
+function retainedTurnFixture(tab, index) {
+  const removed = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[tab.id, tab]]),
+    closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: tab.id,
+    retainedConversations: index,
+    syncViewVisibility() {},
+    writeDescriptor() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    hide() {},
+    logger: { info() {}, warn() {} },
+    removeTurnTab(target) {
+      removed.push(target.id);
+      this.turnTabs.delete(target.id);
+    },
+  });
+  return { fixture, removed };
+}
+
+function runningRetainedTab(connectorBound = true) {
+  return {
+    id: "tab-kept",
+    traceId: "trace_kept",
+    conversationKey: RETAINED_KEY,
+    connectorIdentity: "Codex Native2",
+    connectorBound,
+    helperPid: 777,
+    status: "running",
+    loading: true,
+    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {}, getURL: () => RETAINED_PAGE } },
+  };
+}
+
+test("an untouched failed turn keeps its conversation for one retry and stays a clean resume point", async () => {
+  const index = new RetainedConversationIndex({ ttlMs: 60_000 });
+  index.remember(RETAINED_KEY, "Codex Native2", RETAINED_PAGE);
+  index.markBusy(RETAINED_KEY);
+  const tab = runningRetainedTab();
+  const { fixture, removed } = retainedTurnFixture(tab, index);
+
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  assert.equal(fixture.turnTabs.get(tab.id), tab);
+  assert.equal(tab.status, "ready");
+  assert.equal(tab.connectorBound, true, "the proven binding carries over to the retry");
+  assert.deepEqual(index.restorable(RETAINED_KEY, "Codex Native2"), { url: RETAINED_PAGE });
+
+  tab.status = "running";
+  index.markBusy(RETAINED_KEY);
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  assert.deepEqual(removed, [tab.id], "a second untouched failure releases the tab");
+  assert.equal(index.restorable(RETAINED_KEY, "Codex Native2"), null);
+});
+
+test("a completed retained turn records its page and a failed turn forgets it", async () => {
+  const index = new RetainedConversationIndex({ ttlMs: 60_000 });
+  const tab = runningRetainedTab(false);
+  const { fixture, removed } = retainedTurnFixture(tab, index);
+
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "completed", false, undefined, true, true);
+  assert.deepEqual(index.restorable(RETAINED_KEY, "Codex Native2"), { url: RETAINED_PAGE });
+
+  tab.status = "running";
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "stalled", true, false);
+  assert.deepEqual(removed, [tab.id]);
+  assert.equal(index.restorable(RETAINED_KEY, "Codex Native2"), null);
+});
+
+test("a reopened tab that has not proven its connector is released on an untouched failure", async () => {
+  const index = new RetainedConversationIndex({ ttlMs: 60_000 });
+  index.remember(RETAINED_KEY, "Codex Native2", RETAINED_PAGE);
+  const tab = runningRetainedTab(false);
+  const { fixture, removed } = retainedTurnFixture(tab, index);
+
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  assert.deepEqual(removed, [tab.id]);
+  assert.equal(index.restorable(RETAINED_KEY, "Codex Native2"), null);
+});
+
+function leaseFixture(index, restoreTurnTab, createTurnTab) {
+  return Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map(),
+    userCancelledTurnOwners: new Map(),
+    retainedConversations: index,
+    restoreTurnTab,
+    createTurnTab,
+    syncViewVisibility() {},
+    publishState() {},
+    snapshot: () => ({}),
+    writeDescriptor() {},
+    show() {},
+    logger: { info() {}, warn() {} },
+  });
+}
+
+test("a retained conversation with no open tab is reopened from its saved page", async () => {
+  const index = new RetainedConversationIndex({ ttlMs: 60_000 });
+  index.remember(RETAINED_KEY, "Codex Native2", RETAINED_PAGE);
+  const restoreCalls = [];
+  const fixture = leaseFixture(
+    index,
+    async (...args) => {
+      restoreCalls.push(args);
+      return { id: "tab-restored", surfaceId: "surface-restored" };
+    },
+    async () => assert.fail("a restorable conversation must not start fresh"),
+  );
+
+  const lease = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_restored", false, process.pid, RETAINED_KEY, "Codex Native2",
+  );
+  assert.deepEqual(lease, { surfaceId: "surface-restored", tabId: "tab-restored", reused: true, connectorBound: false });
+  assert.deepEqual(restoreCalls[0].slice(0, 5), ["trace_restored", process.pid, RETAINED_KEY, "Codex Native2", RETAINED_PAGE]);
+  assert.equal(index.restorable(RETAINED_KEY, "Codex Native2"), null, "busy while the resumed turn writes into it");
+});
+
+test("a saved page that no longer opens is forgotten and the turn starts fresh", async () => {
+  const index = new RetainedConversationIndex({ ttlMs: 60_000 });
+  index.remember(RETAINED_KEY, "Codex Native2", RETAINED_PAGE);
+  let created = 0;
+  const fixture = leaseFixture(
+    index,
+    async () => null,
+    async () => {
+      created += 1;
+      return { id: "tab-fresh", surfaceId: "surface-fresh" };
+    },
+  );
+
+  const lease = await BrowserHost.prototype.beginTurn.call(
+    fixture, "trace_fresh", false, process.pid, RETAINED_KEY, "Codex Native2",
+  );
+  assert.equal(lease.reused, false);
+  assert.equal(created, 1);
+  assert.equal(index.restorable(RETAINED_KEY, "Codex Native2"), null);
+
+  index.remember(RETAINED_KEY, "Codex Native2", RETAINED_PAGE);
+  await assert.rejects(
+    BrowserHost.prototype.beginTurn.call(fixture, "trace_required", false, process.pid, RETAINED_KEY, "Codex Native2", true),
+    error => error.code === "retained_conversation_unavailable",
+  );
+});
+
+test("reopening waits until the exact page shows an assistant turn and a composer", async () => {
+  const probes = [
+    null,
+    { path: "/c/another-conversation-0000", assistantTurns: 3, composer: true },
+    { path: RETAINED_PATH, assistantTurns: 0, composer: true },
+    { path: RETAINED_PATH, assistantTurns: 2, composer: true },
+  ];
+  const loaded = [];
+  const tab = {
+    id: "tab-reopened",
+    view: { webContents: {
+      isDestroyed: () => false,
+      loadURL: async (url) => { loaded.push(url); },
+      executeJavaScript: async () => probes.shift() ?? null,
+    } },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(),
+    logger: { warn: () => assert.fail("a rendered conversation is not a failure") },
+    removeTurnTab: () => assert.fail("a rendered conversation keeps its tab"),
+  });
+  fixture.createTurnTab = async () => {
+    fixture.turnTabs.set(tab.id, tab);
+    return tab;
+  };
+
+  const restored = await BrowserHost.prototype.restoreTurnTab.call(
+    fixture, "trace_reopen", 1, RETAINED_KEY, "Codex Native2", RETAINED_PAGE, 5_000,
+  );
+  assert.equal(restored, tab);
+  assert.deepEqual(loaded, [RETAINED_PAGE]);
+  assert.equal(probes.length, 0);
+});
+
+test("a page that never shows the conversation is closed and the restore reports why", async () => {
+  const warnings = [];
+  const removed = [];
+  const tab = {
+    id: "tab-empty",
+    view: { webContents: {
+      isDestroyed: () => false,
+      loadURL: async () => { throw new Error("ERR_ABORTED"); },
+      executeJavaScript: async () => ({ path: RETAINED_PATH, assistantTurns: 0, composer: false }),
+    } },
+  };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(),
+    logger: { warn: (event, detail) => warnings.push([event, detail]) },
+    removeTurnTab: (target, abortRunning) => removed.push([target.id, abortRunning]),
+  });
+  fixture.createTurnTab = async () => {
+    fixture.turnTabs.set(tab.id, tab);
+    return tab;
+  };
+
+  assert.equal(await BrowserHost.prototype.restoreTurnTab.call(
+    fixture, "trace_empty", 1, RETAINED_KEY, "Codex Native2", RETAINED_PAGE, 300,
+  ), null);
+  assert.deepEqual(removed, [["tab-empty", true]]);
+  assert.equal(warnings[0][0], "browser.tab_restore_failed");
+  assert.equal(warnings[0][1].samePage, true);
+  assert.equal(warnings[0][1].assistantTurns, 0);
+});
