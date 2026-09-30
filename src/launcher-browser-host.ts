@@ -384,6 +384,10 @@ export type LauncherTurnActivity =
       message?: string;
       retain?: boolean;
       connectorBound?: boolean;
+      /** The failed turn never acquired its reused conversation's page, so nothing reached it. */
+      untouched?: boolean;
+      /** Steering superseded the aborted turn and its conversation is in a clean state to continue. */
+      superseded?: boolean;
     }
   | {
       /** Take the single-owner lock that keeps concurrent turns off the renderer at the same time. */

@@ -144,6 +144,59 @@ test("browser control server authenticates and owns turn visibility", async () =
       }),
     });
     assert.equal(end.status, 200);
+    // 30.09: a failed turn that never acquired its reused conversation's page reports it untouched.
+    const untouchedEnd = await fetch(`${descriptor.endpoint}/v1/turn/end`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        phase: "end",
+        traceId: "abcdef123456",
+        helperPid: process.pid,
+        status: "failed",
+        retain: true,
+        untouched: true,
+      }),
+    });
+    assert.equal(untouchedEnd.status, 200);
+    const malformedUntouched = await fetch(`${descriptor.endpoint}/v1/turn/end`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        phase: "end",
+        traceId: "abcdef123456",
+        helperPid: process.pid,
+        status: "failed",
+        untouched: "yes",
+      }),
+    });
+    assert.equal(malformedUntouched.status, 400);
+    // 30.09: a steered turn whose conversation is clean reports itself superseded.
+    const supersededEnd = await fetch(`${descriptor.endpoint}/v1/turn/end`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        phase: "end",
+        traceId: "abcdef123456",
+        helperPid: process.pid,
+        status: "aborted",
+        retain: true,
+        connectorBound: true,
+        superseded: true,
+      }),
+    });
+    assert.equal(supersededEnd.status, 200);
+    const malformedSuperseded = await fetch(`${descriptor.endpoint}/v1/turn/end`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        phase: "end",
+        traceId: "abcdef123456",
+        helperPid: process.pid,
+        status: "aborted",
+        superseded: 1,
+      }),
+    });
+    assert.equal(malformedSuperseded.status, 400);
     assert.deepEqual(calls, [
       [
         "start",
@@ -155,7 +208,9 @@ test("browser control server authenticates and owns turn visibility", async () =
         true,
       ],
       ["heartbeat", "abcdef123456", process.pid, true],
-      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true],
+      ["end", "abcdef123456", process.pid, "completed", true, undefined, true, true, false, false],
+      ["end", "abcdef123456", process.pid, "failed", true, undefined, true, false, true, false],
+      ["end", "abcdef123456", process.pid, "aborted", true, undefined, true, true, false, true],
     ]);
     assert.equal(logs.some(([, event]) => event === "browser.turn_started"), true);
     assert.equal(logs.some(([, event]) => event === "browser.turn_ended"), true);

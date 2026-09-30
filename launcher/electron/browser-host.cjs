@@ -65,6 +65,8 @@ const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
 // through a normal workday so a later Codex turn can resume the same conversation. The existing
 // five-tab cap still evicts the oldest idle retained tab when capacity is needed.
 const RETAINED_TURN_TAB_TTL_MS = 12 * 60 * 60 * 1000;
+// A reused conversation whose page could not be acquired is kept for this many retries.
+const MAX_UNTOUCHED_RETAINED_FAILURES = 1;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];
@@ -2346,6 +2348,10 @@ class BrowserHost {
     if (this.userCancelledTurnOwners.has(traceId)) {
       throw new BrowserTurnCancelledError(traceId);
     }
+    // 30.09 live: a helper whose 5 s start request timed out asks again while the first request is
+    // still preparing the tab. That half-prepared tab must never be handed out as a finished new one.
+    const pendingLease = this.pendingTurnLeases?.get(traceId);
+    if (pendingLease) return pendingLease;
     const sameTrace = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
     if (sameTrace && sameTrace.interactionMode !== "automatic") {
       throw new Error(`Browser turn ${traceId} already belongs to Zero Risk interaction`);
@@ -2459,6 +2465,17 @@ class BrowserHost {
       error.code = "retained_conversation_unavailable";
       throw error;
     }
+    const lease = this.leaseNewTurnTab(traceId, reveal, helperPid, conversationKey, connectorIdentity);
+    this.pendingTurnLeases ??= new Map();
+    this.pendingTurnLeases.set(traceId, lease);
+    try {
+      return await lease;
+    } finally {
+      if (this.pendingTurnLeases.get(traceId) === lease) this.pendingTurnLeases.delete(traceId);
+    }
+  }
+
+  async leaseNewTurnTab(traceId, reveal, helperPid, conversationKey, connectorIdentity) {
     const tab = await this.createTurnTab(traceId, helperPid, conversationKey, connectorIdentity);
     this.selectedTabId = tab.id;
     if (reveal) this.show();
@@ -2558,6 +2575,8 @@ class BrowserHost {
     message,
     retain = false,
     connectorBound = false,
+    untouched = false,
+    superseded = false,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2628,14 +2647,45 @@ class BrowserHost {
         return { cancelledByUser };
       }
     }
-    if (status === "completed"
+    // 30.09: a steering message aborts the running response and Codex sends the steered request at
+    // once. Releasing that conversation made the steered request resend the whole history as a
+    // fresh one (6 parts, 112 s of silence). The helper reports it superseded only when the
+    // conversation is clean (nothing sent yet, or the response stopped), so it continues there.
+    const continuesAfterSteering = status === "aborted" && superseded === true;
+    if ((status === "completed" || continuesAfterSteering)
       && retain
       && tab.conversationKey
       && (!tab.connectorIdentity || connectorBound)) {
+      if (continuesAfterSteering) {
+        tab.status = "ready";
+        tab.message = "Continuing with the steered instruction";
+      }
       tab.connectorBound = connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
+      tab.untouchedFailures = 0;
       if (hideAfterTurn && !this.activeTraceId) this.hide();
       this.logger.info("browser.tab_retained", { tabId: tab.id, traceId });
+      this.publishState?.(this.snapshot());
+      this.writeDescriptor();
+      return { cancelledByUser };
+    }
+    // 30.09: behind a heavy parallel turn the helper could not even acquire the page of a reused
+    // conversation (browser_page timed out after 60 s), so nothing reached it. Releasing it made
+    // Codex's retries resend the whole history as a fresh multipart conversation that ChatGPT refused
+    // at part 5, five times over. Keep the untouched conversation, with its proven connector binding,
+    // for one retry; a second miss suggests the tab itself is broken and releases it.
+    if (status === "failed"
+      && untouched
+      && retain
+      && tab.conversationKey
+      && (!tab.connectorIdentity || tab.connectorBound === true)
+      && (tab.untouchedFailures ?? 0) < MAX_UNTOUCHED_RETAINED_FAILURES) {
+      tab.untouchedFailures = (tab.untouchedFailures ?? 0) + 1;
+      tab.status = "ready";
+      tab.message = "Waiting for Codex to retry the turn";
+      tab.lastHeartbeatAt = Date.now();
+      if (hideAfterTurn && !this.activeTraceId) this.hide();
+      this.logger.info("browser.tab_retained", { tabId: tab.id, traceId, untouched: true });
       this.publishState?.(this.snapshot());
       this.writeDescriptor();
       return { cancelledByUser };

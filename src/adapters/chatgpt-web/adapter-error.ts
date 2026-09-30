@@ -42,8 +42,14 @@ export function chatGptBrowserTabClosedError(): ChatGptWebAdapterError {
   );
 }
 
+/**
+ * A newer native Codex instruction (steering) superseded the running response. Unlike other
+ * cancellations its ChatGPT conversation stays valid: the next request continues in it.
+ */
+export class ChatGptTurnSupersededError extends ChatGptWebAdapterError {}
+
 export function chatGptTurnSupersededError(): ChatGptWebAdapterError {
-  return new ChatGptWebAdapterError(
+  return new ChatGptTurnSupersededError(
     "A newer Codex instruction superseded this ChatGPT response.",
     { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false },
   );

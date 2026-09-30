@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { stdin, stderr, stdout } from "node:process";
 import type { CodexProviderConfig } from "../../types";
 import { ChatGptBrowserWorker, closeChatGptBrowserWorkers, type BrowserTurn } from "./browser-worker";
-import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError, chatGptTurnSupersededError } from "./adapter-error";
 import type { ChatGptWebCapabilities } from "./model";
 import { createProcessLineWriter } from "./process-line-writer";
 import { createBrowserHelperPromptSelection } from "./browser-helper-prompt-selection";
@@ -67,7 +67,7 @@ type InputMessage = RunMessage
   | { type: "completion_fence_begin_ack"; id: string; requestId: number; revision: number | null }
   | { type: "completion_fence_commit_ack"; id: string; requestId: number; committed: boolean }
   | { type: "progress"; id: string; snapshot: ChatGptExternalTurnProgressSnapshot }
-  | { type: "abort"; id: string; reason?: "compaction_handoff_accepted" }
+  | { type: "abort"; id: string; reason?: "compaction_handoff_accepted" | "superseded" }
   | { type: "shutdown" };
 
 let outputFailure: Error | undefined;
@@ -478,7 +478,9 @@ input.on("line", line => {
   } else if (message.type === "abort") {
     abortControllers.get(message.id)?.abort(message.reason === "compaction_handoff_accepted"
       ? new ChatGptCompactionHandoffAccepted()
-      : undefined);
+      : message.reason === "superseded"
+        ? chatGptTurnSupersededError()
+        : undefined);
     preparedSelections.get(message.id)?.cancel();
     const waiter = sendActivationWaiters.get(message.id);
     sendActivationWaiters.delete(message.id);

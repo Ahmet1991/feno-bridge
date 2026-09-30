@@ -88,6 +88,7 @@ import { LauncherBrowserHelperClient } from "./launcher-helper-client";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import {
   ChatGptCompactionHandoffAccepted,
+  ChatGptTurnSupersededError,
   ChatGptWebAdapterError,
   chatGptBrowserTabClosedError,
   chatGptRetainedConversationLostError,
@@ -194,6 +195,12 @@ const CHATGPT_BROWSER_USER_TURN_SELECTOR = [
 const CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR = [
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   '[data-content-search-unit-key$=":assistant"]',
+].join(", ");
+// 30.09 live: a response stopped while it showed only agent activity (steering mid-tool) never
+// gets an answer unit in the new app shell; its activity block is still the assistant's turn.
+export const CHATGPT_RETAINED_CONVERSATION_EVIDENCE_SELECTOR = [
+  CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR,
+  "[data-chatgpt-agent-turn-start]",
 ].join(", ");
 
 /** An assistant response that so far shows only agent activity; see submissionDomState. */
@@ -1502,6 +1509,21 @@ export function isHeavyChatGptStage(stage: string): boolean {
 
 export const CHATGPT_MIN_OPERATIONAL_VIEWPORT = Object.freeze({ width: 320, height: 240 });
 
+/** A stopped ChatGPT response has ended once its Stop control is gone; false if it outlasts the wait. */
+export async function waitForChatGptGenerationStopped(
+  page: Pick<Page, "locator">,
+  timeoutMs = 10_000,
+  pollMs = 250,
+): Promise<boolean> {
+  const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!await stop.isVisible().catch(() => true)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, pollMs));
+  }
+}
+
 async function waitForOperationalChatGptViewport(page: Page, signal?: AbortSignal): Promise<void> {
   try {
     await withBrowserTurnAbort(page.waitForFunction(
@@ -2610,6 +2632,12 @@ export class ChatGptBrowserWorker {
   private readonly personalizationProofCache = new ChatGptPersonalizationProofCache();
   /** The launcher surface a Page belongs to; a surface outlives the per-turn CDP connection. */
   private readonly launcherSurfaceByPage = new WeakMap<Page, string>();
+  /** Launcher turns whose leased page was acquired; a turn that fails before this left its conversation untouched. */
+  private readonly acquiredLauncherPages = new Set<string>();
+  /** Launcher turns that started sending a message into their conversation. */
+  private readonly launcherSendStarted = new Set<string>();
+  /** Superseded launcher turns whose response was stopped and whose generation provably ended. */
+  private readonly cleanlyStoppedLauncherTurns = new Set<string>();
 
   private proofKey(page: Page): Page | string {
     return this.launcherSurfaceByPage?.get(page) ?? page;
@@ -2630,7 +2658,7 @@ export class ChatGptBrowserWorker {
   ): Promise<string> {
     const path = new URL(page.url()).pathname;
     const assistantTurns = await withChatGptBrowserObservationTimeout(
-      page.locator(CHATGPT_BROWSER_ASSISTANT_TURN_SELECTOR).count(),
+      page.locator(CHATGPT_RETAINED_CONVERSATION_EVIDENCE_SELECTOR).count(),
     );
     const moved = expectedPath !== undefined && path !== expectedPath;
     if (!moved && assistantTurns > 0) return path;
@@ -5401,6 +5429,29 @@ export class ChatGptBrowserWorker {
       throw error;
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      // 30.09: a reused conversation whose page was never acquired (browser_page timed out after 60 s
+      // behind a heavy parallel turn) received nothing. Releasing it made Codex's retries resend the
+      // whole history as a fresh multipart conversation that ChatGPT refused at part 5, five times
+      // over, so the launcher may keep it for the retry.
+      const untouched = terminal === "failed"
+        && reused
+        && turn.retainConversation === true
+        && this.acquiredLauncherPages?.has(turn.traceId) !== true;
+      // 30.09: a steering message (a newer native instruction) superseded this response, and the
+      // conversation was dropped, so the steered request resent the whole history as a fresh
+      // conversation (6 parts, 112 s of silence). Keep it when it is in a clean state: nothing was
+      // sent into a reused conversation, or the response was stopped and its generation ended.
+      const sendStarted = this.launcherSendStarted?.has(turn.traceId) === true;
+      const continuesAfterSteering = terminal === "aborted"
+        && turn.abortSignal?.reason instanceof ChatGptTurnSupersededError
+        && turn.retainConversation === true
+        && this.acquiredLauncherPages?.has(turn.traceId) === true
+        && (sendStarted
+          ? this.cleanlyStoppedLauncherTurns?.has(turn.traceId) === true
+          : reused);
+      this.acquiredLauncherPages?.delete(turn.traceId);
+      this.launcherSendStarted?.delete(turn.traceId);
+      this.cleanlyStoppedLauncherTurns?.delete(turn.traceId);
       try {
         const release = await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
           phase: "end",
@@ -5409,6 +5460,14 @@ export class ChatGptBrowserWorker {
           status: terminal,
           ...(terminalMessage ? { message: terminalMessage } : {}),
           ...(terminal === "completed" && turn.retainConversation ? { retain: true } : {}),
+          ...(untouched ? { retain: true, untouched: true } : {}),
+          ...(continuesAfterSteering
+            ? {
+              retain: true,
+              superseded: true,
+              ...(turn.nativeConnector || turn.capabilities.localToolsEnabled ? { connectorBound: true } : {}),
+            }
+            : {}),
           ...(terminal === "completed" && (turn.nativeConnector || turn.capabilities.localToolsEnabled)
             ? { connectorBound: true }
             : {}),
@@ -5565,6 +5624,7 @@ export class ChatGptBrowserWorker {
         return connection.page;
       });
       if (!maintenancePage && !launcherSurfaceId) managedPage = page;
+      if (launcherSurfaceId) this.acquiredLauncherPages?.add(turn.traceId);
       diagnosticPage = page;
       const rebindLauncherPage = async (
         attempt: number,
@@ -5795,6 +5855,7 @@ export class ChatGptBrowserWorker {
           if (index === 0 && retainedPath !== undefined) {
             await this.assertRetainedConversation(page, turn, "before_submission", retainedPath);
           }
+          this.launcherSendStarted?.add(turn.traceId);
           const evidence = await this.runStage(
             turn.traceId,
             `multipart_stage_${index + 1}_send`,
@@ -5952,6 +6013,7 @@ export class ChatGptBrowserWorker {
       if (retainedPath !== undefined && !prepared.multipart) {
         await this.assertRetainedConversation(page, turn, "before_submission", retainedPath);
       }
+      this.launcherSendStarted?.add(turn.traceId);
       const finalSubmissionEvidence = await this.runStage(
         turn.traceId,
         "send",
@@ -6069,6 +6131,12 @@ export class ChatGptBrowserWorker {
         if (turn.abortSignal?.aborted) {
           const stop = page.locator(CHATGPT_STOP_BUTTON_SELECTOR).last();
           if (await stop.isVisible().catch(() => false)) await stop.press("Enter").catch(() => {});
+          // Steering continues in this conversation, so its next message must meet a finished
+          // response: wait for the stopped generation to end before calling the stop clean.
+          if (turn.abortSignal.reason instanceof ChatGptTurnSupersededError
+            && await waitForChatGptGenerationStopped(page)) {
+            this.cleanlyStoppedLauncherTurns?.add(turn.traceId);
+          }
           throw new DOMException("ChatGPT web turn aborted", "AbortError");
         }
         if (deadline !== undefined && Date.now() >= deadline) {
