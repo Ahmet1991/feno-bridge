@@ -3954,3 +3954,32 @@ test("a repeated start request waits for the tab still being prepared instead of
   assert.equal(creates, 1);
   assert.equal(fixture.pendingTurnLeases.size, 0);
 });
+
+test("a steered turn that stopped cleanly keeps its conversation ready for the steered request (30.09)", async () => {
+  const tab = runningReusedTab(false);
+  const { fixture, removed } = untouchedTurnFixture(tab);
+
+  await BrowserHost.prototype.endTurn.call(
+    fixture, tab.traceId, tab.helperPid, "aborted", false, "ChatGPT web turn aborted", true, true, false, true,
+  );
+  assert.deepEqual(removed, []);
+  assert.equal(fixture.turnTabs.get(tab.id), tab);
+  assert.equal(tab.status, "ready");
+  assert.equal(tab.connectorBound, true);
+});
+
+test("an aborted turn without the steering mark, or without a proven connector, is released as before", async () => {
+  const plain = runningReusedTab();
+  const plainFixture = untouchedTurnFixture(plain);
+  await BrowserHost.prototype.endTurn.call(
+    plainFixture.fixture, plain.traceId, plain.helperPid, "aborted", false, "stopped by the user", true, true, false, false,
+  );
+  assert.deepEqual(plainFixture.removed, [plain.id]);
+
+  const unbound = runningReusedTab(false);
+  const unboundFixture = untouchedTurnFixture(unbound);
+  await BrowserHost.prototype.endTurn.call(
+    unboundFixture.fixture, unbound.traceId, unbound.helperPid, "aborted", false, "ChatGPT web turn aborted", true, false, false, true,
+  );
+  assert.deepEqual(unboundFixture.removed, [unbound.id]);
+});

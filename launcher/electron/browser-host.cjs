@@ -2576,6 +2576,7 @@ class BrowserHost {
     retain = false,
     connectorBound = false,
     untouched = false,
+    superseded = false,
   ) {
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
@@ -2646,10 +2647,19 @@ class BrowserHost {
         return { cancelledByUser };
       }
     }
-    if (status === "completed"
+    // 30.09: a steering message aborts the running response and Codex sends the steered request at
+    // once. Releasing that conversation made the steered request resend the whole history as a
+    // fresh one (6 parts, 112 s of silence). The helper reports it superseded only when the
+    // conversation is clean (nothing sent yet, or the response stopped), so it continues there.
+    const continuesAfterSteering = status === "aborted" && superseded === true;
+    if ((status === "completed" || continuesAfterSteering)
       && retain
       && tab.conversationKey
       && (!tab.connectorIdentity || connectorBound)) {
+      if (continuesAfterSteering) {
+        tab.status = "ready";
+        tab.message = "Continuing with the steered instruction";
+      }
       tab.connectorBound = connectorBound === true;
       tab.lastHeartbeatAt = Date.now();
       tab.untouchedFailures = 0;
