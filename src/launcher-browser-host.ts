@@ -384,8 +384,6 @@ export type LauncherTurnActivity =
       message?: string;
       retain?: boolean;
       connectorBound?: boolean;
-      /** The failed turn never acquired its reused conversation's page, so nothing reached it. */
-      untouched?: boolean;
     }
   | {
       /** Take the single-owner lock that keeps concurrent turns off the renderer at the same time. */

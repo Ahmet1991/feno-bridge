@@ -1,6 +1,4 @@
 function releaseRetainedConversation(host, conversationKey) {
-  // A superseded conversation must not come back through its saved page either.
-  host.retainedConversations?.forget(conversationKey);
   const retained = [...host.turnTabs.values()].filter((tab) => (
     tab.status === "ready" && tab.conversationKey === conversationKey
   ));
