@@ -949,6 +949,11 @@ export function compileChatGptWebPrompt(
     : mode.localTools
     ? [
       "For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.",
+      // 30.09: asked to "start from the top", the model ran `codex exec --dangerously-bypass-
+      // approvals-and-sandbox` to hand the plan to "Codex". The nested CLI went straight to
+      // api.openai.com, had no network inside the task (os error 10013), and was left running
+      // unsupervised for 40 minutes while the model reported that the work had started.
+      "You are the model working this Codex task. Do the requested work yourself with these tools; do not start the codex CLI (such as `codex` or `codex exec`) from a shell to hand the work to another Codex unless the user explicitly asks to run that CLI. A nested Codex runs outside this task, unsupervised, and its work never reaches this conversation.",
       "Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.",
       "Use actual Codex Native results as evidence for local observations and effects.",
       "Report the actual error when a tool fails. Do not claim that an action was refused or prevented without an explicit tool result or platform error supporting it. If approval is required, use the declared Codex approval flow; a denial does not authorize retrying the action through another tool. Without an error or execution result, say the action was not executed and its cause is unconfirmed.",

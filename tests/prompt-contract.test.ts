@@ -67,6 +67,8 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(tokenMatches).toHaveLength(1);
   expect(compiled.text).toContain("[retired turn handle]");
   expect(transportOnly).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
+  // 30.09: the model handed a plan to a nested `codex exec` that ran unsupervised with no network.
+  expect(transportOnly).toContain("do not start the codex CLI (such as `codex` or `codex exec`) from a shell to hand the work to another Codex unless the user explicitly asks to run that CLI.");
   expect(transportOnly).toContain("Call a Codex Native tool only when the latest active request requires a local effect or fresh local evidence that is not already present in the supplied context; otherwise answer the request directly without a tool call.");
   expect(transportOnly).toContain("Use actual Codex Native results as evidence for local observations and effects.");
   expect(transportOnly).toContain("When the needed local capability is deferred behind a discovery tool, invoke that discovery tool first, then inspect the newly loaded exact tool before acting; do not substitute a similarly named capability.");
