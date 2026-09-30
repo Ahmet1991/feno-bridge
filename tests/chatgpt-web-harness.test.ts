@@ -4974,9 +4974,11 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   expect(prompt.text).toContain("ek olarak bağlandı");
   // 28 Sep: ChatGPT had already read the images in the tool results, and this turn repeated the
   // whole answer. It verifies now, and writes out only what the images change.
-  expect(prompt.text).toContain("Önceki cevabın bu görüntülerle uyuşuyorsa onu tekrarlama");
+  expect(prompt.text).toContain("önceki cevabın bu görüntülerle uyuşuyorsa onu tekrarlama");
   // 28 Sep: "compare with the attachments" made every follow-up reopen an image, four phases deep.
   expect(prompt.text).toContain("onları yeniden açmak için araç çağırma");
+  // 30.09 23:42: a continuation that only read the image ended the Codex task nine steps short.
+  expect(prompt.text).toContain("Görev henüz bitmediyse görüntüden gerekeni al ve kaldığın yerden araçlarla devam edip");
   expect(prompt.text).toMatch(/turn_token turn_[A-Za-z0-9_-]+/);
   expect(delivery.capabilities.localToolsEnabled).toBeTrue();
   expect(delivery.nativeConnector).toBeTrue();

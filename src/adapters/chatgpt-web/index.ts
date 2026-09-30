@@ -167,7 +167,7 @@ const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that the 
  */
 const imageHoldRuntimes = new WeakSet<object>();
 
-const IMAGE_HOLD_NOTICE = "[Feno Bridge] Not run. The image you opened with view_image is waiting to be shown to you, and no tool call runs in this message until then. End this message now with a one-line note; the image will be attached to the next message, and you can make this call there if you still need it.";
+const IMAGE_HOLD_NOTICE = "[Feno Bridge] Not run. The image you opened with view_image is waiting to be shown to you, and no tool call runs in this message until then. End this message now with a one-line note; the image will be attached to the next message, where you look at it and carry on with the task (making this call again there only if you still need it).";
 
 function isViewImageCall(request: BrokerToolRequest | undefined): boolean {
   return request !== undefined && /(?:^|[._])view_image$/.test(request.wireName);
@@ -195,6 +195,18 @@ const DELIVERED_IMAGES_PROMPT = "[Feno Bridge] Önceki araç çağrılarının d
   + " çağırma. Önceki cevabın bu görüntülerle uyuşuyorsa onu tekrarlama; yalnızca bunu doğrulayan tek"
   + " kısa cümle yaz. Görüntüleri göremediğin için yanıtlayamadığın, eksik ya da yanlış kalan bir şey"
   + " varsa yalnızca onu yanıtla veya düzelt. Ekte göremediğin bir şey varsa göremediğini söyle.";
+
+/**
+ * The tool-capable continuation also has to carry the task on. 30.09 23:42 (5.0.62 round 1): the
+ * message ended at step 11 to receive kod.png, the continuation read the code, wrote only
+ * "Görüntüdeki kod: KOD-3DA9." as the prompt above asks, and the Codex task ended nine steps short.
+ */
+const CONTINUATION_IMAGES_PROMPT = "[Feno Bridge] Önceki araç çağrılarının döndürdüğü görüntü(ler) bu"
+  + " mesaja ek olarak bağlandı; bunlar o görüntülerin kendisi, onları yeniden açmak için araç"
+  + " çağırma. Görev henüz bitmediyse görüntüden gerekeni al ve kaldığın yerden araçlarla devam edip"
+  + " görevi tamamla; yalnızca görüntüyü anlatıp durma. Görev zaten bittiyse ve önceki cevabın bu"
+  + " görüntülerle uyuşuyorsa onu tekrarlama, yalnızca bunu doğrulayan tek kısa cümle yaz; uyuşmayan"
+  + " ya da eksik kalan bir şey varsa yalnızca onu düzelt. Ekte göremediğin bir şey varsa göremediğini söyle.";
 
 function unshownImageFinalNotice(count: number): string | undefined {
   return count > 0
@@ -1143,7 +1155,7 @@ export function createChatGptWebAdapter(
         );
       }
       return {
-        text: `${DELIVERED_IMAGES_PROMPT}\n\n${chatGptTurnTokenInstruction(turnToken)}`,
+        text: `${CONTINUATION_IMAGES_PROMPT}\n\n${chatGptTurnTokenInstruction(turnToken)}`,
         images,
         release: () => {},
         requestImages: images.length,
