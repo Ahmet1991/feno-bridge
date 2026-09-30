@@ -5,17 +5,24 @@ import { retainedConversationResumeRequest } from "../src/adapters/chatgpt-web/c
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { chatGptPromptFilePayloads } from "../src/adapters/chatgpt-web/browser-worker";
 
-/**
- * The carried-image tests: since 29 Sep an image the model already saw in its MCP result is not
- * uploaded again, so these pin CODEX_WEB_GPT_TOOL_IMAGES=attach, the fallback that carries every image.
- */
-function attachToolImages(): void {
+function pinToolImages(mode: string | undefined): void {
   const previous = process.env.CODEX_WEB_GPT_TOOL_IMAGES;
-  process.env.CODEX_WEB_GPT_TOOL_IMAGES = "attach";
+  if (mode === undefined) delete process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+  else process.env.CODEX_WEB_GPT_TOOL_IMAGES = mode;
   onTestFinished(() => {
     if (previous === undefined) delete process.env.CODEX_WEB_GPT_TOOL_IMAGES;
     else process.env.CODEX_WEB_GPT_TOOL_IMAGES = previous;
   });
+}
+
+/** Every tool image is carried by attachment, the default again since 30 Sep. */
+function attachToolImages(): void {
+  pinToolImages(undefined);
+}
+
+/** CODEX_WEB_GPT_TOOL_IMAGES=inline trusts the MCP result to have shown the model an image. */
+function inlineToolImages(): void {
+  pinToolImages("inline");
 }
 const capabilities = { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true };
 const token = "turn_12345678901234567890123456789012";
@@ -31,7 +38,8 @@ const shot = (n: number) => [
 const parse = (input: unknown[]) => parseRequest({ model: CHATGPT_WEB_MODEL_ID, reasoning: { effort: "high" }, input });
 const compile = (parsed: ReturnType<typeof parse>) => compileChatGptWebPrompt(parsed, capabilities, token);
 
-test("a screenshot the model already saw in its tool result is not uploaded again on the next turn (29 Sep)", () => {
+test("with CODEX_WEB_GPT_TOOL_IMAGES=inline a screenshot seen in its tool result is not uploaded again", () => {
+  inlineToolImages();
   // Kanal 2, 29 Sep: the next Codex turn re-uploaded the previous round's seven images (~5 s) that
   // ChatGPT had already shown the model inside the retained conversation.
   const parsed = parse([user("Inspect screenshot"), ...shot(1), answer("KOD-1234"), user("Continue")]);

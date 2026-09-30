@@ -20,7 +20,7 @@ import {
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { toolImagesNeedingDelivery } from "./tool-images";
+import { toolImageReachesRunningMessage, toolImagesNeedingDelivery } from "./tool-images";
 import { describeCauseChain } from "../../lib/errors";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
@@ -88,7 +88,7 @@ const MAX_IMAGE_CONTINUATION_PHASES = 4;
 
 // The v5.0.48 wording ("if it is visible to you, use it") made the model reopen the same files: 32
 // view_image calls for 12 images on 28 Sep, against 12 with this one. Keep it.
-const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that cannot be attached to the already-running ChatGPT message. The image will be shown to you in a new message after you finish this message. If you need to see it, do not guess; end this message with a short note.";
+const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that the already-running ChatGPT message cannot show you, and calling the tool again will not show it either. The image will be attached to a new message as soon as you finish this one. If you need to see it, do not guess and do not retry: end this message now with a short note, and continue once the image arrives.";
 
 function imageContinuationTraceId(parentTraceId: string, phase: number): string {
   return createHash("sha256")
@@ -127,7 +127,14 @@ function unshownImageFinalNotice(count: number): string | undefined {
  * continuation). Numbering whatever is kept makes every name unique by construction.
  */
 export function newestToolImages(images: Array<{ imageUrl: string; detail?: string }>): ChatGptWebPromptImage[] {
-  return images.slice(-CHATGPT_MAX_INPUT_IMAGES).map((image, index) => ({
+  // The same screenshot opened again is one attachment, kept at its latest position: on 30.09 one
+  // continuation uploaded four copies of preview.png.
+  const latest = new Map<string, { imageUrl: string; detail?: string }>();
+  for (const image of images) {
+    latest.delete(image.imageUrl);
+    latest.set(image.imageUrl, image);
+  }
+  return [...latest.values()].slice(-CHATGPT_MAX_INPUT_IMAGES).map((image, index) => ({
     ...image,
     ref: `codex-tool-image-${index + 1}`,
   }));
@@ -310,11 +317,14 @@ function structuredContent(text: string): unknown | undefined {
 
 function brokerContent(content: string | CodexContentPart[]): unknown[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
-  return content.map(part => {
-    if (part.type === "text") return { type: "text", text: part.text };
+  // An image the running message cannot show is left out: with it in the result the model read
+  // neither the image nor the note beside it, and re-opened the image five times (30.09).
+  return content.flatMap((part): unknown[] => {
+    if (part.type === "text") return [{ type: "text", text: part.text }];
+    if (!toolImageReachesRunningMessage(part.imageUrl)) return [];
     const parsed = parseDataUrl(part.imageUrl);
-    if (parsed) return { type: "image", data: parsed.base64, mimeType: parsed.mediaType };
-    return { type: "resource_link", uri: part.imageUrl, name: "Codex tool image", mimeType: "image/*" };
+    if (parsed) return [{ type: "image", data: parsed.base64, mimeType: parsed.mediaType }];
+    return [{ type: "resource_link", uri: part.imageUrl, name: "Codex tool image", mimeType: "image/*" }];
   });
 }
 

@@ -11,7 +11,7 @@ import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePa
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
 import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision, priorChatGptAbortedTurnIds } from "../src/adapters/chatgpt-web/environment";
-import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
+import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter, newestToolImages } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { toolImagesNeedingDelivery } from "../src/adapters/chatgpt-web/tool-images";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -30,17 +30,24 @@ import { decodeCompactionSummary, SUMMARY_PREFIX } from "../src/responses/compac
 import { parseRequest } from "../src/responses/parser";
 import type { AdapterEvent, CodexContentPart, CodexParsedRequest, CodexProviderConfig, CodexTool } from "../src/types";
 
-/**
- * The delivery-turn tests: since 29 Sep an image riding in the MCP result is not delivered again, so
- * these pin CODEX_WEB_GPT_TOOL_IMAGES=attach, the fallback that keeps the delivery turn for every image.
- */
-function attachToolImages(): void {
+function pinToolImages(mode: string | undefined): void {
   const previous = process.env.CODEX_WEB_GPT_TOOL_IMAGES;
-  process.env.CODEX_WEB_GPT_TOOL_IMAGES = "attach";
+  if (mode === undefined) delete process.env.CODEX_WEB_GPT_TOOL_IMAGES;
+  else process.env.CODEX_WEB_GPT_TOOL_IMAGES = mode;
   onTestFinished(() => {
     if (previous === undefined) delete process.env.CODEX_WEB_GPT_TOOL_IMAGES;
     else process.env.CODEX_WEB_GPT_TOOL_IMAGES = previous;
   });
+}
+
+/** Every tool image is delivered by attachment, the default again since 30 Sep. */
+function attachToolImages(): void {
+  pinToolImages(undefined);
+}
+
+/** CODEX_WEB_GPT_TOOL_IMAGES=inline: trust the MCP result to show an image, as 28-29 Sep did. */
+function inlineToolImages(): void {
+  pinToolImages("inline");
 }
 
 const tempRoot = join(tmpdir(), `codex-chatgpt-web-harness-${process.pid}-${Date.now()}`);
@@ -4494,7 +4501,9 @@ test("the adapter delivers minimized-window guidance unchanged with a separate r
   expect(delivered?.isError).toBeUndefined();
 });
 
-test("image-only broker output preserves the image and tells the model and user it is not visible yet", async () => {
+test("image-only broker output leaves the image out and tells the model it arrives in a new message (30 Sep)", async () => {
+  // 30 Sep: with the image in the result the model read neither it nor the note beside it, and
+  // opened preview.png five times in a row. A text-only result is read.
   attachToolImages();
   const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
   const events: AdapterEvent[] = [];
@@ -4502,20 +4511,20 @@ test("image-only broker output preserves the image and tells the model and user 
     { wireName: "js", code: "nodeRepl.write('image captured')", content: [image] },
   ], events);
 
-  expect(delivered?.content[0]).toEqual({ type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" });
-  expect(delivered?.content).toHaveLength(2);
-  expect(delivered?.content[1]).toMatchObject({ type: "text" });
-  const notice = (delivered?.content[1] as { text: string }).text;
-  expect(notice).toContain("will be shown to you in a new message");
-  expect(notice).toContain("do not guess");
+  expect(delivered?.content).toHaveLength(1);
+  expect(delivered?.content[0]).toMatchObject({ type: "text" });
+  const notice = (delivered?.content[0] as { text: string }).text;
+  expect(notice).toContain("attached to a new message as soon as you finish this one");
+  expect(notice).toContain("calling the tool again will not show it");
+  expect(notice).toContain("do not guess and do not retry");
   expect(events.filter(event => event.type === "text_delta").map(event => event.text).join(""))
     .toContain("Yerel araçların döndürdüğü 1 görüntü bu tura eklenemedi");
 });
 
-test("an image riding in the tool result reaches the running message and is never delivered again (29 Sep)", async () => {
+test("with CODEX_WEB_GPT_TOOL_IMAGES=inline an image rides in the tool result and is never delivered again", async () => {
   // 28-29 Sep: ChatGPT read every view_image code and Calculator screenshot from the MCP result before
-  // any delivery turn ran. The "cannot be attached" notice only made the model open kod.png twice, and
-  // the delivery turn cost ~20 s to append an "Evet, … uyuşuyor" line.
+  // any delivery turn ran. By 30 Sep it no longer did, so this is the opt-in for when it does again.
+  inlineToolImages();
   const image: CodexContentPart = { type: "image", imageUrl: "data:image/jpeg;base64,/9j/4AAQ" };
   const events: AdapterEvent[] = [];
   const browserTurns: BrowserTurn[] = [];
@@ -4537,14 +4546,26 @@ test("an image riding in the tool result reaches the running message and is neve
   }
 });
 
-test("only an image the MCP result could not carry waits for the delivery turn", () => {
+test("a screenshot opened again is one attachment of the follow-up, kept at its latest position (30 Sep)", () => {
+  // Live: preview.png opened five times became four identical attachments of one continuation.
+  const shot = (n: number) => ({ imageUrl: `data:image/png;base64,SHOT${n}` });
+  const kept = newestToolImages([shot(1), shot(2), shot(1), shot(1), shot(3)]);
+  expect(kept.map(image => image.imageUrl)).toEqual([shot(2), shot(1), shot(3)].map(image => image.imageUrl));
+  expect(kept.map(image => image.ref)).toEqual(["codex-tool-image-1", "codex-tool-image-2", "codex-tool-image-3"]);
+  // The cap still counts distinct images: twelve distinct keep the newest ten.
+  const many = newestToolImages(Array.from({ length: 12 }, (_unused, index) => shot(index + 1)));
+  expect(many.map(image => image.imageUrl)).toEqual(Array.from({ length: 10 }, (_unused, index) => shot(index + 3).imageUrl));
+});
+
+test("every tool image waits for the delivery turn unless the inline opt-in trusts a data URL", () => {
   const inline: CodexContentPart = { type: "image", imageUrl: "data:image/png;base64,iVBORw0KGgo=" };
   const linked: CodexContentPart = { type: "image", imageUrl: "https://example.com/screen.png" };
+  attachToolImages();
   expect(toolImagesNeedingDelivery("text only")).toEqual([]);
+  expect(toolImagesNeedingDelivery([inline, linked])).toEqual([{ imageUrl: inline.imageUrl }, { imageUrl: linked.imageUrl }]);
+  inlineToolImages();
   expect(toolImagesNeedingDelivery([inline, { type: "text", text: "Output:" }])).toEqual([]);
   expect(toolImagesNeedingDelivery([inline, linked])).toEqual([{ imageUrl: linked.imageUrl }]);
-  attachToolImages();
-  expect(toolImagesNeedingDelivery([inline, linked])).toEqual([{ imageUrl: inline.imageUrl }, { imageUrl: linked.imageUrl }]);
 });
 
 test("text-only broker output does not claim an unseen image", async () => {
@@ -4733,14 +4754,11 @@ test("window recovery state survives continuation rounds until the bound screens
     expect(delivered).toHaveLength(3);
     expect(JSON.stringify(delivered[0]!.content)).toContain("[Feno Bridge]");
     expect(JSON.stringify(delivered[1]!.content)).not.toContain("[Feno Bridge]");
-    expect(delivered[2]!.content[0]).toEqual({
-      type: "image",
-      data: "/9j/4AAQ",
-      mimeType: "image/jpeg",
-    });
-    expect(delivered[2]!.content[1]).toMatchObject({ type: "text" });
-    expect((delivered[2]!.content[1] as { text: string }).text)
-      .toContain("will be shown to you in a new message");
+    // The screenshot itself waits for the follow-up message; its result carries only the note.
+    expect(delivered[2]!.content).toHaveLength(1);
+    expect(delivered[2]!.content[0]).toMatchObject({ type: "text" });
+    expect((delivered[2]!.content[0] as { text: string }).text)
+      .toContain("attached to a new message as soon as you finish this one");
     expect(warnings.some(line => line.includes("window recovery returned an image target=process:C:\\\\Feno.exe#4589948")))
       .toBeTrue();
   } finally {
@@ -4907,8 +4925,8 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
     { retained: true, browserTurns },
   );
 
-  // The broker result is untouched: the image still rides on it, with the notice beside it.
-  expect(delivered?.content[0]).toEqual({ type: "image", data: "/9j/4AAQ", mimeType: "image/jpeg" });
+  // The broker result carries only the notice; the image goes to the follow-up turn below.
+  expect(delivered?.content).toEqual([expect.objectContaining({ type: "text" })]);
 
   // One original turn and one tool-capable continuation turn, never more for this fixture.
   expect(browserTurns).toHaveLength(2);
