@@ -917,14 +917,18 @@ export class ChatGptAttachmentLimitError extends ChatGptWebAdapterError {
  * The editor is excluded: the prompt typed into it can say "limit" too.
  */
 export async function chatGptAttachmentLimitNotice(composerForm: Pick<Locator, "evaluate">): Promise<string | undefined> {
-  return composerForm.evaluate(form => {
-    const editor = '[contenteditable="true"], .ProseMirror, textarea';
-    const blocks = [...form.querySelectorAll<HTMLElement>("div, section, p, [role=status], [role=alert]")]
-      .filter(node => !node.closest(editor) && !node.querySelector(editor))
-      .map(node => (node.innerText ?? "").replace(/\s+/g, " ").trim())
-      .filter(text => /limit/i.test(text) && text.length <= 300);
-    return blocks.sort((a, b) => b.length - a.length)[0];
-  }).catch(() => undefined);
+  try {
+    return await composerForm.evaluate(form => {
+      const editor = '[contenteditable="true"], .ProseMirror, textarea';
+      const blocks = [...form.querySelectorAll<HTMLElement>("div, section, p, [role=status], [role=alert]")]
+        .filter(node => !node.closest(editor) && !node.querySelector(editor))
+        .map(node => (node.innerText ?? "").replace(/\s+/g, " ").trim())
+        .filter(text => /limit/i.test(text) && text.length <= 300);
+      return blocks.sort((a, b) => b.length - a.length)[0];
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dialog"]')
@@ -4800,12 +4804,13 @@ export class ChatGptBrowserWorker {
       timeout: Math.min(20_000, remainingMs(acceptanceReserveMs)),
     });
     await input.setInputFiles(files, { timeout: remainingMs(acceptanceReserveMs) });
-    const acceptanceDeadline = Date.now() + Math.min(60_000, remainingMs(0));
+    const acceptanceTimeoutMs = Math.min(60_000, remainingMs(0));
+    const acceptanceDeadline = Date.now() + acceptanceTimeoutMs;
     let acceptanceSettled = false;
     const accepted = Promise.all(files.map(file => (
       composerForm.getByRole("group", { name: file.name, exact: true })
         .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
-        .waitFor({ state: "visible", timeout: Math.max(1, acceptanceDeadline - Date.now()) })
+        .waitFor({ state: "visible", timeout: acceptanceTimeoutMs })
     ))).finally(() => { acceptanceSettled = true; });
     accepted.catch(() => {});
     // When ChatGPT shows its limit notice, it does so within seconds; without watching for it the
