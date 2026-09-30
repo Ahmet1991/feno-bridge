@@ -1904,6 +1904,11 @@ export class ChatGptCompletionTracker {
     return revision > this.lastToolBatchRevision;
   }
 
+  /** False for a batch already observed or overtaken by a newer one, which a late timer can still name. */
+  awaitsToolBatch(revision: number): boolean {
+    return Number.isSafeInteger(revision) && revision > this.lastToolBatchRevision;
+  }
+
   observeToolBatch(revision: number, currentText: string): boolean {
     if (!this.needsToolBatchObservation(revision)) return false;
     // The caller acknowledges the batch only after this projection is captured. The outer Codex
@@ -2002,7 +2007,9 @@ export function watchChatGptToolBoundary(
   const stopped = new AbortController();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const release = async (revision: number): Promise<void> => {
-    if (stopped.signal.aborted || !tracker.needsToolBatchObservation(revision)) return;
+    // 30.09: a batch the page loop observed first is overtaken by the next one before its timer
+    // fires; that timer has nothing left to release.
+    if (stopped.signal.aborted || !tracker.awaitsToolBatch(revision)) return;
     tracker.observeToolBatchFromLastRead(revision);
     console.warn(
       `[chatgpt-web] browser turn ${traceId} released tool batch ${revision} on its last read answer`

@@ -101,7 +101,8 @@ function attachmentLimitFinalNotice(count: number, notice: string): string {
  * Tool images a follow-up message attached, per retained conversation (sha256 of the image URL).
  * The next Codex turn carries the previous round's unseen tool images into its own attachments;
  * one a follow-up already attached is in that conversation, and uploading it again only spent the
- * account's attachment limit (every image went up twice on 30.09).
+ * account's attachment limit (every image went up twice on 30.09). An image the model moved past
+ * (see passOverUnshownImages) is recorded here too, so the next turn does not upload it either.
  */
 const attachedToolImagesByConversation = new Map<string, Set<string>>();
 const MAX_TRACKED_IMAGE_CONVERSATIONS = 64;
@@ -124,6 +125,25 @@ function recordAttachedToolImages(conversationKey: string, images: ReadonlyArray
   for (const image of images) attached.add(toolImageDigest(image.imageUrl));
 }
 
+/**
+ * A tool call made after an image result means the model went on without that image: each result
+ * told it the image arrives only once the message ends. 30.09 22:58: seven screenshots a finished
+ * round had moved past went up with a continuation after its last step, which spent seven of the
+ * account's attachments and got the finished answer repeated. Such images are not attached later,
+ * by this message's continuation or by the next Codex turn.
+ */
+function passOverUnshownImages(session: ChatGptTurnSession): void {
+  const passed = unshownImagesBySession.get(session);
+  if (!passed?.length) return;
+  unshownImagesBySession.delete(session);
+  const conversationKey = session.conversationKey();
+  if (conversationKey) recordAttachedToolImages(conversationKey, passed);
+  console.info(
+    `[chatgpt-web] ${passed.length} unseen tool image(s) passed over by the next tool call, not attached`
+    + ` trace=${session.traceId}`,
+  );
+}
+
 function sessionUnshownImageNotice(session: ChatGptTurnSession): string | undefined {
   const count = (unshownImagesBySession.get(session) ?? []).length;
   const limit = attachmentLimitBySession.get(session);
@@ -137,6 +157,21 @@ const MAX_IMAGE_CONTINUATION_PHASES = 4;
 // The v5.0.48 wording ("if it is visible to you, use it") made the model reopen the same files: 32
 // view_image calls for 12 images on 28 Sep, against 12 with this one. Keep it.
 const BROKER_IMAGE_NOTICE = "[Feno Bridge] This tool returned an image that the already-running ChatGPT message cannot show you, and calling the tool again will not show it either. The image will be attached to a new message as soon as you finish this one. If you need to see it, do not guess and do not retry: end this message now with a short note, and continue once the image arrives.";
+
+/**
+ * Browser turns (runtimes) whose model asked to look at an image with view_image that the running
+ * message cannot show. 30.09 22:41: the model read that notice, kept the message open, and spent
+ * nine minutes on OCR scripts against a calculator screenshot it could have seen one message later.
+ * An explicit view_image is a request to see, so every later call of that message is answered with
+ * IMAGE_HOLD_NOTICE instead of being run, until the model ends it and the image is attached.
+ */
+const imageHoldRuntimes = new WeakSet<object>();
+
+const IMAGE_HOLD_NOTICE = "[Feno Bridge] Not run. The image you opened with view_image is waiting to be shown to you, and no tool call runs in this message until then. End this message now with a one-line note; the image will be attached to the next message, and you can make this call there if you still need it.";
+
+function isViewImageCall(request: BrokerToolRequest | undefined): boolean {
+  return request !== undefined && /(?:^|[._])view_image$/.test(request.wireName);
+}
 
 function imageContinuationTraceId(parentTraceId: string, phase: number): string {
   return createHash("sha256")
@@ -449,6 +484,45 @@ export function separatePhaseText(
     deltas: needsBreak ? deltas.map((delta, index) => index === first ? `\n\n${delta}` : delta) : deltas,
     separatedPhase: phase,
   };
+}
+
+/**
+ * 30.09 22:58: an image continuation after a finished round wrote its 653-character answer again,
+ * word for word, and Codex received the answer twice. A continuation's text is held while it only
+ * repeats the previous answer, released whole as soon as it says anything else, and never sent if
+ * the phase ends that way.
+ */
+const continuationEchoBySession = new WeakMap<ChatGptTurnSession, {
+  phase: number;
+  held: string[];
+  released: boolean;
+}>();
+
+const echoText = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+export function passContinuationText(
+  echo: { phase: number; held: string[]; released: boolean } | undefined,
+  deltas: string[],
+  phase: number,
+  previousAnswer: string | undefined,
+): { deltas: string[]; echo: { phase: number; held: string[]; released: boolean } | undefined } {
+  if (phase === 0 || !previousAnswer?.trim()) return { deltas, echo };
+  const current = echo?.phase === phase ? echo : { phase, held: [], released: false };
+  if (current.released) return { deltas, echo: current };
+  current.held.push(...deltas);
+  const said = current.held.join("");
+  if (echoText(previousAnswer).startsWith(echoText(said))) return { deltas: [], echo: current };
+  // The whole previous answer again and then something new: only the new part is sent.
+  const repeated = previousAnswer.trim();
+  const released = said.trimStart().startsWith(repeated)
+    ? [said.trimStart().slice(repeated.length)]
+    : current.held;
+  return { deltas: released, echo: { phase, held: [], released: true } };
+}
+
+function heldContinuationEcho(session: ChatGptTurnSession, phase: number): number {
+  const echo = continuationEchoBySession.get(session);
+  return echo?.phase === phase && !echo.released ? echo.held.join("").length : 0;
 }
 
 function emitTextDeltas(deltas: string[], emit: (event: AdapterEvent) => void): void {
@@ -1662,6 +1736,15 @@ export function createChatGptWebAdapter(
                       ...undeliveredImages,
                     ]));
                     console.warn(`[chatgpt-web] broker image result cannot be attached to active browser turn trace=${session.traceId}`);
+                    // Only while ending the message does bring the image: a continuation has to be
+                    // left, or the hold would end the work with the image still unseen.
+                    if (isViewImageCall(callsById.get(message.toolCallId))
+                      && session.phaseNumber() < MAX_IMAGE_CONTINUATION_PHASES
+                      && !attachmentLimitBySession.has(session)
+                      && !bufferStructuredOutput
+                      && session.conversationKey() !== undefined) {
+                      imageHoldRuntimes.add(session.runtime);
+                    }
                   } else if (toolResultHasImage(message.content)) {
                     console.info(`[chatgpt-web] broker image result delivered inline trace=${session.traceId}`);
                   }
@@ -1681,8 +1764,16 @@ export function createChatGptWebAdapter(
                 session.appendRoundReasoning(roundKey, trace.map(event => event.text));
                 emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
               };
-              const emitNewText = (deltas: string[]) => {
+              const emitNewText = (newDeltas: string[]) => {
                 if (bufferStructuredOutput) return;
+                const passed = passContinuationText(
+                  continuationEchoBySession.get(session),
+                  newDeltas,
+                  session.phaseNumber(),
+                  lastCompletedAnswerBySession.get(session),
+                );
+                if (passed.echo) continuationEchoBySession.set(session, passed.echo);
+                const deltas = passed.deltas;
                 const separated = separatePhaseText(
                   deltas,
                   session.phaseNumber(),
@@ -1700,7 +1791,8 @@ export function createChatGptWebAdapter(
               const externalProgress = session.runtime.mode === "tools"
                 ? session.runtime.externalProgress
                 : undefined;
-              const armNextTools = () => turnToken
+              const heldRuntime = session.runtime;
+              const armNextTools = (): Promise<{ type: "tools"; requests: BrokerToolRequest[] }> | undefined => turnToken
                 ? broker.nextToolBatch(turnToken, toolWaitAbort.signal).then(async requests => {
                   if (!externalProgress) {
                     throw new Error("ChatGPT broker returned tools for a read-only browser turn");
@@ -1719,6 +1811,22 @@ export function createChatGptWebAdapter(
                       );
                     }
                     externalProgress.assertToolBatchActive(revision);
+                    if (imageHoldRuntimes.has(heldRuntime)) {
+                      for (const request of requests) {
+                        await broker.completeTool(turnToken, request.callId, {
+                          content: [{ type: "text", text: IMAGE_HOLD_NOTICE }],
+                          isError: true,
+                        });
+                        externalProgress.recordToolResult();
+                      }
+                      console.warn(
+                        `[chatgpt-web] broker held calls=${requests.length}`
+                        + ` (${requests.map(request => request.wireName).join(",")}) until the view_image`
+                        + ` image is shown trace=${session.traceId}`,
+                      );
+                      return armNextTools()!;
+                    }
+                    passOverUnshownImages(session);
                   }
                   return { type: "tools" as const, requests };
                 }).catch(error => toolWaitAbort.signal.aborted
@@ -1769,9 +1877,11 @@ export function createChatGptWebAdapter(
                 if (observedOutcome.type === "final") {
                   lastCompletedAnswerBySession.set(session, observedOutcome.answer);
                   if (phase > 0) {
+                    const echoed = heldContinuationEcho(session, phase);
                     console.warn(
                       `[chatgpt-web] image continuation phase=${phase} images=${attachedPhaseImages.length}`
-                      + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)} completed`,
+                      + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)} completed`
+                      + (echoed > 0 ? ` (repeated the previous answer, ${echoed} chars not sent)` : ""),
                     );
                     const attachedIn = session.conversationKey();
                     if (attachedIn) recordAttachedToolImages(attachedIn, attachedPhaseImages);
