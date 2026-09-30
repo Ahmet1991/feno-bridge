@@ -4974,9 +4974,11 @@ test("an image a tool returned mid-turn is delivered by a follow-up turn that at
   expect(prompt.text).toContain("ek olarak bağlandı");
   // 28 Sep: ChatGPT had already read the images in the tool results, and this turn repeated the
   // whole answer. It verifies now, and writes out only what the images change.
-  expect(prompt.text).toContain("Önceki cevabın bu görüntülerle uyuşuyorsa onu tekrarlama");
+  expect(prompt.text).toContain("önceki cevabın bu görüntülerle uyuşuyorsa onu tekrarlama");
   // 28 Sep: "compare with the attachments" made every follow-up reopen an image, four phases deep.
   expect(prompt.text).toContain("onları yeniden açmak için araç çağırma");
+  // 30.09 23:42: a continuation that only read the image ended the Codex task nine steps short.
+  expect(prompt.text).toContain("Görev henüz bitmediyse görüntüden gerekeni al ve kaldığın yerden araçlarla devam edip");
   expect(prompt.text).toMatch(/turn_token turn_[A-Za-z0-9_-]+/);
   expect(delivery.capabilities.localToolsEnabled).toBeTrue();
   expect(delivery.nativeConnector).toBeTrue();
@@ -5003,8 +5005,9 @@ test("after a view_image the running message cannot show, its later calls are he
   ].map(fixture => ({ ...fixture, content: "never run" })), results: [] as BrokerToolResult[] };
   const warnings: string[] = [];
   const warning = spyOn(console, "warn").mockImplementation((...args) => warnings.push(args.join(" ")));
+  let viewed: BrokerToolResult | undefined;
   try {
-    await deliverWindowRecoveryFixtures(
+    [viewed] = await deliverWindowRecoveryFixtures(
       [{ wireName: "view_image", arguments: { path: "calc.png" }, content: [image] }],
       [],
       { retained: true, browserTurns, heldCalls: held },
@@ -5013,6 +5016,9 @@ test("after a view_image the running message cannot show, its later calls are he
     warning.mockRestore();
   }
 
+  // The view_image result says so itself: with the general notice the model opened the same image
+  // two or three more times, each held (30.09 23:50).
+  expect(JSON.stringify(viewed?.content)).toContain("End this message now with a one-line note: no further tool call runs");
   // Neither held call reached Codex (the fixture fails on an unexpected tool call); both were
   // answered at once with the instruction to end the message.
   expect(held.results).toHaveLength(2);
