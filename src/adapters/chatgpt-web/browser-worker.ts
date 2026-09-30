@@ -3285,12 +3285,19 @@ export class ChatGptBrowserWorker {
   ): Promise<SelectedChatGptWebModelMode> {
     // A mode with no effort control has nothing to prove; assertSelectedEffort accepts it too.
     if (!mode.selection) return mode;
-    const deadline = Date.now() + settleMs;
-    for (;;) {
-      if (await this.selectedEffortHolds(page, mode)) return mode;
+    const startedAt = Date.now();
+    const deadline = startedAt + settleMs;
+    for (let reads = 1; ; reads += 1) {
+      if (await this.selectedEffortHolds(page, mode)) {
+        if (reads > 1) {
+          console.info(`[chatgpt-web] pre-send effort check held after ${reads} reads (${Date.now() - startedAt}ms)`);
+        }
+        return mode;
+      }
       if (Date.now() >= deadline) break;
       await settleChatGptUi();
     }
+    console.warn(`[chatgpt-web] pre-send effort check still refused after ${settleMs}ms; choosing the effort again`);
     const reselected = await reselect();
     await this.assertSelectedEffort(page, reselected);
     return reselected;
