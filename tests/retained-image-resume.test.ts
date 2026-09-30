@@ -62,6 +62,15 @@ test("image from preceding tool-result round reaches the next retained browser p
   expect(chatGptPromptFilePayloads(prompt).map(file => file.mimeType)).toEqual(["image/jpeg"]);
 });
 
+test("a screenshot a follow-up message already attached is not uploaded again on the next turn (30 Sep)", () => {
+  attachToolImages();
+  // Live: every tool image went up twice, once with its follow-up and again with the next Codex turn.
+  const parsed = parse([user("Inspect screenshots"), ...shot(1), ...shot(2), answer("Seen"), user("Continue")]);
+  const resumed = retainedConversationResumeRequest(parsed, imageUrl => imageUrl === jpeg(1))!;
+  const prompt = compile(resumed);
+  expect(prompt.images.map(image => image.imageUrl)).toEqual([jpeg(2)]);
+});
+
 test("older screenshot is not repeatedly attached and text-only turns keep their original suffix", () => {
   const parsed = parse([user("Inspect"), ...shot(1), answer("Done"), user("Describe"), answer("Seen"), user("Continue")]);
   const resumed = retainedConversationResumeRequest(parsed)!;

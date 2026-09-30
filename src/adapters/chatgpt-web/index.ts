@@ -97,6 +97,33 @@ function attachmentLimitFinalNotice(count: number, notice: string): string {
     + " bu görüntülere dayanan görsel bir inceleme doğrulanmış değil. Limit açılınca yeni bir turda devam et.";
 }
 
+/**
+ * Tool images a follow-up message attached, per retained conversation (sha256 of the image URL).
+ * The next Codex turn carries the previous round's unseen tool images into its own attachments;
+ * one a follow-up already attached is in that conversation, and uploading it again only spent the
+ * account's attachment limit (every image went up twice on 30.09).
+ */
+const attachedToolImagesByConversation = new Map<string, Set<string>>();
+const MAX_TRACKED_IMAGE_CONVERSATIONS = 64;
+
+function toolImageDigest(imageUrl: string): string {
+  return createHash("sha256").update(imageUrl).digest("hex");
+}
+
+function recordAttachedToolImages(conversationKey: string, images: ReadonlyArray<{ imageUrl: string }>): void {
+  let attached = attachedToolImagesByConversation.get(conversationKey);
+  if (!attached) {
+    attached = new Set();
+    attachedToolImagesByConversation.set(conversationKey, attached);
+    while (attachedToolImagesByConversation.size > MAX_TRACKED_IMAGE_CONVERSATIONS) {
+      const oldest = attachedToolImagesByConversation.keys().next();
+      if (oldest.done) break;
+      attachedToolImagesByConversation.delete(oldest.value);
+    }
+  }
+  for (const image of images) attached.add(toolImageDigest(image.imageUrl));
+}
+
 function sessionUnshownImageNotice(session: ChatGptTurnSession): string | undefined {
   const count = (unshownImagesBySession.get(session) ?? []).length;
   const limit = attachmentLimitBySession.get(session);
@@ -596,7 +623,10 @@ export function createChatGptWebAdapter(
       ? chatGptConversationKey(checkpointInput.parsed, executionNamespace)
       : undefined;
     const resumeInput = conversationKey
-      ? retainedConversationResumeRequest(checkpointInput.parsed)
+      ? retainedConversationResumeRequest(
+        checkpointInput.parsed,
+        imageUrl => attachedToolImagesByConversation.get(conversationKey)?.has(toolImageDigest(imageUrl)) === true,
+      )
       : undefined;
     const retainConversation = conversationKey !== undefined;
     const releaseRetainedConversation = conversationKey && retainedLauncherDescriptor
@@ -1743,6 +1773,8 @@ export function createChatGptWebAdapter(
                       `[chatgpt-web] image continuation phase=${phase} images=${attachedPhaseImages.length}`
                       + ` trace=${imageContinuationTraceId(session.traceId ?? traceId, phase)} completed`,
                     );
+                    const attachedIn = session.conversationKey();
+                    if (attachedIn) recordAttachedToolImages(attachedIn, attachedPhaseImages);
                     activeContinuationImagesBySession.delete(session);
                   }
                 }
