@@ -2435,10 +2435,6 @@ class BrowserHost {
     if (this.userCancelledTurnOwners.has(traceId)) {
       throw new BrowserTurnCancelledError(traceId);
     }
-    // 30.09: a helper that gave up waiting repeats its start request while the first one is still
-    // reopening the saved conversation. Its half-restored tab must never be handed out as a new one.
-    const pendingLease = this.pendingTurnLeases?.get(traceId);
-    if (pendingLease) return pendingLease;
     const sameTrace = [...this.turnTabs.values()].find((tab) => tab.traceId === traceId);
     if (sameTrace && sameTrace.interactionMode !== "automatic") {
       throw new Error(`Browser turn ${traceId} already belongs to Zero Risk interaction`);
@@ -2548,31 +2544,6 @@ class BrowserHost {
         connectorBound: existing.connectorBound === true,
       };
     }
-    const lease = this.leaseRestoredOrNewTurnTab(
-      traceId,
-      reveal,
-      helperPid,
-      conversationKey,
-      connectorIdentity,
-      requireRetainedConversation,
-    );
-    this.pendingTurnLeases ??= new Map();
-    this.pendingTurnLeases.set(traceId, lease);
-    try {
-      return await lease;
-    } finally {
-      if (this.pendingTurnLeases.get(traceId) === lease) this.pendingTurnLeases.delete(traceId);
-    }
-  }
-
-  async leaseRestoredOrNewTurnTab(
-    traceId,
-    reveal,
-    helperPid,
-    conversationKey,
-    connectorIdentity,
-    requireRetainedConversation,
-  ) {
     const restorable = this.retainedConversations?.restorable(conversationKey, connectorIdentity);
     if (restorable) {
       const restored = await this.restoreTurnTab(traceId, helperPid, conversationKey, connectorIdentity, restorable.url);
