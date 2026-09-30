@@ -3843,3 +3843,114 @@ test("a home page load that finishes during shutdown touches neither the window 
   assert.doesNotThrow(() => BrowserHost.prototype.syncViewVisibility.call(fixture));
   assert.deepEqual(touched, []);
 });
+
+// 30.09: an untouched failed turn keeps its conversation for Codex's retry, and a repeated start
+// request never takes a tab that is still being prepared.
+function untouchedTurnFixture(tab) {
+  const removed = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([[tab.id, tab]]),
+    closedTurnOwners: new Map(),
+    userCancelledTurnOwners: new Map(),
+    selectedTabId: tab.id,
+    syncViewVisibility() {},
+    writeDescriptor() {},
+    publishState() {},
+    snapshot: () => ({ tabs: [] }),
+    hide() {},
+    logger: { info() {}, warn() {} },
+    removeTurnTab(target) {
+      removed.push(target.id);
+      this.turnTabs.delete(target.id);
+    },
+  });
+  return { fixture, removed };
+}
+
+function runningReusedTab(connectorBound = true) {
+  return {
+    id: "tab-kept",
+    traceId: "trace_kept",
+    conversationKey: "e".repeat(64),
+    connectorIdentity: "Codex Native2",
+    connectorBound,
+    helperPid: 777,
+    status: "running",
+    loading: true,
+    view: { webContents: { isDestroyed: () => false, setBackgroundThrottling() {} } },
+  };
+}
+
+test("an untouched failed turn keeps its conversation for one retry, then releases a tab that keeps failing", async () => {
+  const tab = runningReusedTab();
+  const { fixture, removed } = untouchedTurnFixture(tab);
+
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  assert.equal(fixture.turnTabs.get(tab.id), tab);
+  assert.equal(tab.status, "ready");
+  assert.equal(tab.connectorBound, true, "the proven binding carries over to the retry");
+
+  tab.status = "running";
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  assert.deepEqual(removed, [tab.id], "a second untouched failure releases the tab");
+});
+
+test("a completed turn resets the untouched allowance, and ordinary failures still release", async () => {
+  const tab = runningReusedTab();
+  const { fixture, removed } = untouchedTurnFixture(tab);
+
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  tab.status = "running";
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "completed", false, undefined, true, true);
+  assert.equal(tab.untouchedFailures, 0);
+  tab.status = "running";
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  assert.equal(fixture.turnTabs.get(tab.id), tab, "the allowance is available again after a completed turn");
+
+  tab.status = "running";
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "stalled", true, false);
+  assert.deepEqual(removed, [tab.id], "a failure that reached the conversation is released as before");
+});
+
+test("an untouched failure without a proven connector binding is released", async () => {
+  const tab = runningReusedTab(false);
+  const { fixture, removed } = untouchedTurnFixture(tab);
+
+  await BrowserHost.prototype.endTurn.call(fixture, tab.traceId, tab.helperPid, "failed", false, "browser_page", true, false, true);
+  assert.deepEqual(removed, [tab.id]);
+});
+
+test("a repeated start request waits for the tab still being prepared instead of taking it", async () => {
+  // 30.09 live: the helper gave up after 5 s and asked again while the first request was still
+  // preparing the tab; the repeat got the half-prepared tab and both proceeded on it.
+  let finishCreate;
+  let creates = 0;
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    manualOperation: null,
+    turnTabs: new Map(),
+    userCancelledTurnOwners: new Map(),
+    syncViewVisibility() {},
+    publishState() {},
+    snapshot: () => ({}),
+    writeDescriptor() {},
+    show() {},
+    logger: { info() {}, warn() {} },
+    async createTurnTab(traceId) {
+      creates += 1;
+      const tab = { id: "tab-preparing", surfaceId: "surface-preparing", traceId, status: "running", interactionMode: "automatic" };
+      this.turnTabs.set(tab.id, tab);
+      await new Promise(resolve => { finishCreate = resolve; });
+      return tab;
+    },
+  });
+
+  const first = BrowserHost.prototype.beginTurn.call(fixture, "trace_race", false, process.pid);
+  await new Promise(resolve => setImmediate(resolve));
+  const repeated = BrowserHost.prototype.beginTurn.call(fixture, "trace_race", false, process.pid);
+  finishCreate();
+  const expected = { surfaceId: "surface-preparing", tabId: "tab-preparing", reused: false, connectorBound: false };
+  assert.deepEqual(await first, expected);
+  assert.deepEqual(await repeated, expected);
+  assert.equal(creates, 1);
+  assert.equal(fixture.pendingTurnLeases.size, 0);
+});
