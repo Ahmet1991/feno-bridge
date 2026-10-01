@@ -176,4 +176,5 @@ test("browser selectors CLI returns JSON and a nonzero exit status for stale com
     await new Promise<void>(ok => control.close(() => ok()));
     rmSync(root, { recursive: true, force: true });
   }
-});
+  // Starts the real CLI twice; the macOS Intel release runner needed more than bun's 5 s (v5.0.66).
+}, 30_000);

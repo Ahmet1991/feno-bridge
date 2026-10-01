@@ -133,7 +133,8 @@ test("daemon streams browser lifecycle through the real helper process", async (
   } finally {
     await client.close();
   }
-});
+  // Starts the real helper process; the macOS Intel release runner needed more than bun's 5 s (v5.0.66).
+}, 30_000);
 
 test("accepted compaction retires through the helper as completed without hiding cancellations or errors", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-helper-compaction-end-"));
