@@ -19,3 +19,4 @@ release-bun.exe
 .playwright-cli/
 output/
 notes.md
+.cache/

@@ -70,4 +70,73 @@ function syncGlobalRouting({ codexHome }) {
   return { status: existing ? "appended" : "installed", path: destination };
 }
 
-module.exports = { syncBundledGuidance, syncGlobalRouting, ROUTING_SECTION };
+// 01.10: through the bridge, jq halved Codex's JSON-log tasks (97 s -> 49 s) and hyperfine
+// shortened timing tasks. The Windows runtime bundle ships both (scripts/windows-cli-tools.ts).
+// They are copied out of the versioned install into one stable folder, so the path Codex is
+// given survives every update. PATH is left alone.
+const CLI_TOOL_NAMES = ["jq.exe", "hyperfine.exe"];
+
+function syncCliTools({ sourceDir, coreHome }) {
+  if (!CLI_TOOL_NAMES.every(name => fs.existsSync(path.join(sourceDir, name)))) return { status: "missing" };
+  const directory = path.join(coreHome, "tools");
+  fs.mkdirSync(directory, { recursive: true });
+  let changed = 0;
+  for (const name of CLI_TOOL_NAMES) {
+    const content = fs.readFileSync(path.join(sourceDir, name));
+    const destination = path.join(directory, name);
+    if (fs.existsSync(destination) && digest(fs.readFileSync(destination)) === digest(content)) continue;
+    try {
+      writeAtomically(destination, content);
+    } catch (error) {
+      // Windows refuses to replace an executable while Codex is running it; the copy in place
+      // still works, and the next launch replaces it.
+      if (error?.code === "EPERM" || error?.code === "EBUSY") return { status: "busy", dir: directory };
+      throw error;
+    }
+    changed += 1;
+  }
+  return { status: changed ? "updated" : "unchanged", dir: directory };
+}
+
+const CLI_TOOLS_START = "<!-- FENO BRIDGE CLI TOOLS START -->";
+const CLI_TOOLS_END = "<!-- FENO BRIDGE CLI TOOLS END -->";
+
+function cliToolsSection(toolsDir) {
+  // A PowerShell single-quoted string doubles its own quote, which an account name may contain.
+  const jq = path.join(toolsDir, "jq.exe").replace(/'/g, "''");
+  const hyperfine = path.join(toolsDir, "hyperfine.exe").replace(/'/g, "''");
+  return `${CLI_TOOLS_START}
+## JSON and timing tools (Feno Bridge)
+
+Feno Bridge installs \`jq\` and \`hyperfine\` in \`${toolsDir}\`, which is not on PATH. Run them with PowerShell's call operator: \`& '${jq}' ...\` and \`& '${hyperfine}' ...\`.
+
+- JSON and JSONL filtering, counting and grouping: use jq rather than \`python -c\`, \`node -e\` or \`ConvertFrom-Json\`. Windows PowerShell 5.1 strips every double quote inside a native command's arguments, \`\\"\` included, and drops an empty \`''\` argument. Never put a double quote in a jq filter: pass each string with \`--arg\` (\`--arg l warning 'select(.level == $l)'\`, regexes too), or put a longer filter in a file and use \`-f filter.jq\`.
+- Timing a command: hyperfine with \`-N -w 2 -r 10 "<command>"\` reports mean ± σ, min and max.
+${CLI_TOOLS_END}`;
+}
+
+// Installed once, like the routing pointer: the user owns AGENTS.md afterwards.
+function syncCliToolsRouting({ codexHome, toolsDir }) {
+  const destination = path.join(codexHome, "AGENTS.md");
+  const existing = fs.existsSync(destination) ? fs.readFileSync(destination, "utf8") : "";
+  const section = cliToolsSection(toolsDir);
+  if (existing.includes(CLI_TOOLS_START) || existing.includes(CLI_TOOLS_END)) {
+    return { status: existing.includes(section) ? "unchanged" : "customized", path: destination };
+  }
+  // A personal rule that already puts jq and hyperfine to work is kept instead of duplicated.
+  if (/\bjq\b/.test(existing) && /\bhyperfine\b/.test(existing)) return { status: "existing", path: destination };
+  fs.mkdirSync(codexHome, { recursive: true });
+  const separator = existing.length && !existing.endsWith("\n") ? "\n\n" : existing.length ? "\n" : "";
+  writeAtomically(destination, `${existing}${separator}${section}\n`);
+  return { status: existing ? "appended" : "installed", path: destination };
+}
+
+module.exports = {
+  syncBundledGuidance,
+  syncGlobalRouting,
+  ROUTING_SECTION,
+  syncCliTools,
+  syncCliToolsRouting,
+  cliToolsSection,
+  CLI_TOOLS_START,
+};

@@ -82,6 +82,8 @@ const libnotifyLicense = readFileSync(
   join(root, "LICENSES", "libnotify-0.8.7-LGPL-2.1.md"),
   "utf8",
 ).trim();
+const jqLicense = readFileSync(join(root, "LICENSES", "jq-1.8.2-COPYING.txt"), "utf8").trim();
+const hyperfineLicense = readFileSync(join(root, "LICENSES", "hyperfine-1.20.0-MIT.txt"), "utf8").trim();
 const output = [
   "codex-chatgpt-web third-party notices",
   "",
@@ -97,6 +99,16 @@ const output = [
   "libnotify 0.8.7 (LGPL-2.1-or-later; Linux launcher only)",
   "=".repeat(80),
   libnotifyLicense,
+  "",
+  "=".repeat(80),
+  "jq 1.8.2 (MIT, with the notices of its bundled components; Windows x64 runtime only, tools/jq.exe)",
+  "=".repeat(80),
+  jqLicense,
+  "",
+  "=".repeat(80),
+  "hyperfine 1.20.0 (MIT OR Apache-2.0, distributed here under MIT; Windows x64 runtime only, tools/hyperfine.exe)",
+  "=".repeat(80),
+  hyperfineLicense,
   "",
   ...sections,
   "",

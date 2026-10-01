@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { VERSION } from "../src/version";
+import { stageWindowsCliTools } from "./windows-cli-tools";
 
 const root = resolve(import.meta.dir, "..");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
@@ -124,6 +125,10 @@ exec "$root/runtime/bun" "$root/app/cli.js" "$@"
 `;
 writeFileSync(join(binDir, launcherName), launcher, process.platform === "win32" ? undefined : { mode: 0o755 });
 if (process.platform !== "win32") chmodSync(join(binDir, launcherName), 0o755);
+// The launcher copies these to a stable folder and points Codex at them; see guidance.cjs.
+if (process.platform === "win32" && process.arch === "x64") {
+  await stageWindowsCliTools(join(output, "tools"), join(root, ".cache", "windows-cli-tools"));
+}
 
 const notices = Bun.spawnSync([
   process.execPath,

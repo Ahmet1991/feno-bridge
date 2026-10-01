@@ -3,7 +3,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { syncBundledGuidance, syncGlobalRouting, ROUTING_SECTION } = require("../electron/guidance.cjs");
+const {
+  syncBundledGuidance, syncGlobalRouting, ROUTING_SECTION, syncCliTools, syncCliToolsRouting, cliToolsSection, CLI_TOOLS_START,
+} = require("../electron/guidance.cjs");
 
 const firstGuide = `---\nname: feno-bridge-guide\ndescription: Help with Feno Bridge and Computer Use.\n---\n\n# Feno Bridge guide\n\nFirst edition.\n`;
 const secondGuide = firstGuide.replace("First edition.", "Second edition.");
@@ -89,4 +91,41 @@ test("global routing preserves a user's personal instructions", (t) => {
   assert.equal(fs.readFileSync(destination, "utf8"), first);
   fs.writeFileSync(destination, "# WINDOWS COMPUTER USE ROUTING\nUse node_repl + @oai/sky.\n");
   assert.equal(syncGlobalRouting({ codexHome }).status, "existing");
+});
+
+test("bundled CLI tools are copied to one stable folder and refreshed only when they change", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "feno-cli-tools-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sourceDir = path.join(root, "runtime", "tools");
+  const coreHome = path.join(root, "core");
+  assert.equal(syncCliTools({ sourceDir, coreHome }).status, "missing");
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, "jq.exe"), "jq one");
+  fs.writeFileSync(path.join(sourceDir, "hyperfine.exe"), "hyperfine one");
+  const first = syncCliTools({ sourceDir, coreHome });
+  assert.deepEqual(first, { status: "updated", dir: path.join(coreHome, "tools") });
+  assert.equal(fs.readFileSync(path.join(coreHome, "tools", "jq.exe"), "utf8"), "jq one");
+  assert.equal(syncCliTools({ sourceDir, coreHome }).status, "unchanged");
+  fs.writeFileSync(path.join(sourceDir, "jq.exe"), "jq two");
+  assert.equal(syncCliTools({ sourceDir, coreHome }).status, "updated");
+  assert.equal(fs.readFileSync(path.join(coreHome, "tools", "jq.exe"), "utf8"), "jq two");
+});
+
+test("the CLI tools pointer names the stable folder once and respects the user's own rule", (t) => {
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "feno-cli-routing-"));
+  t.after(() => fs.rmSync(codexHome, { recursive: true, force: true }));
+  const destination = path.join(codexHome, "AGENTS.md");
+  const toolsDir = path.join("C:\Users\o'neil", ".codex-chatgpt-web", "tools");
+  fs.writeFileSync(destination, "# Personal rules\n");
+  assert.equal(syncCliToolsRouting({ codexHome, toolsDir }).status, "appended");
+  const first = fs.readFileSync(destination, "utf8");
+  assert.ok(first.startsWith("# Personal rules\n"));
+  assert.equal(first.split(CLI_TOOLS_START).length - 1, 1);
+  assert.ok(first.includes(cliToolsSection(toolsDir)));
+  // The account name's apostrophe is doubled inside PowerShell's single-quoted path.
+  assert.ok(first.includes("o''neil"));
+  assert.equal(syncCliToolsRouting({ codexHome, toolsDir }).status, "unchanged");
+  assert.equal(fs.readFileSync(destination, "utf8"), first);
+  fs.writeFileSync(destination, "# CLI TOOLS\n`jq` and `hyperfine` are on PATH.\n");
+  assert.equal(syncCliToolsRouting({ codexHome, toolsDir }).status, "existing");
 });
