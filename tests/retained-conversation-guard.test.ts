@@ -47,7 +47,7 @@ async function runResumedTurn(options: {
       }
       return resolveChatGptWebModelMode(model, effort, capabilities);
     },
-    captureSubmissionBaseline: async () => ({}),
+    captureSubmissionBaseline: async () => ({ initialTurnIdentities: [] }),
     attachPromptWithCompactionRetry: async () => { actions.push("attach"); },
     attachFiles: async () => { actions.push("files"); },
     sendAttachedPrompt: async () => { actions.push("send"); return "user_turn"; },

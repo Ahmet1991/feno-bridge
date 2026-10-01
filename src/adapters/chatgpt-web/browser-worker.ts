@@ -3759,6 +3759,31 @@ export class ChatGptBrowserWorker {
     };
   }
 
+  /**
+   * 01.10 (IPTV, steering): Codex cancelled a running request to deliver the user's new message.
+   * On the big conversation, a turn from the cancelled request appeared 1.3 s after the baseline
+   * was taken and before Send. The submission check then counted it with the new message as "2 new
+   * conversation turns". The new message failed as unconfirmed, and so did all five of Codex's
+   * reconnects. Once the prompt is attached and read back it is still in the composer, so any turn
+   * that appears before Send predates this submission. The baseline is taken again at that point.
+   */
+  private async refreshSubmissionBaseline(
+    page: Page,
+    baseline: ChatGptSubmissionBaseline,
+    traceId: string,
+  ): Promise<ChatGptSubmissionBaseline> {
+    const refreshed = await this.captureSubmissionBaseline(page);
+    const earlier = new Set(baseline.initialTurnIdentities);
+    const appeared = refreshed.initialTurnIdentities.filter(identity => !earlier.has(identity)).length;
+    if (appeared > 0) {
+      console.info(
+        `[chatgpt-web] browser turn ${traceId}: ${appeared} conversation turn(s) appeared while the prompt was`
+        + " being attached; they predate this submission",
+      );
+    }
+    return refreshed;
+  }
+
   private async waitForNewAssistantTurn(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
@@ -6162,6 +6187,7 @@ export class ChatGptBrowserWorker {
           if (index === 0 && retainedPath !== undefined) {
             await this.assertRetainedConversation(page, turn, "before_submission", retainedPath);
           }
+          stageBaseline = await this.refreshSubmissionBaseline(page, stageBaseline, turn.traceId);
           this.launcherSendStarted?.add(turn.traceId);
           const evidence = await this.runStage(
             turn.traceId,
@@ -6329,6 +6355,7 @@ export class ChatGptBrowserWorker {
       if (retainedPath !== undefined && !prepared.multipart) {
         await this.assertRetainedConversation(page, turn, "before_submission", retainedPath);
       }
+      submissionBaseline = await this.refreshSubmissionBaseline(page, submissionBaseline, turn.traceId);
       this.launcherSendStarted?.add(turn.traceId);
       const finalSubmissionEvidence = await this.runStage(
         turn.traceId,

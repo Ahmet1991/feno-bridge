@@ -35,7 +35,7 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
       actions.push(`effort:${effort}`);
       return resolveChatGptWebModelMode(model, effort, capabilities);
     },
-    captureSubmissionBaseline: async () => ({}),
+    captureSubmissionBaseline: async () => ({ initialTurnIdentities: [] }),
     attachPrompt: async (_page: unknown, _text: string, localTools: boolean) => {
       expect(localTools).toBe(false);
       actions.push("attach:plain");
@@ -140,7 +140,7 @@ test("effort selection retries one transient model-controls miss after reloading
       }
       return resolveChatGptWebModelMode(model, effort, capabilities);
     },
-    captureSubmissionBaseline: async () => ({}),
+    captureSubmissionBaseline: async () => ({ initialTurnIdentities: [] }),
     attachPromptWithCompactionRetry: async () => { throw reachedPrompt; },
   });
 
@@ -188,7 +188,7 @@ test("later multipart stages re-select the staging effort only when the pre-send
     assertSelectedEffort: async (_page: unknown, mode: { selection: { url: string } }) => {
       if (mode.selection.url !== url) throw new Error("ChatGPT changed the selected model's browser surface before submission");
     },
-    captureSubmissionBaseline: async () => ({}),
+    captureSubmissionBaseline: async () => ({ initialTurnIdentities: [] }),
     attachPrompt: async () => { actions.push("attach"); },
     attachPromptWithCompactionRetry: async () => { actions.push("attach"); },
     attachFiles: async () => {},
@@ -263,7 +263,7 @@ function presendFixture(refusals: (label: string) => boolean) {
         throw new Error("ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.");
       }
     },
-    captureSubmissionBaseline: async () => ({}),
+    captureSubmissionBaseline: async () => ({ initialTurnIdentities: [] }),
     attachPrompt: async () => { actions.push("attach"); },
     attachPromptWithCompactionRetry: async () => { actions.push("attach"); },
     attachFiles: async () => {},
