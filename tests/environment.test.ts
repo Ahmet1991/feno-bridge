@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, toNamespacedPath } from "node:path";
-import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
+import { chatGptRequestItemShape, extractChatGptTurnEnvironment, extractChatGptTurnIdentity } from "../src/adapters/chatgpt-web/environment";
 import {
   rememberCompactionContinuation,
   stageCompactionContinuationPendingWork,
@@ -83,6 +83,87 @@ function currentWire(
 }
 
 describe("trusted current Codex environment envelope", () => {
+  for (const tagged of [true, false]) {
+    test(`accepts an open-page context between the environment and greeting (${tagged ? "tagged" : "canonical"})`, () => {
+      const request = currentWire();
+      const body = request._rawBody as { input: Array<Record<string, unknown>> };
+      if (tagged) {
+        for (const item of body.input) {
+          item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+        }
+      }
+      body.input.splice(1, 0, {
+        type: "message", role: "user", id: "msg_page_context",
+        ...(tagged ? { internal_chat_message_metadata_passthrough: {
+          turn_id: "turn_current", content_item_kinds: ["additional_content.codex_apps_open_page"],
+        } } : {}),
+        content: [{ type: "input_text", text: '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>' }],
+      });
+      expect(extractChatGptTurnEnvironment(request).cwd).toBe(root);
+    });
+  }
+
+  for (const tagged of [true, false]) {
+    test(`accepts a tool declaration between the environment and the greeting (${tagged ? "tagged" : "canonical"}, 01.10)`, () => {
+      // Codex Desktop 0.159.2: the first message of a new thread failed with "missing cwd" when an
+      // additional_tools item sat between the environment and the user's instruction.
+      const request = currentWire();
+      const body = request._rawBody as { input: Array<Record<string, unknown>> };
+      if (tagged) {
+        for (const item of body.input) {
+          item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+        }
+      }
+      body.input.splice(1, 0, { type: "additional_tools", role: "developer", id: "tools_page", tools: [] }, {
+        type: "message", role: "user", id: "msg_page_context",
+        ...(tagged ? { internal_chat_message_metadata_passthrough: { turn_id: "turn_current" } } : {}),
+        content: [{ type: "input_text", text: '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>' }],
+      }, { type: "additional_tools", role: "developer", id: "tools_late", tools: [] });
+      expect(extractChatGptTurnEnvironment(request).cwd).toBe(root);
+      expect(chatGptRequestItemShape(request)).toBe(tagged
+        ? "message/user= additional_tools/developer- message/user= additional_tools/developer- message/user="
+        : "message/user- additional_tools/developer- message/user- additional_tools/developer- message/user-");
+    });
+  }
+
+  test("a tool declaration does not let the walk cross another turn's page context", () => {
+    const request = currentWire();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of body.input) {
+      item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    }
+    body.input.splice(1, 0, {
+      type: "message", role: "user", id: "msg_old_page_context",
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_old" },
+      content: [{ type: "input_text", text: '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>' }],
+    }, { type: "additional_tools", role: "developer", id: "tools_page", tools: [] });
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+  });
+
+  test("does not cross an open-page context owned by another turn", () => {
+    const request = currentWire();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    for (const item of body.input) {
+      item.internal_chat_message_metadata_passthrough = { turn_id: "turn_current" };
+    }
+    body.input.splice(1, 0, {
+      type: "message", role: "user", id: "msg_old_page_context",
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_old" },
+      content: [{ type: "input_text", text: '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>' }],
+    });
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+  });
+
+  test("does not cross an unowned page context", () => {
+    const request = currentWire();
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    body.input.splice(1, 0, {
+      type: "message", role: "user",
+      content: [{ type: "input_text", text: '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>' }],
+    });
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+  });
+
   test("accepts the v0.146 split envelope when workspace and sandbox metadata agree", () => {
     expect(extractChatGptTurnEnvironment(currentWire())).toEqual({
       cwd: root,
