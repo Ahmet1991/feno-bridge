@@ -1468,6 +1468,26 @@ export const CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS = 30_000;
 /** How long a busy page that still answers is waited on, since it was last read, before a rebind. */
 export const CHATGPT_BUSY_PAGE_PATIENCE_MS = 5 * 60_000;
 
+/**
+ * 01.10: after an update dropped the retained chat, an IPTV task resumed as a fresh 9-part
+ * conversation (about 670k characters). ChatGPT kept that page busy and every response read took
+ * 4-5 s, but the read had a fixed 2 s budget. Each read timed out and counted as "no response
+ * yet", so in 27 tool calls Codex received none of the model's commentary. The budget now doubles
+ * after a read that runs out, up to 16 s, and halves once reads finish within a quarter of it. It
+ * settles where the page can answer, and a responsive page keeps 2 s.
+ */
+export const CHATGPT_RESPONSE_READ_TIMEOUT_MS = 2_000;
+export const MAX_CHATGPT_RESPONSE_READ_TIMEOUT_MS = 16_000;
+
+export function nextChatGptResponseReadTimeoutMs(
+  currentMs: number,
+  read: { timedOut: boolean; elapsedMs: number },
+): number {
+  if (read.timedOut) return Math.min(currentMs * 2, MAX_CHATGPT_RESPONSE_READ_TIMEOUT_MS);
+  if (read.elapsedMs < currentMs / 4) return Math.max(currentMs / 2, CHATGPT_RESPONSE_READ_TIMEOUT_MS);
+  return currentMs;
+}
+
 export async function chatGptPageAnswers(
   page: Pick<Page, "evaluate">,
   timeoutMs = CHATGPT_BROWSER_LIVENESS_PROBE_TIMEOUT_MS,
@@ -2236,6 +2256,8 @@ interface ChatGptResponseDomCache {
   snapshot?: ChatGptResponseDomSnapshot;
   fullScans?: number;
   cacheHits?: number;
+  /** Budget for the next response read; see nextChatGptResponseReadTimeoutMs. */
+  readTimeoutMs?: number;
 }
 
 const absentResponseDomSnapshot = (): ChatGptResponseDomSnapshot => ({
@@ -4950,6 +4972,9 @@ export class ChatGptBrowserWorker {
     responseTurn: Locator,
     cache?: ChatGptResponseDomCache,
   ): Promise<ChatGptResponseDomSnapshot> {
+    const readTimeoutMs = cache?.readTimeoutMs ?? CHATGPT_RESPONSE_READ_TIMEOUT_MS;
+    const readStartedAt = performance.now();
+    let readTimedOut = false;
     const observed = await responseTurn.evaluate((element, options) => {
       const root = element as HTMLElement;
       // The completion footer is a sibling of the assistant's unit key inside the shared
@@ -5553,7 +5578,22 @@ export class ChatGptBrowserWorker {
       stoppedThinkingLabels: [...CHATGPT_STOPPED_THINKING_LABELS],
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
-    }, { timeout: 2_000 }).catch(() => undefined);
+    }, { timeout: readTimeoutMs }).catch(error => {
+      readTimedOut = error instanceof Error && error.name === "TimeoutError";
+      return undefined;
+    });
+    if (cache) {
+      const nextTimeoutMs = nextChatGptResponseReadTimeoutMs(readTimeoutMs, {
+        timedOut: readTimedOut,
+        elapsedMs: performance.now() - readStartedAt,
+      });
+      if (nextTimeoutMs > readTimeoutMs) {
+        console.warn(
+          `[chatgpt-web] response read ran out of its ${readTimeoutMs}ms budget; the next read gets ${nextTimeoutMs}ms`,
+        );
+      }
+      cache.readTimeoutMs = nextTimeoutMs;
+    }
     if (!observed) {
       if (responseTurn.page().isClosed()) {
         throw chatGptBrowserTabClosedError();
