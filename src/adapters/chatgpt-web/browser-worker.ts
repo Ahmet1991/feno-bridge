@@ -3290,8 +3290,10 @@ export class ChatGptBrowserWorker {
     if (!mode.selection) return mode;
     const startedAt = Date.now();
     const deadline = startedAt + settleMs;
+    let refusal: string | undefined;
     for (let reads = 1; ; reads += 1) {
-      if (await this.selectedEffortHolds(page, mode)) {
+      refusal = await this.selectedEffortRefusal(page, mode);
+      if (refusal === undefined) {
         if (reads > 1) {
           console.info(`[chatgpt-web] pre-send effort check held after ${reads} reads (${Date.now() - startedAt}ms)`);
         }
@@ -3300,7 +3302,9 @@ export class ChatGptBrowserWorker {
       if (Date.now() >= deadline) break;
       await settleChatGptUi();
     }
-    console.warn(`[chatgpt-web] pre-send effort check still refused after ${settleMs}ms; choosing the effort again`);
+    console.warn(
+      `[chatgpt-web] pre-send effort check still refused after ${settleMs}ms (${refusal}); choosing the effort again`,
+    );
     const reselected = await reselect();
     await this.assertSelectedEffort(page, reselected);
     return reselected;
@@ -3308,12 +3312,17 @@ export class ChatGptBrowserWorker {
 
   /** Whether the pre-send check would accept this selection as it stands; never throws. */
   private async selectedEffortHolds(page: Page, mode: SelectedChatGptWebModelMode): Promise<boolean> {
-    if (!mode.selection) return false;
+    return mode.selection !== undefined && await this.selectedEffortRefusal(page, mode) === undefined;
+  }
+
+  /** Why the pre-send check would refuse this selection right now, or undefined; never throws. */
+  private async selectedEffortRefusal(page: Page, mode: SelectedChatGptWebModelMode): Promise<string | undefined> {
     try {
       await this.assertSelectedEffort(page, mode, 5_000);
-      return true;
-    } catch {
-      return false;
+      return undefined;
+    } catch (error) {
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : undefined;
+      return cause ?? (error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -3326,15 +3335,25 @@ export class ChatGptBrowserWorker {
     const composer = await this.activeComposer(page, composerTimeoutMs);
     const controls = composer.locator("xpath=ancestor::form[1]")
       .locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-    if (page.url() !== mode.selection.url || !mode.selection.label || await controls.count() !== 1) {
-      throw chatGptModelControlUnavailableAdapterError("ChatGPT changed the selected model's browser surface before submission");
+    const controlCount = await controls.count();
+    const surfaceChange = page.url() !== mode.selection.url ? "the page address changed"
+      : !mode.selection.label ? "the selection has no label"
+        : controlCount !== 1 ? `${controlCount} effort controls are visible`
+          : undefined;
+    if (surfaceChange) {
+      throw chatGptModelControlUnavailableAdapterError(
+        `ChatGPT changed the selected model's browser surface before submission (${surfaceChange})`,
+      );
     }
     const control = controls.first();
-    if ((await control.innerText()).trim() !== mode.selection.label
-      || await control.getAttribute("aria-expanded") !== "false"
-      || !await composer.isEditable()) {
+    const label = (await control.innerText()).trim();
+    const retention = label !== mode.selection.label ? `the effort control reads "${label}", not "${mode.selection.label}"`
+      : await control.getAttribute("aria-expanded") !== "false" ? "the effort menu is still open"
+        : !await composer.isEditable() ? "the composer is not editable"
+          : undefined;
+    if (retention) {
       throw chatGptModelControlUnavailableAdapterError(
-        "ChatGPT did not retain the selected effort in its ready composer; the message was not submitted",
+        `ChatGPT did not retain the selected effort in its ready composer (${retention}); the message was not submitted`,
       );
     }
   }
