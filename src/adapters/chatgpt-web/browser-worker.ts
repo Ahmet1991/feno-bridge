@@ -155,6 +155,9 @@ const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
  */
 export const CHATGPT_UI_SETTLE_MS = 250;
 export const CHATGPT_SEND_ENABLE_GRACE_MS = 5_000;
+/** A fresh Temporary Chat's wait for its editor, and the wait after one reload (see temporaryChatComposer). */
+export const CHATGPT_TEMPORARY_CHAT_COMPOSER_WAIT_MS = 45_000;
+export const CHATGPT_TEMPORARY_CHAT_RELOAD_WAIT_MS = 60_000;
 /** How long a refused pre-send effort check is re-read before the effort is chosen again. */
 export const CHATGPT_PRESEND_EFFORT_SETTLE_MS = 4_000;
 
@@ -3365,6 +3368,32 @@ export class ChatGptBrowserWorker {
     );
   }
 
+  /**
+   * The editor of a freshly loaded Temporary Chat, given time to hydrate. 01.10 06:46 UTC (5.0.64):
+   * right after a Codex compaction two new Temporary Chats in a row showed only ChatGPT's
+   * server-rendered <textarea> beside 143k characters of not yet hydrated page text, and the 30 s
+   * wait failed the Codex task both times; the same page had its editor minutes later. A longer
+   * wait, then one reload and another, ride out a renderer that is busy rather than broken.
+   */
+  private async temporaryChatComposer(
+    page: Pick<Page, "reload">,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    firstWaitMs = CHATGPT_TEMPORARY_CHAT_COMPOSER_WAIT_MS,
+    reloadWaitMs = CHATGPT_TEMPORARY_CHAT_RELOAD_WAIT_MS,
+  ): Promise<Locator> {
+    try {
+      return await this.activeComposer(page as Page, firstWaitMs);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith("ChatGPT composer is unavailable")) throw error;
+      console.warn(
+        `[chatgpt-web] Temporary Chat editor did not hydrate within ${firstWaitMs}ms; reloading the page once`,
+      );
+      await captureDiagnostic?.("temporary-chat-composer-reload");
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+      return await this.activeComposer(page as Page, reloadWaitMs);
+    }
+  }
+
   /** Put every browser operation on one fully hydrated Temporary Chat document. */
   private async prepareTemporaryChatSurface(
     page: Page,
@@ -3394,7 +3423,7 @@ export class ChatGptBrowserWorker {
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
     // observation error; the authenticated-session check below owns login failures.
-    const composer = await this.activeComposer(page);
+    const composer = await this.temporaryChatComposer(page, captureDiagnostic);
     if (await dismissChatGptTemporaryChatOnboarding(page)) {
       await captureDiagnostic?.("temporary-chat-onboarding-dismissed");
     }
