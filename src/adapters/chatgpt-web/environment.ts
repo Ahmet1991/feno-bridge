@@ -219,6 +219,11 @@ function contextualUserMessage(value: Record<string, unknown>): boolean {
   const text = rawMessageText(value).trim();
   return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)
     || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(text)
+    // The Codex desktop app records which of its pages is open as a user-role item and adds a new
+    // one when that page changes mid-turn. 01.10 14:32 UTC: read as a new instruction, it gave the
+    // tool result's request a new trace; the running browser turn was aborted and the resend met
+    // ChatGPT's still-open answer ("2 new conversation turns"), failing the task.
+    || /^<external_codex_apps_([a-z_]+)>[\s\S]*<\/external_codex_apps_\1>$/.test(text)
     || isReadableCompactionSummaryText(text)
     || text === OPAQUE_COMPACTION_NOTE;
 }
