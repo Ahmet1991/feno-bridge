@@ -1293,6 +1293,85 @@ test("adapter compact returns one same-agent handoff and preserves a pre-existin
   }
 });
 
+test("waiting for the source to settle does not spend the checkpoint request's budget (01.10)", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-settle-budget-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://settle-budget-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      appName: "Codex Native DEV",
+      localToolsEnabled: true,
+      solAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
+      turnTimeoutMs: 1_200,
+    },
+  };
+  const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  const sourceRequest = request(false);
+  const namespace = chatGptWebExecutionNamespace(provider);
+  const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
+  // The source is still answering when the compaction arrives, and settles 900 ms later.
+  chatGptTurnSessions.getOrCreate(sourceKey, () => ({
+    mode: "read-only",
+    browser: new Promise<string>(resolve => setTimeout(() => resolve("source complete"), 900)),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    usageInput: sourceRequest,
+    conversationKey: chatGptConversationKey(sourceRequest, namespace)!,
+    releaseRetainedConversation: async () => {},
+    cancel() {},
+  }));
+
+  // ChatGPT then takes 700 ms to write the checkpoint: 1.6 s in all, 0.7 s of it handoff.
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    const prepared = await turn.prepareResume!();
+    const binding = controlBinding(prepared.text);
+    prepared.release();
+    await new Promise(resolve => setTimeout(resolve, 700));
+    await callTurnBroker(provider.chatgptWeb!.brokerSocketPath!, {
+      method: "submit_compaction_handoff",
+      token: binding.token,
+      handoffId: binding.handoffId,
+      summary: "Checkpoint after a slow source",
+    });
+    return "Checkpoint submitted through MCP";
+  };
+  const compact = structuredClone(sourceRequest);
+  compact._compactionRequest = true;
+  (compact._rawBody as { client_metadata: Record<string, unknown> }).client_metadata = {
+    "x-codex-turn-metadata": JSON.stringify({
+      thread_id: "thread_retained_compaction",
+      turn_id: "turn_compact",
+    }),
+  };
+  const events: AdapterEvent[] = [];
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      compact,
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    const text = events
+      .filter((event): event is Extract<AdapterEvent, { type: "text_delta" }> => event.type === "text_delta")
+      .map(event => event.text)
+      .join("");
+    expect(events.find(event => event.type === "error")).toBeUndefined();
+    expect(text).toContain("Checkpoint after a slow source");
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    chatGptTurnSessions.clear();
+    await broker.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test("a compact HTTP observer can reconnect without sending a second retained-chat message", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-compact-reconnect-"));
   const provider: CodexProviderConfig = {
