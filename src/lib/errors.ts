@@ -94,6 +94,13 @@ export function isClientClosedMessage(text: string): boolean {
 
 export function classifyError(status: number, type: string, message: string): CodexErrorPayload {
   const text = message.toLowerCase();
+  // The bridge's own browser page was not ready; the model was never reached. Classified as
+  // "server_is_overloaded" these showed in Codex as "Selected model is at capacity" (01.10: a
+  // Temporary Chat whose editor did not hydrate after a compaction stopped an IPTV task). An
+  // unrecognized code keeps the real message, and Codex retries it, which reopens the page.
+  if (/^chatgpt (composer is|model controls are) unavailable\b/.test(text)) {
+    return { message, type: "server_error", code: "chatgpt_page_not_ready" };
+  }
   // Preserve explicit cancel types; unify message-inferred client closes onto
   // client_closed_request for /api/logs.
   if (type === "client_cancelled") {

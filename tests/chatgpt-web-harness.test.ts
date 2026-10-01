@@ -1007,6 +1007,17 @@ describe("ChatGPT outer-native harness v4", () => {
       internal_chat_message_metadata_passthrough: { turn_id: "turn_test_123" },
     });
     expect(chatGptTurnExecutionKey(notified)).toBe(chatGptTurnExecutionKey(second));
+    // 01.10: the Codex desktop app adds its open-page context mid-turn; it is not a new instruction.
+    const pageChanged = structuredClone(second);
+    const openPage = `<external_codex_apps_open_page>{"page_id":"settings"}</external_codex_apps_open_page>`;
+    pageChanged.context.messages.push({ role: "user", content: openPage, timestamp: Date.now() });
+    ((pageChanged._rawBody as { input: unknown[] }).input).push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: openPage }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_test_123" },
+    });
+    expect(chatGptTurnExecutionKey(pageChanged)).toBe(chatGptTurnExecutionKey(second));
     const steered = structuredClone(second);
     steered.context.messages.push({
       role: "user",
