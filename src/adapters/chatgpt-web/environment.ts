@@ -92,6 +92,28 @@ function itemTurnId(value: unknown): string | undefined {
   return typeof turnId === "string" ? turnId : undefined;
 }
 
+/**
+ * The shape of a request's last input items, without any content, for the log line written when
+ * no trusted environment is found. 01.10: a Codex Desktop failure could only be reproduced by
+ * guessing the item order, because the request itself was never recorded. Each entry is
+ * `type/role[content kinds]` followed by `=` (this turn), `~` (another turn) or `-` (no turn id).
+ */
+export function chatGptRequestItemShape(parsed: CodexParsedRequest, limit = 12): string {
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  return input.slice(-limit).map(value => {
+    const item = record(value);
+    const metadata = record(item?.internal_chat_message_metadata_passthrough);
+    const kinds = Array.isArray(metadata?.content_item_kinds)
+      ? metadata.content_item_kinds.map(kind => String(kind).split(".").at(-1)).join("+")
+      : "";
+    const owner = itemTurnId(item);
+    const provenance = owner === undefined ? "-" : owner === turnId ? "=" : "~";
+    return `${String(item?.type ?? "?")}/${String(item?.role ?? "")}${kinds ? `[${kinds}]` : ""}${provenance}`;
+  }).join(" ");
+}
+
 function rawMessageText(value: Record<string, unknown>): string {
   if (typeof value.content === "string") return value.content;
   if (!Array.isArray(value.content)) return "";
@@ -215,6 +237,11 @@ export function unattributedChatGptEnvironmentMessages(
   return messages.length > 0 ? messages : undefined;
 }
 
+function isCodexAppsContextMessage(value: Record<string, unknown>): boolean {
+  return value.type === "message" && value.role === "user"
+    && /^<external_codex_apps_([a-z_]+)>[\s\S]*<\/external_codex_apps_\1>$/.test(rawMessageText(value).trim());
+}
+
 function contextualUserMessage(value: Record<string, unknown>): boolean {
   const text = rawMessageText(value).trim();
   return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)
@@ -223,7 +250,7 @@ function contextualUserMessage(value: Record<string, unknown>): boolean {
     // one when that page changes mid-turn. 01.10 14:32 UTC: read as a new instruction, it gave the
     // tool result's request a new trace; the running browser turn was aborted and the resend met
     // ChatGPT's still-open answer ("2 new conversation turns"), failing the task.
-    || /^<external_codex_apps_([a-z_]+)>[\s\S]*<\/external_codex_apps_\1>$/.test(text)
+    || isCodexAppsContextMessage(value)
     || isReadableCompactionSummaryText(text)
     || text === OPAQUE_COMPACTION_NOTE;
 }
@@ -420,9 +447,14 @@ function environmentBeforeUser(
 
   let candidateIndex = userIndex - 1;
   let candidate = record(input[candidateIndex]);
-  while (candidate?.type === "message" && candidate.role === "developer") {
-    const developerTurnId = itemTurnId(candidate);
-    if (developerTurnId !== userTurnId) return undefined;
+  // The desktop inserts page context between the environment and the user's instruction.
+  // Cross it only with the same native provenance checks as developer context. 01.10: Codex
+  // Desktop 0.159.2 put its open-page item there, the walk stopped on it, and every new thread's
+  // first message failed with "missing cwd". An `additional_tools` declaration is crossed too: it
+  // is a Codex-built tool list with no text and no turn id, so it can carry no environment claim.
+  while (candidate?.type === "additional_tools"
+    || (candidate?.type === "message" && (candidate.role === "developer" || isCodexAppsContextMessage(candidate)))) {
+    if (candidate.type === "message" && itemTurnId(candidate) !== userTurnId) return undefined;
     candidateIndex -= 1;
     candidate = record(input[candidateIndex]);
   }
@@ -580,10 +612,14 @@ function canonicalMetadataEnvironmentBeforeUser(
 
   let candidateIndex = userIndex - 1;
   let candidate = record(input[candidateIndex]);
-  while (candidate?.type === "message" && candidate.role === "developer") {
-    const developerTurnId = itemTurnId(candidate);
-    const serverOwnedId = typeof candidate.id === "string" && candidate.id.length > 0;
-    if (developerTurnId === undefined ? !serverOwnedId : developerTurnId !== metadataTurnId) return undefined;
+  // A Codex-built additional_tools declaration has no text to claim anything; see environmentBeforeUser.
+  while (candidate?.type === "additional_tools"
+    || (candidate?.type === "message" && (candidate.role === "developer" || isCodexAppsContextMessage(candidate)))) {
+    if (candidate.type === "message") {
+      const developerTurnId = itemTurnId(candidate);
+      const serverOwnedId = typeof candidate.id === "string" && candidate.id.length > 0;
+      if (developerTurnId === undefined ? !serverOwnedId : developerTurnId !== metadataTurnId) return undefined;
+    }
     candidateIndex -= 1;
     candidate = record(input[candidateIndex]);
   }
