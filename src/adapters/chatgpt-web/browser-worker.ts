@@ -5,7 +5,7 @@ import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
 import { formatBrowserTurnReactionLog } from "./reaction-timing";
 import { chatGptWebContextOverflowWarning } from "./usage";
 import { ChatGptPersonalizationProofCache } from "./personalization-proof-cache";
-import { selectedEffortMatches } from "./selected-effort";
+import { sameEffortLabel, selectedEffortMatches } from "./selected-effort";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
   atomicWriteFile,
@@ -3347,7 +3347,7 @@ export class ChatGptBrowserWorker {
     }
     const control = controls.first();
     const label = (await control.innerText()).trim();
-    const retention = label !== mode.selection.label ? `the effort control reads "${label}", not "${mode.selection.label}"`
+    const retention = !sameEffortLabel(label, mode.selection.label) ? `the effort control reads "${label}", not "${mode.selection.label}"`
       : await control.getAttribute("aria-expanded") !== "false" ? "the effort menu is still open"
         : !await composer.isEditable() ? "the composer is not editable"
           : undefined;
