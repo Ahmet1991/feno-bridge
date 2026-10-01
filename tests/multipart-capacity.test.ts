@@ -229,7 +229,8 @@ test("multipart compiler balances whole records against token and composer budge
     expect(Math.max(...messages.map(message => estimateTokens(message)))).toBeLessThanOrEqual(tokenBudget);
     expect(Math.max(...messages.map(message => message.length))).toBeLessThanOrEqual(charBudget);
   }
-}, 20_000);
+  // 27.8 s on the v5.0.70 release run's macOS Intel runner.
+}, 60_000);
 
 test("multipart compiler reserves image tokens from the final part budget", () => {
   const plusCapabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: false };
