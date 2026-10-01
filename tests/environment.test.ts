@@ -1005,7 +1005,8 @@ describe("trusted Codex task environment continuity", () => {
       );
       expect(store.resolve(request).cwd).toBe(root);
     }
-  });
+    // Four fixture databases took 5.57 s on the v5.0.69 release run's Windows runner.
+  }, 30_000);
 
   for (const format of ["v1", "v2"]) for (const groupedPreamble of [false, true]) test(`${format} ${groupedPreamble ? "grouped preamble" : "context-only"} continuation requires a matching current rollout, not just a checkpoint`, () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
