@@ -22,7 +22,7 @@ const {
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
-const { syncBundledGuidance, syncGlobalRouting } = require("./guidance.cjs");
+const { syncBundledGuidance, syncGlobalRouting, syncCliTools, syncCliToolsRouting } = require("./guidance.cjs");
 const {
   createLogger,
   exportSanitizedLogs,
@@ -1179,6 +1179,15 @@ async function start() {
       if (process.platform === "win32") {
         const routing = syncGlobalRouting({ codexHome: LAUNCHER_PROFILE.codexHome });
         logger.info("launcher.global_routing_sync", { status: routing.status });
+        const tools = syncCliTools({
+          sourceDir: path.join(process.resourcesPath, "runtime", "tools"),
+          coreHome: LAUNCHER_PROFILE.coreHome,
+        });
+        logger.info("launcher.cli_tools_sync", { status: tools.status });
+        if (tools.dir) {
+          const cliRouting = syncCliToolsRouting({ codexHome: LAUNCHER_PROFILE.codexHome, toolsDir: tools.dir });
+          logger.info("launcher.cli_tools_routing_sync", { status: cliRouting.status });
+        }
       }
     } catch (error) {
       logger.warn("launcher.guidance_sync_failed", {

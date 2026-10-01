@@ -116,6 +116,16 @@ try {
       || !fs.readFileSync(globalGuidance, "utf8").includes("<!-- FENO BRIDGE WINDOWS COMPUTER USE START -->")) {
       throw new Error("Packaged Windows launcher did not install global Computer Use routing");
     }
+    if (process.arch === "x64") {
+      for (const tool of ["jq.exe", "hyperfine.exe"]) {
+        if (!fs.existsSync(path.join(coreHome, "tools", tool))) {
+          throw new Error(`Packaged Windows launcher did not install ${tool}`);
+        }
+      }
+      if (!fs.readFileSync(globalGuidance, "utf8").includes("<!-- FENO BRIDGE CLI TOOLS START -->")) {
+        throw new Error("Packaged Windows launcher did not point Codex at its CLI tools");
+      }
+    }
   }
   const installedRuntime = path.join(
     coreHome,
