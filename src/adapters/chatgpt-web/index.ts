@@ -1461,6 +1461,11 @@ export function createChatGptWebAdapter(
                       );
                       preserveFinalResponse = !settlement.compactionInstructionDelivered;
                       interruptedWork = settlement.interruptedWork ?? [];
+                      // 01.10: settling a stalled source took 3.5 of the five minutes, and the
+                      // deadline cut ChatGPT off 84 s into writing the checkpoint. Codex's retry
+                      // then rebuilt the whole history in twelve parts. Like each fallback phase,
+                      // the handoff request gets its own budget once the source has settled.
+                      armHandoffDeadline();
                       rawSummary = await requestRetainedCompactionHandoff(
                         worker,
                         parsed,
@@ -1478,6 +1483,7 @@ export function createChatGptWebAdapter(
                         await withAbort(source.physicalSettlement, operationSignal);
                         preserveFinalResponse = true;
                       }
+                      armHandoffDeadline();
                       rawSummary = await requestRetainedCompactionHandoff(
                         worker,
                         parsed,

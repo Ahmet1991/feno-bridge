@@ -448,6 +448,9 @@ export class ChatGptMarkdownBuffer {
     let sawPending = false;
     let previousSourceStart: number | undefined;
     const observedOrder: (number | null)[] = [];
+    // Upstream #727: two identical paragraphs without source ranges share tag and text; their
+    // occurrence tells them apart.
+    const semanticOccurrences = new Map<string, number>();
 
     for (const [observedOrdinal, segment] of segments.entries()) {
       if (segment.sourceStart !== undefined) {
@@ -458,7 +461,16 @@ export class ChatGptMarkdownBuffer {
         }
         previousSourceStart = segment.sourceStart;
       }
-      const committedIndex = this.committedIndex(segment);
+      const semanticIdentity = segment.sourceStart === undefined && segment.tag && segment.text.trim()
+        ? `${segment.tag}\0${segment.text}`
+        : undefined;
+      const semanticOccurrence = semanticIdentity
+        ? (semanticOccurrences.get(semanticIdentity) ?? 0) + 1
+        : undefined;
+      if (semanticIdentity && semanticOccurrence !== undefined) {
+        semanticOccurrences.set(semanticIdentity, semanticOccurrence);
+      }
+      const committedIndex = this.committedIndex(segment, semanticOccurrence);
       if (committedIndex !== undefined) {
         const committed = this.committed[committedIndex]!;
         observedOrder.push(committedIndex);
@@ -516,7 +528,10 @@ export class ChatGptMarkdownBuffer {
     return pending;
   }
 
-  private committedIndex(segment: ChatGptMarkdownSegment): number | undefined {
+  private committedIndex(
+    segment: ChatGptMarkdownSegment,
+    semanticOccurrence?: number,
+  ): number | undefined {
     const exact = this.committed.findIndex(committed => (
       segment.sourceStart !== undefined && committed.sourceStart !== undefined
         ? segment.sourceStart === committed.sourceStart && segment.tag === committed.tag
@@ -529,7 +544,9 @@ export class ChatGptMarkdownBuffer {
     const semanticMatches = this.committed
       .map((committed, index) => ({ committed, index }))
       .filter(({ committed }) => committed.tag === segment.tag && committed.text === segment.text);
-    return semanticMatches.length === 1 ? semanticMatches[0]!.index : undefined;
+    return semanticOccurrence === undefined
+      ? undefined
+      : semanticMatches[semanticOccurrence - 1]?.index;
   }
 
   private matchesLatestPending(segment: ChatGptMarkdownSegment): boolean {
