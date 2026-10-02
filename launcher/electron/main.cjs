@@ -36,7 +36,11 @@ const {
   registerLoggedIpc,
 } = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
-const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
+const {
+  ensurePackagedRuntime,
+  pruneRuntimeVersions,
+  waitForPackagedRuntimeSource,
+} = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
@@ -1203,7 +1207,21 @@ async function start() {
       });
     }
   }
-  const startHidden = process.argv.includes("--hidden") && stateStore.read().onboardingComplete;
+  if (app.isPackaged && installedRuntimeRoot) {
+    // In the background: removing dozens of old bundles takes minutes on Windows.
+    pruneRuntimeVersions({
+      versionsRoot: path.join(CORE_HOME, "versions"),
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    }).then(
+      result => logger.info("launcher.runtime_versions_pruned", result),
+      error => logger.warn("launcher.runtime_versions_prune_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+  const startHidden =process.argv.includes("--hidden") && stateStore.read().onboardingComplete;
   nativeTheme.themeSource = "system";
   mainWindow = createWindow({
     logger,

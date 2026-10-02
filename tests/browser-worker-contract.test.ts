@@ -17,7 +17,11 @@ import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
 import { CHATGPT_FILE_UPLOAD_INPUT_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptPersonalizationProofCache } from "../src/adapters/chatgpt-web/personalization-proof-cache";
-import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
+import {
+  ChatGptExternalTurnProgress,
+  chatGptExternalToolCallsAreInFlight,
+  chatGptMcpContinuationIsPossible,
+} from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
 import { estimateCompiledChatGptWebInputTokens } from "../src/adapters/chatgpt-web/input-tokens";
@@ -323,6 +327,25 @@ test("assistant tracking rebinds only one proven replacement after React detache
     "conversation-turn-2",
     ["conversation-turn-1", "conversation-turn-3", "conversation-turn-4"],
   )).toThrow("2 new conversation turns");
+});
+
+test("an MCP continuation stays possible after the tool call that opened it returns", () => {
+  // Live on 02.10 (trace 121ebccc0fc6): a write_stdin result returned at 14:12:36, the bound
+  // response detached on a busy page at 14:12:58 with no call in flight, and the continuation
+  // user turn ChatGPT had opened failed a 13-minute task as foreign.
+  expect(chatGptMcpContinuationIsPossible(undefined, 0)).toBeFalse();
+  const progress = new ChatGptExternalTurnProgress();
+  const acceptedAt = progress.snapshot().revision;
+  expect(chatGptMcpContinuationIsPossible(progress.snapshot(), acceptedAt)).toBeFalse();
+  progress.recordToolBatch(1, 1_000);
+  expect(chatGptMcpContinuationIsPossible(progress.snapshot(), acceptedAt)).toBeTrue();
+  progress.recordToolResult(2_000);
+  const returned = progress.snapshot();
+  expect(chatGptExternalToolCallsAreInFlight(returned)).toBeFalse();
+  expect(chatGptMcpContinuationIsPossible(returned, acceptedAt)).toBeTrue();
+  // Once the continuation is accepted at that revision, a later user turn with no tool activity
+  // since is foreign again.
+  expect(chatGptMcpContinuationIsPossible(progress.snapshot(), returned.revision)).toBeFalse();
 });
 
 test("assistant tracking accepts a replacement turn during proven MCP continuation", async () => {
