@@ -131,6 +131,40 @@ function syncCliToolsRouting({ codexHome, toolsDir }) {
   return { status: existing ? "appended" : "installed", path: destination };
 }
 
+// 02.10: a model step through the bridge (median 6.8 s over 3329 calls) outweighs the command it
+// runs (2.2 s). Asking Codex to batch the reads it already knows it needs took a five-read task
+// from 7 and 2 calls (71 s, 57 s) to one call (32 s, 34 s) with the same answers, and cut input
+// tokens by half across eight runs.
+const ROUND_TRIPS_START = "<!-- FENO BRIDGE FEWER ROUND TRIPS START -->";
+const ROUND_TRIPS_END = "<!-- FENO BRIDGE FEWER ROUND TRIPS END -->";
+
+function roundTripsSection(platform) {
+  const readMany = platform === "win32"
+    ? "`Get-Content -Path a, b, c` (or one short script that prints each file under a header)"
+    : "`head -n 400 a b c`, which prints each file under a header";
+  return `${ROUND_TRIPS_START}
+## Fewer round trips (Feno Bridge)
+
+Each tool call costs a full model step through the bridge (median about 7 s), while the command itself usually takes about 2 s. Before calling a tool, gather every read or check you already know you need and do them in one call: read several files with one ${readMany}, search with one \`rg\` using several \`-e\` patterns, and count or look up several facts in one command. Split work into separate calls only when a step depends on the previous result. Keep each command simple; this does not override other command rules in this file.
+${ROUND_TRIPS_END}`;
+}
+
+// Installed once, like the routing pointer: the user owns AGENTS.md afterwards.
+function syncRoundTripsRouting({ codexHome, platform = process.platform }) {
+  const destination = path.join(codexHome, "AGENTS.md");
+  const existing = fs.existsSync(destination) ? fs.readFileSync(destination, "utf8") : "";
+  const section = roundTripsSection(platform);
+  if (existing.includes(ROUND_TRIPS_START) || existing.includes(ROUND_TRIPS_END)) {
+    return { status: existing.includes(section) ? "unchanged" : "customized", path: destination };
+  }
+  // The same rule kept as a personal section is not duplicated.
+  if (/FEWER ROUND TRIPS/i.test(existing)) return { status: "existing", path: destination };
+  fs.mkdirSync(codexHome, { recursive: true });
+  const separator = existing.length && !existing.endsWith("\n") ? "\n\n" : existing.length ? "\n" : "";
+  writeAtomically(destination, `${existing}${separator}${section}\n`);
+  return { status: existing ? "appended" : "installed", path: destination };
+}
+
 module.exports = {
   syncBundledGuidance,
   syncGlobalRouting,
@@ -139,4 +173,7 @@ module.exports = {
   syncCliToolsRouting,
   cliToolsSection,
   CLI_TOOLS_START,
+  syncRoundTripsRouting,
+  roundTripsSection,
+  ROUND_TRIPS_START,
 };
