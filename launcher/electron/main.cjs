@@ -22,7 +22,13 @@ const {
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
-const { syncBundledGuidance, syncGlobalRouting, syncCliTools, syncCliToolsRouting } = require("./guidance.cjs");
+const {
+  syncBundledGuidance,
+  syncGlobalRouting,
+  syncCliTools,
+  syncCliToolsRouting,
+  syncRoundTripsRouting,
+} = require("./guidance.cjs");
 const {
   createLogger,
   exportSanitizedLogs,
@@ -1189,6 +1195,8 @@ async function start() {
           logger.info("launcher.cli_tools_routing_sync", { status: cliRouting.status });
         }
       }
+      const roundTrips = syncRoundTripsRouting({ codexHome: LAUNCHER_PROFILE.codexHome });
+      logger.info("launcher.round_trips_routing_sync", { status: roundTrips.status });
     } catch (error) {
       logger.warn("launcher.guidance_sync_failed", {
         message: error instanceof Error ? error.message : String(error),

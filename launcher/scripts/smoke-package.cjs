@@ -110,6 +110,11 @@ try {
     || !fs.readFileSync(installedGuidance).equals(fs.readFileSync(guidanceSource))) {
     throw new Error("Packaged launcher did not install its current Feno Bridge guide");
   }
+  const roundTripsGuidance = path.join(env.CODEX_HOME, "AGENTS.md");
+  if (!fs.existsSync(roundTripsGuidance)
+    || !fs.readFileSync(roundTripsGuidance, "utf8").includes("<!-- FENO BRIDGE FEWER ROUND TRIPS START -->")) {
+    throw new Error("Packaged launcher did not install the fewer-round-trips guidance");
+  }
   if (process.platform === "win32") {
     const globalGuidance = path.join(env.CODEX_HOME, "AGENTS.md");
     if (!fs.existsSync(globalGuidance)

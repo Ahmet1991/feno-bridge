@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   syncBundledGuidance, syncGlobalRouting, ROUTING_SECTION, syncCliTools, syncCliToolsRouting, cliToolsSection, CLI_TOOLS_START,
+  syncRoundTripsRouting, roundTripsSection, ROUND_TRIPS_START,
 } = require("../electron/guidance.cjs");
 
 const firstGuide = `---\nname: feno-bridge-guide\ndescription: Help with Feno Bridge and Computer Use.\n---\n\n# Feno Bridge guide\n\nFirst edition.\n`;
@@ -128,4 +129,35 @@ test("the CLI tools pointer names the stable folder once and respects the user's
   assert.equal(fs.readFileSync(destination, "utf8"), first);
   fs.writeFileSync(destination, "# CLI TOOLS\n`jq` and `hyperfine` are on PATH.\n");
   assert.equal(syncCliToolsRouting({ codexHome, toolsDir }).status, "existing");
+});
+
+test("the fewer-round-trips rule is installed once, per platform, and leaves the user's own copy alone", (t) => {
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "feno-round-trips-"));
+  t.after(() => fs.rmSync(codexHome, { recursive: true, force: true }));
+  const destination = path.join(codexHome, "AGENTS.md");
+  fs.writeFileSync(destination, "# Personal rules");
+  assert.equal(syncRoundTripsRouting({ codexHome, platform: "win32" }).status, "appended");
+  const first = fs.readFileSync(destination, "utf8");
+  assert.ok(first.startsWith("# Personal rules\n\n"));
+  assert.equal(first.split(ROUND_TRIPS_START).length - 1, 1);
+  assert.ok(first.includes("Get-Content -Path a, b, c"));
+  assert.equal(syncRoundTripsRouting({ codexHome, platform: "win32" }).status, "unchanged");
+  assert.equal(fs.readFileSync(destination, "utf8"), first);
+  // An edited section belongs to the user and is not rewritten.
+  fs.writeFileSync(destination, first.replace("median about 7 s", "median about 9 s"));
+  assert.equal(syncRoundTripsRouting({ codexHome, platform: "win32" }).status, "customized");
+  fs.writeFileSync(destination, "# FEWER ROUND TRIPS\nBatch independent reads.\n");
+  assert.equal(syncRoundTripsRouting({ codexHome, platform: "win32" }).status, "existing");
+  assert.equal(fs.readFileSync(destination, "utf8"), "# FEWER ROUND TRIPS\nBatch independent reads.\n");
+});
+
+test("a fresh Codex home gets the POSIX form of the fewer-round-trips rule", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "feno-round-trips-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const codexHome = path.join(root, "codex");
+  assert.equal(syncRoundTripsRouting({ codexHome, platform: "darwin" }).status, "installed");
+  const installed = fs.readFileSync(path.join(codexHome, "AGENTS.md"), "utf8");
+  assert.equal(installed, `${roundTripsSection("darwin")}\n`);
+  assert.ok(installed.includes("head -n 400 a b c"));
+  assert.ok(!installed.includes("Get-Content"));
 });
