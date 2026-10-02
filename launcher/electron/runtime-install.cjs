@@ -288,8 +288,106 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   return validateRuntimeBundle(destination, expectedIdentity);
 }
 
+const RUNTIME_VERSION_NAME = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.]+))?$/;
+const RUNTIME_LEFTOVER_KIND = /^\.(tmp|previous|prune)-\d+-\d+$/;
+const RUNTIME_LEFTOVER_MIN_AGE_MS = 60 * 60_000;
+const RUNTIME_DIRECTORY_BUSY_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY", "EEXIST"]);
+
+function parseRuntimeVersion(version) {
+  const match = RUNTIME_VERSION_NAME.exec(version);
+  if (!match) return null;
+  return { parts: match.slice(1, 4).map(Number), prerelease: match[4] ?? null };
+}
+
+function compareRuntimeVersions(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    if (left.parts[index] !== right.parts[index]) return left.parts[index] - right.parts[index];
+  }
+  if (left.prerelease === right.prerelease) return 0;
+  if (left.prerelease === null) return 1;
+  if (right.prerelease === null) return -1;
+  return left.prerelease < right.prerelease ? -1 : 1;
+}
+
+async function removeRuntimeDirectory(versionsRoot, name, now) {
+  const directory = path.join(versionsRoot, name);
+  let doomed = directory;
+  if (!name.includes(".prune-")) {
+    // Rename first: a bundle still in use refuses the rename, so it is never left half-deleted
+    // under its own name.
+    doomed = path.join(versionsRoot, `${name}.prune-${process.pid}-${now}`);
+    try {
+      await fs.promises.rename(directory, doomed);
+    } catch (error) {
+      if (RUNTIME_DIRECTORY_BUSY_CODES.has(error?.code)) return false;
+      throw error;
+    }
+  }
+  try {
+    await fs.promises.rm(doomed, { recursive: true, force: true, maxRetries: 2 });
+    return true;
+  } catch (error) {
+    // The renamed remainder is a .prune- leftover that the next start removes.
+    if (RUNTIME_DIRECTORY_BUSY_CODES.has(error?.code)) return false;
+    throw error;
+  }
+}
+
+// 02.10: every update copied a runtime bundle (~180 MB on Windows) into versions/ and nothing ever
+// removed one; a single Windows install held 81 of them, about 14 GB. Keep the running version and
+// the newest one below it, so returning to the previous release does not copy it again. Only names
+// this file creates are touched: `<version>-<platform>-<arch>` and its .tmp-/.previous-/.prune-
+// leftovers. Install leftovers younger than an hour may belong to a running install and stay.
+async function pruneRuntimeVersions({ versionsRoot, version, platform, arch, now = Date.now() }) {
+  const current = parseRuntimeVersion(version);
+  if (!current) throw new Error(`Cannot prune runtimes around an unparseable version: ${version}`);
+  const suffix = `-${platform}-${arch}`;
+  let entries;
+  try {
+    entries = await fs.promises.readdir(versionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return { removed: 0, busy: 0, kept: [] };
+    throw error;
+  }
+  const older = [];
+  const doomed = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const bundleEnd = entry.name.indexOf(suffix);
+    if (bundleEnd <= 0) continue;
+    const bundleVersion = parseRuntimeVersion(entry.name.slice(0, bundleEnd));
+    if (!bundleVersion) continue;
+    const rest = entry.name.slice(bundleEnd + suffix.length);
+    if (rest === "") {
+      const order = compareRuntimeVersions(bundleVersion, current);
+      if (order === 0) continue;
+      if (order < 0) older.push({ name: entry.name, version: bundleVersion });
+      else doomed.push(entry.name);
+      continue;
+    }
+    const leftover = RUNTIME_LEFTOVER_KIND.exec(rest);
+    if (!leftover) continue;
+    if (leftover[1] !== "prune") {
+      const { mtimeMs } = await fs.promises.stat(path.join(versionsRoot, entry.name));
+      if (now - mtimeMs < RUNTIME_LEFTOVER_MIN_AGE_MS) continue;
+    }
+    doomed.push(entry.name);
+  }
+  older.sort((left, right) => compareRuntimeVersions(right.version, left.version));
+  const previous = older.shift();
+  doomed.push(...older.map(bundle => bundle.name));
+  let removed = 0;
+  let busy = 0;
+  for (const name of doomed.sort()) {
+    if (await removeRuntimeDirectory(versionsRoot, name, now)) removed += 1;
+    else busy += 1;
+  }
+  return { removed, busy, kept: [`${version}${suffix}`, ...(previous ? [previous.name] : [])] };
+}
+
 module.exports = {
   ensurePackagedRuntime,
+  pruneRuntimeVersions,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 };

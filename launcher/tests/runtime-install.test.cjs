@@ -7,6 +7,7 @@ const path = require("node:path");
 const { runtimeInvocation } = require("../electron/runtime-command.cjs");
 const {
   ensurePackagedRuntime,
+  pruneRuntimeVersions,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 } = require("../electron/runtime-install.cjs");
@@ -350,4 +351,76 @@ test("packaged runtime replaces stale files when a release is refreshed under th
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("old runtime bundles are pruned down to the running version and the one before it", async (t) => {
+  const versionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "feno-runtime-prune-"));
+  t.after(() => fs.rmSync(versionsRoot, { recursive: true, force: true }));
+  const now = Date.now();
+  const make = (name, ageMs = 2 * 60 * 60_000) => {
+    const directory = path.join(versionsRoot, name);
+    fs.mkdirSync(path.join(directory, "app"), { recursive: true });
+    fs.writeFileSync(path.join(directory, "app", "cli.js"), name);
+    const at = new Date(now - ageMs);
+    fs.utimesSync(directory, at, at);
+  };
+  for (const name of [
+    "5.0.9-win32-x64",
+    "5.0.10-win32-x64",
+    "5.0.31-rc.1-win32-x64",
+    "5.0.72-win32-x64",
+    "5.0.73-win32-x64",
+    // A later release the user stepped back from.
+    "6.1.3-win32-x64",
+    // Install leftovers: old ones go, a fresh one may belong to a running install.
+    "5.0.11-win32-x64.tmp-7976-1789682834720",
+    "5.0.4-win32-x64.previous-36660-1788909059133",
+    "5.0.30-win32-x64.prune-1-2",
+    // Not ours: another architecture, a hand-made backup, an unrelated folder.
+    "5.0.10-win32-arm64",
+    "5.0.4-win32-x64.pre-nspath",
+    "notes",
+  ]) make(name);
+  make("5.0.73-win32-x64.tmp-1-2", 60_000);
+  fs.writeFileSync(path.join(versionsRoot, "5.0.8-win32-x64"), "a file, not a bundle");
+
+  const result = await pruneRuntimeVersions({ versionsRoot, version: "5.0.73", platform: "win32", arch: "x64", now });
+  assert.deepEqual(result, { removed: 7, busy: 0, kept: ["5.0.73-win32-x64", "5.0.72-win32-x64"] });
+  assert.deepEqual(fs.readdirSync(versionsRoot).sort(), [
+    "5.0.10-win32-arm64",
+    "5.0.4-win32-x64.pre-nspath",
+    "5.0.72-win32-x64",
+    "5.0.73-win32-x64",
+    "5.0.73-win32-x64.tmp-1-2",
+    "5.0.8-win32-x64",
+    "notes",
+  ]);
+  assert.equal(fs.readFileSync(path.join(versionsRoot, "5.0.73-win32-x64", "app", "cli.js"), "utf8"), "5.0.73-win32-x64");
+
+  // A second start has nothing left to remove; a first install has no versions folder at all.
+  assert.deepEqual(
+    await pruneRuntimeVersions({ versionsRoot, version: "5.0.73", platform: "win32", arch: "x64", now }),
+    { removed: 0, busy: 0, kept: ["5.0.73-win32-x64", "5.0.72-win32-x64"] },
+  );
+  assert.deepEqual(
+    await pruneRuntimeVersions({ versionsRoot: path.join(versionsRoot, "missing"), version: "5.0.73", platform: "win32", arch: "x64", now }),
+    { removed: 0, busy: 0, kept: [] },
+  );
+});
+
+test("a runtime bundle that is still in use is left for the next start", async (t) => {
+  const versionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "feno-runtime-prune-busy-"));
+  t.after(() => fs.rmSync(versionsRoot, { recursive: true, force: true }));
+  for (const name of ["5.0.70-linux-x64", "5.0.71-linux-x64", "5.0.72-linux-x64"]) {
+    fs.mkdirSync(path.join(versionsRoot, name));
+  }
+  const rename = fs.promises.rename;
+  t.after(() => { fs.promises.rename = rename; });
+  fs.promises.rename = async (from, to) => {
+    if (path.basename(from) === "5.0.70-linux-x64") throw Object.assign(new Error("in use"), { code: "EBUSY" });
+    return rename(from, to);
+  };
+  const result = await pruneRuntimeVersions({ versionsRoot, version: "5.0.72", platform: "linux", arch: "x64" });
+  assert.deepEqual(result, { removed: 0, busy: 1, kept: ["5.0.72-linux-x64", "5.0.71-linux-x64"] });
+  assert.deepEqual(fs.readdirSync(versionsRoot).sort(), ["5.0.70-linux-x64", "5.0.71-linux-x64", "5.0.72-linux-x64"]);
 });
