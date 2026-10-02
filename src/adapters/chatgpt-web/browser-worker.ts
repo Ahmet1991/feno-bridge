@@ -103,6 +103,7 @@ import {
 import {
   chatGptExternalProgressIsLive,
   chatGptExternalToolCallsAreInFlight,
+  chatGptMcpContinuationIsPossible,
 } from "./turn-progress";
 import type {
   ChatGptExternalTurnProgressSnapshot,
@@ -6415,6 +6416,8 @@ export class ChatGptBrowserWorker {
           }
           : undefined,
       );
+      // The tool progress revision at which the binding's accepted turns were last recorded.
+      let responseTurnAcceptedAtRevision = turn.externalProgress?.snapshot().revision ?? 0;
       await diagnostics.capture(page, "send-accepted");
 
       let lastHeartbeat = 0;
@@ -6534,14 +6537,22 @@ export class ChatGptBrowserWorker {
                 submissionBaseline,
                 responseTurn,
                 turn.abortSignal,
-                chatGptExternalToolCallsAreInFlight(progressBeforeReconcile),
+                // Live on 02.10 (trace 121ebccc0fc6) ChatGPT's continuation turn for a write_stdin
+                // call surfaced only after the call returned: on a busy page the bound response
+                // detached 22 s later with no call in flight, and a 13-minute task failed.
+                chatGptMcpContinuationIsPossible(progressBeforeReconcile, responseTurnAcceptedAtRevision),
                 probeTimeoutMs,
               ),
               // The reconcile makes two reads in sequence.
               2 * probeTimeoutMs,
             );
-            if (rebound.identity !== responseTurn.identity) {
-              responseTurn = rebound;
+            // Keep a continuation once accepted, or the next detach would find it foreign again.
+            if (rebound.acceptedTurnIdentities !== responseTurn.acceptedTurnIdentities) {
+              responseTurnAcceptedAtRevision = progressBeforeReconcile?.revision ?? responseTurnAcceptedAtRevision;
+            }
+            const reboundIdentity = rebound.identity !== responseTurn.identity;
+            responseTurn = rebound;
+            if (reboundIdentity) {
               responseDomCache.key = undefined;
               responseDomCache.snapshot = undefined;
               snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);

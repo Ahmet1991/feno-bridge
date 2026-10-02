@@ -312,3 +312,15 @@ export function chatGptExternalToolCallsAreInFlight(
 ): boolean {
   return (snapshot?.activeToolCalls ?? 0) > 0;
 }
+
+/**
+ * Whether a user turn that ChatGPT opened while the bound response was detached can be the MCP
+ * continuation of this turn's own tool call: a call is in flight, or one started or returned after
+ * the binding's accepted turns were recorded at `acceptedAtRevision`.
+ */
+export function chatGptMcpContinuationIsPossible(
+  snapshot: ChatGptExternalTurnProgressSnapshot | undefined,
+  acceptedAtRevision: number,
+): boolean {
+  return chatGptExternalToolCallsAreInFlight(snapshot) || (snapshot?.revision ?? 0) > acceptedAtRevision;
+}
