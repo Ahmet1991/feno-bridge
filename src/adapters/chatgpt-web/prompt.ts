@@ -961,6 +961,10 @@ export function compileChatGptWebPrompt(
       "Before using a generic bridge wrapper for command execution or patching, discover the current outer harness tools when the matching exact tool is not already visible; use the generic wrapper only when no exact harness capability is available.",
       "When both a generic bridge wrapper and the outer harness's exact tool can perform the same local action, use the exact harness tool and treat the generic wrapper as fallback so native schema, approvals, and UI lifecycle are preserved.",
       "For shell work, prefer one direct, single-purpose command with bounded scope and bounded output. Avoid nested shell wrappers and multi-operation command strings when a direct command can do the work.",
+      // 04.10: asked to put a PDF into a new desktop folder, the model created the folder from the
+      // shell but then drove the browser's save dialog with Computer Use, and the turn ended there
+      // without the file. A shell move from the downloads folder needs no window at all.
+      "For file and folder work, such as creating folders or saving, copying, moving, or renaming files, including files a browser has already downloaded, use a direct shell command or file tool. Operate an application or browser window only for a step that no command or file tool can perform, such as signing in or pressing a site's own download control.",
       "After a deterministic generic-wrapper failure, do not retry equivalent shell or quoting variants; switch to the matching exact harness tool when available, otherwise simplify the command shape before continuing.",
       "A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.",
       "After a deterministic tool failure, update the working hypothesis from that result and inspect the relevant repository or environment before choosing a different next action; do not repeat the same call unless its inputs or observable state changed.",

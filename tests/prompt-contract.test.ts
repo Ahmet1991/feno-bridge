@@ -75,6 +75,9 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("Before using a generic bridge wrapper for command execution or patching, discover the current outer harness tools when the matching exact tool is not already visible; use the generic wrapper only when no exact harness capability is available.");
   expect(transportOnly).toContain("When both a generic bridge wrapper and the outer harness's exact tool can perform the same local action, use the exact harness tool and treat the generic wrapper as fallback so native schema, approvals, and UI lifecycle are preserved.");
   expect(transportOnly).toContain("For shell work, prefer one direct, single-purpose command with bounded scope and bounded output. Avoid nested shell wrappers and multi-operation command strings when a direct command can do the work.");
+  // 04.10: a PDF meant for a desktop folder was saved through the browser's dialog instead of a shell move.
+  expect(transportOnly).toContain("For file and folder work, such as creating folders or saving, copying, moving, or renaming files, including files a browser has already downloaded, use a direct shell command or file tool.");
+  expect(transportOnly).toContain("Operate an application or browser window only for a step that no command or file tool can perform");
   expect(transportOnly).toContain("After a deterministic generic-wrapper failure, do not retry equivalent shell or quoting variants; switch to the matching exact harness tool when available, otherwise simplify the command shape before continuing.");
   expect(transportOnly).toContain("A Codex Native MCP tool result may require context compaction. If it does, follow the compaction instructions in that result exactly.");
   expect(transportOnly).toContain("After a deterministic tool failure, update the working hypothesis from that result");
