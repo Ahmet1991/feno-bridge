@@ -942,6 +942,49 @@ const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dia
   .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁|リクエストの頻度が高すぎます|요청을 너무 빠르게|요청이 너무 많습니다|너무 많은 요청/i })
   .last();
 
+const CHATGPT_SUBMISSION_ERROR_BANNER_SELECTOR = '[role="alert"][class*="danger"]';
+const CHATGPT_MESSAGE_TOO_LONG_PATTERN =
+  /too long|too large|çok uzun|çok büyük|trop long|zu lang|demasiado larg|troppo lung|слишком длин|太长|太長|너무 길/i;
+
+/**
+ * 06.10: a Codex Desktop task had grown to about 243k estimated input tokens, sent as nine Bigger
+ * Context parts. ChatGPT refused part 4 with a danger banner ("Gönderdiğiniz mesaj çok uzun,
+ * lütfen düzenleyip yeniden gönderin.") over an HTTP 200 stream, so the 413 observer never saw it
+ * and no assistant turn ever appeared. Each attempt waited out the 3-minute acknowledgement stage,
+ * and Codex's five reconnects repeated that for about 17 minutes. A banner that is new since the
+ * baseline ends the wait. One that says the message is too long cannot succeed on a retry.
+ */
+async function chatGptErrorBannerCount(page: Page): Promise<number> {
+  try {
+    return await page.locator(CHATGPT_SUBMISSION_ERROR_BANNER_SELECTOR).count();
+  } catch {
+    return 0;
+  }
+}
+
+export async function throwIfChatGptSubmissionErrorBanner(page: Page, baselineCount = 0): Promise<void> {
+  if (await chatGptErrorBannerCount(page) <= baselineCount) return;
+  const banner = page.locator(CHATGPT_SUBMISSION_ERROR_BANNER_SELECTOR).last();
+  if (!await banner.isVisible().catch(() => false)) return;
+  const text = await banner.evaluate((element) => {
+    const copy = element.cloneNode(true) as HTMLElement;
+    for (const button of Array.from(copy.querySelectorAll("button"))) button.parentNode?.removeChild(button);
+    return copy.textContent ?? "";
+  }, undefined, { timeout: 2_000 }).catch(() => "");
+  const shown = text.replace(/\s+/g, " ").trim().slice(0, 200);
+  if (!shown) return;
+  if (CHATGPT_MESSAGE_TOO_LONG_PATTERN.test(shown)) {
+    throw new ChatGptWebAdapterError(
+      `ChatGPT rejected the submitted message as too long: "${shown}". This task's context is larger than this ChatGPT account accepts in one conversation. Run /compact or start a new thread, then retry.`,
+      { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+    );
+  }
+  throw new ChatGptWebAdapterError(
+    `ChatGPT showed an error instead of answering: "${shown}". Check the ChatGPT tab, then retry the turn.`,
+    { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true },
+  );
+}
+
 export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
   const dialog = chatGptRateLimitDialog(page);
   if (!await dialog.isVisible().catch(() => false)) return;
@@ -1710,6 +1753,8 @@ interface ChatGptSubmissionBaseline {
   domCache: ChatGptSubmissionDomCache;
   /** The user turn that acknowledged this submission, once observed. */
   acceptedUserIdentity?: string;
+  /** Error banners already on the page before Send; only a newer one is about this submission. */
+  initialErrorBanners?: number;
 }
 
 interface ChatGptSubmissionObservationRecovery {
@@ -3757,6 +3802,7 @@ export class ChatGptBrowserWorker {
       responseTurns,
       initialTurnIdentities: state.turnIdentities,
       domCache,
+      initialErrorBanners: await chatGptErrorBannerCount(page),
     };
   }
 
@@ -3818,6 +3864,7 @@ export class ChatGptBrowserWorker {
       }
       await throwIfChatGptSessionFailureAlert(observationPage);
       await throwIfChatGptRateLimitDialog(observationPage);
+      await throwIfChatGptSubmissionErrorBanner(observationPage, observationBaseline.initialErrorBanners);
       let state: ChatGptSubmissionDomState;
       try {
         state = await this.submissionDomState(
