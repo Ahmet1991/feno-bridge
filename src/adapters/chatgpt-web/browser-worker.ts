@@ -1398,6 +1398,15 @@ export function assertChatGptWebMultipartInputWithinLimits(
   );
 }
 
+/**
+ * 07.10: over two days of the maintainer's Plus account, every Bigger Context transaction whose
+ * largest stage filled 97% of the Instant budget (31,763-31,790 of 32,807 tokens, counted with the
+ * real tokenizer) was refused at that stage, 16 of 16, by "Gönderdiğiniz mesaj çok uzun" ("The
+ * message you submitted was too long"). Stages up to 84% completed, and one at 96%. ChatGPT's hidden
+ * per-message overhead on that account exceeds the measured platform reserve by about 1k tokens.
+ */
+export const CHATGPT_WEB_STAGING_TOKEN_BUDGET_SHARE = 0.9;
+
 /** Select the cheapest account-visible mode that can carry every inert multipart stage. */
 export function resolveChatGptWebMultipartStagingMode(
   modelId: string,
@@ -1417,14 +1426,18 @@ export function resolveChatGptWebMultipartStagingMode(
   const efforts: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable
     ? ["low", "medium", "max"]
     : ["low", "medium"];
-  for (const effort of efforts) {
-    const mode = resolveChatGptWebModelMode(modelId, effort, capabilities);
-    const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities);
-    const messageTokenLimit = resolveChatGptWebMessageTokenBudget(modelId, effort, capabilities);
-    const tokenFits = maxStageMessageTokens <= messageTokenLimit;
-    const charsFit = limits.browserComposerCharLimit === undefined
-      || maxStageChars <= limits.browserComposerCharLimit;
-    if (tokenFits && charsFit) return mode;
+  // A mode is first chosen only with headroom left in its token budget; the bare budget remains
+  // the fallback, so the boundary of what can be staged at all does not move.
+  for (const share of [CHATGPT_WEB_STAGING_TOKEN_BUDGET_SHARE, 1]) {
+    for (const effort of efforts) {
+      const mode = resolveChatGptWebModelMode(modelId, effort, capabilities);
+      const limits = resolveChatGptWebTransportLimits(modelId, effort, capabilities);
+      const messageTokenLimit = resolveChatGptWebMessageTokenBudget(modelId, effort, capabilities);
+      const tokenFits = maxStageMessageTokens <= Math.floor(messageTokenLimit * share);
+      const charsFit = limits.browserComposerCharLimit === undefined
+        || maxStageChars <= limits.browserComposerCharLimit;
+      if (tokenFits && charsFit) return mode;
+    }
   }
   throw new ChatGptWebAdapterError(
     `No ChatGPT effort available to this account can carry a Bigger Context stage with ${maxStageMessageTokens.toLocaleString("en-US")} estimated tokens and ${maxStageChars.toLocaleString("en-US")} characters.`,

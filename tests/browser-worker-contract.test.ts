@@ -4271,7 +4271,13 @@ test("four to twelve transport parts cannot exceed three times the actual model 
 test("Bigger Context stages use the lowest account mode that can carry the stage", () => {
   const plus = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false };
   const pro = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
-  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 200_000).effort).toBe("low");
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 29_000, 200_000).effort).toBe("low");
+  // 07.10: stages at 97% of the Instant budget were refused as too long, 16 of 16. A stage above 90%
+  // of the cheaper budget goes to the next mode, which carries it with room to spare.
+  expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 29_526, 200_000).effort).toBe("low");
+  for (const tokens of [29_527, 30_000, 31_763]) {
+    expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, tokens, 200_000).effort).toBe("medium");
+  }
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 30_000, 300_000).effort).toBe("medium");
   expect(resolveChatGptWebMultipartStagingMode("gpt-5.6-sol", plus, 80_000, 300_000).effort).toBe("medium");
   // The same text must have the same available input budget inline, staged or in the final part.
