@@ -17,7 +17,10 @@ test("the public launcher command uses the Electron bootstrap", () => {
 
 test("the full verification gate audits launcher dependencies", () => {
   const verify = fs.readFileSync(path.join(repositoryRoot, "scripts", "verify.ts"), "utf8");
-  assert.equal(manifest.scripts.audit, "bun audit");
+  // Only a named advisory with no fixed release may be ignored, never a severity level.
+  // GHSA-hp3w-g68c-fv3c (07.10): sprintf-js <= 1.1.3, the latest release, has no fix. It is reached
+  // only through @electron/get > global-agent > roarr, the logger of a build-time downloader.
+  assert.equal(manifest.scripts.audit, "bun audit --ignore=GHSA-hp3w-g68c-fv3c");
   assert.equal(repositoryManifest.scripts["launcher:audit"], "bun run --cwd launcher audit");
   assert.match(verify, /await run\(\["run", "launcher:audit"\]\);/);
 });
