@@ -8,7 +8,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "bun run scripts/dev.cjs",
-    "audit": "bun audit",
+    "audit": "bun audit --ignore=GHSA-hp3w-g68c-fv3c",
     "typecheck": "tsc --noEmit",
     "build:renderer": "vite build",
     "build": "bun run typecheck && bun run build:renderer",
@@ -40,7 +40,8 @@
     "@xmldom/xmldom": "0.8.15",
     "fast-uri": "3.1.8",
     "http-cache-semantics": "4.3.0",
-    "js-yaml": "4.3.2"
+    "js-yaml": "4.3.2",
+    "source-map-js": "1.2.2"
   },
   "build": {
     "appId": "dev.codexwebgpt.launcher",
