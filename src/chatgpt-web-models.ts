@@ -39,6 +39,23 @@ export const CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT = 211_256;
 export const CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT = 1_048_572;
 /** Hidden ChatGPT product prompt and Codex Native schema reserve included in usage estimates. */
 export const CHATGPT_WEB_PLATFORM_RESERVE_TOKENS = 8_192;
+/**
+ * 07.10, DEV with the maintainer's Plus account: a Codex thread grown to about 165k estimated
+ * tokens was replayed into a fresh ChatGPT conversation through Bigger Context, six parts, all
+ * accepted. The High model could no longer see the oldest part: asked for its last record or its
+ * 400th record, and for the AGENTS.md headings, it answered that it could not see them. Records of
+ * the second and third parts were exact. The same AGENTS.md question in a short thread quoted both
+ * headings. ChatGPT gives Plus reasoning modes a 128K-token input window and silently drops older
+ * context past it, and Codex's instructions are the oldest context.
+ *
+ * Bigger Context on Plus therefore compacts inside that window instead of at three standard windows
+ * (270k/240k), so Codex summarizes before ChatGPT drops anything. Instant's own window is all the
+ * model sees, so Bigger Context does not enlarge it.
+ */
+export const CHATGPT_WEB_PLUS_REASONING_INPUT_WINDOW = 128_000;
+export const CHATGPT_WEB_PLUS_BIGGER_CONTEXT_WINDOW =
+  CHATGPT_WEB_PLUS_REASONING_INPUT_WINDOW - CHATGPT_WEB_PLATFORM_RESERVE_TOKENS;
+export const CHATGPT_WEB_PLUS_BIGGER_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT = 105_000;
 /** Reserve for each attachment in the final browser message; inert stages carry no images. */
 export function chatGptWebImageTokenReserve(detail?: string): number {
   return detail === "original" ? 8_192 : 4_096;
@@ -158,6 +175,13 @@ export function resolveChatGptWebContextLimits(
     throw new Error(`ChatGPT Plus context limit is not defined for unavailable effort: ${effort}`);
   }
   if (!capabilities.experimentalBiggerContext) return limits;
+  if (!capabilities.proAvailable) {
+    if (effort === "low") return limits;
+    return contextLimits(
+      CHATGPT_WEB_PLUS_BIGGER_CONTEXT_WINDOW,
+      CHATGPT_WEB_PLUS_BIGGER_CONTEXT_AUTO_COMPACT_TOKEN_LIMIT,
+    );
+  }
   return contextLimits(
     limits.contextWindow * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
     limits.autoCompactTokenLimit * CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
