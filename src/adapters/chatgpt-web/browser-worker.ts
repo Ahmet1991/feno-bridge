@@ -985,6 +985,25 @@ export async function throwIfChatGptSubmissionErrorBanner(page: Page, baselineCo
   );
 }
 
+/**
+ * 07.10, a TEDAŞ task on the installed 5.0.78: twice in one hour a retained conversation ended a
+ * turn with two visible editors. One was empty and focused; the other was unfocused and held 2.7k
+ * to 3k characters. The page had one effort control. The next message waited 30 s for a single
+ * composer and failed ("ChatGPT composer is unavailable"), and Codex reconnected into a full replay.
+ * The message composer is the editor whose form carries the effort control. When exactly one editor
+ * qualifies, it is the composer.
+ */
+export async function mainChatGptComposerIndex(composers: Locator): Promise<number | undefined> {
+  const owners = await composers.evaluateAll(
+    (elements, effortControlSelector) => elements.map(element => (
+      Boolean(element.closest("form")?.querySelector(effortControlSelector))
+    )),
+    CHATGPT_EFFORT_CONTROL_SELECTOR,
+  );
+  const qualifying = owners.flatMap((owns, index) => owns ? [index] : []);
+  return qualifying.length === 1 ? qualifying[0] : undefined;
+}
+
 export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
   const dialog = chatGptRateLimitDialog(page);
   if (!await dialog.isVisible().catch(() => false)) return;
@@ -2571,6 +2590,11 @@ class ChatGptBrowserDiagnostics {
                 tag: element.tagName.toLowerCase(),
                 contentEditable: (element as HTMLElement).isContentEditable,
                 focused: element === document.activeElement,
+                // Where a second editor lives, so the next one can be told apart (07.10).
+                inForm: Boolean(element.closest("form")),
+                formHasEffortControl: Boolean(element.closest("form")?.querySelector(effortControlSelector)),
+                inUserTurn: Boolean(element.closest(userTurnSelector)),
+                inAssistantTurn: Boolean(element.closest(assistantTurnSelector)),
               })),
               // When recognition fails, retain structure of the unmatched controls,
               // never their values, labels, HTML or other conversation contents.
@@ -3447,6 +3471,7 @@ export class ChatGptBrowserWorker {
     const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
     const deadline = Date.now() + timeoutMs;
     let count = 0;
+    let loggedSecondComposer = false;
     while (Date.now() < deadline) {
       throwIfPromptAttachmentAborted(abortSignal);
       count = await withBrowserTurnAbort(
@@ -3457,6 +3482,22 @@ export class ChatGptBrowserWorker {
         abortSignal,
       );
       if (count === 1) return composers.first();
+      if (count > 1) {
+        const main = await withBrowserTurnAbort(
+          withChatGptBrowserObservationTimeout(
+            mainChatGptComposerIndex(composers),
+            Math.max(1, Math.min(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, deadline - Date.now())),
+          ),
+          abortSignal,
+        ).catch(() => undefined);
+        if (main !== undefined) {
+          if (!loggedSecondComposer) {
+            loggedSecondComposer = true;
+            console.warn(`[chatgpt-web] ${count} ChatGPT editors are visible; using the one in the effort-control form`);
+          }
+          return composers.nth(main);
+        }
+      }
       await withBrowserTurnAbort(
         new Promise(resolveSleep => setTimeout(resolveSleep, 50)),
         abortSignal,
