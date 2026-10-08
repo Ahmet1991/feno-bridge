@@ -994,14 +994,22 @@ export async function throwIfChatGptSubmissionErrorBanner(page: Page, baselineCo
  * qualifies, it is the composer.
  */
 export async function mainChatGptComposerIndex(composers: Locator): Promise<number | undefined> {
-  const owners = await composers.evaluateAll(
-    (elements, effortControlSelector) => elements.map(element => (
-      Boolean(element.closest("form")?.querySelector(effortControlSelector))
-    )),
+  const editors = await composers.evaluateAll(
+    (elements, effortControlSelector) => elements.map(element => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return {
+        owns: Boolean(element.closest("form")?.querySelector(effortControlSelector)),
+        // Playwright's `visible` keeps an editor whose opacity is 0; the diagnostics do not.
+        rendered: box.width > 0 && box.height > 0 && style.display !== "none"
+          && style.visibility !== "hidden" && style.opacity !== "0",
+      };
+    }),
     CHATGPT_EFFORT_CONTROL_SELECTOR,
   );
-  const qualifying = owners.flatMap((owns, index) => owns ? [index] : []);
-  return qualifying.length === 1 ? qualifying[0] : undefined;
+  const only = (indexes: number[]): number | undefined => indexes.length === 1 ? indexes[0] : undefined;
+  return only(editors.flatMap((editor, index) => editor.owns && editor.rendered ? [index] : []))
+    ?? only(editors.flatMap((editor, index) => editor.owns ? [index] : []));
 }
 
 export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
@@ -3503,8 +3511,10 @@ export class ChatGptBrowserWorker {
         abortSignal,
       );
     }
+    // 09.10: the cause never reached the log, and a page whose diagnostics showed one editor
+    // failed here without telling whether Playwright had counted none or two.
     throw new Error(
-      "ChatGPT composer is unavailable. Reload ChatGPT and retry the task.",
+      `ChatGPT composer is unavailable (${count} visible editor${count === 1 ? "" : "s"}). Reload ChatGPT and retry the task.`,
       { cause: new Error(`Visible ChatGPT composer count was ${count}`) },
     );
   }
@@ -4823,13 +4833,20 @@ export class ChatGptBrowserWorker {
       })) {
         const actual = snapshot.visibleText.trim();
         if (actual !== stage.acknowledgement) {
+          // 09.10 (installed 5.0.79): part 1 of a four-part replay drew a 104-character reply to a
+          // 125-character acknowledgement. Non-retryable, the failure was replayed to all five of
+          // Codex's reconnects and ended the task; a fresh transaction is the remedy for one stray
+          // reply. The reply is logged so the next mismatch shows what ChatGPT wrote.
+          console.warn(
+            `[chatgpt-web] Bigger Context acknowledgement mismatch: expected ${stage.acknowledgement.length} characters, received ${JSON.stringify(actual.slice(0, 240))}`,
+          );
           throw new ChatGptWebAdapterError(
             "ChatGPT did not confirm the Bigger Context handoff. Disable Bigger Context or retry the task.",
             {
               status: 502,
               errorType: "server_error",
               code: "multipart_protocol_violation",
-              retryable: false,
+              retryable: true,
               cause: new Error(
                 `Bigger Context acknowledgement mismatch (actualChars=${actual.length.toLocaleString("en-US")})`,
               ),

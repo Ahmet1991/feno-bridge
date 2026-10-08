@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import type { Locator, Page } from "playwright-core";
 import { ChatGptBrowserWorker, mainChatGptComposerIndex } from "../src/adapters/chatgpt-web/browser-worker";
 
@@ -10,9 +10,22 @@ const composerForm = `<form><div class="ProseMirror" contenteditable="true" role
   + `<button aria-haspopup="menu" data-tone="neutral">Thinking</button></form>`;
 const strayEditor = `<div><div class="ProseMirror" contenteditable="true" role="textbox" id="stray">earlier text</div></div>`;
 
+const globals = globalThis as { getComputedStyle?: unknown };
+const originalGetComputedStyle = globals.getComputedStyle;
+beforeAll(() => {
+  globals.getComputedStyle = (element: Element) => ({
+    display: "block", visibility: "visible", opacity: element.getAttribute("data-opacity") ?? "1",
+  });
+});
+afterAll(() => {
+  globals.getComputedStyle = originalGetComputedStyle;
+});
+
 function composersOf(html: string): Locator & { ids: string[] } {
   const window = createWindow(`<main>${html}</main>`);
   const editors = [...window.document.querySelectorAll('[contenteditable="true"]')] as Element[];
+  // Domino has no layout; every editor gets a box, and its opacity comes from data-opacity.
+  for (const element of editors) Object.assign(element, { getBoundingClientRect: () => ({ width: 100, height: 20 }) });
   return {
     ids: editors.map(element => element.getAttribute("id") ?? ""),
     count: async () => editors.length,
@@ -28,6 +41,14 @@ test("the message composer is the one editor whose form carries the effort contr
   // Without a single owner the choice stays undecided, and the composer wait keeps its old rule.
   expect(await mainChatGptComposerIndex(composersOf(strayEditor + strayEditor))).toBeUndefined();
   expect(await mainChatGptComposerIndex(composersOf(composerForm + composerForm))).toBeUndefined();
+});
+
+test("an invisible editor in the composer form does not hide the rendered one", async () => {
+  // Playwright's visible filter keeps an editor with opacity 0; both share the effort-control form.
+  const twoInOneForm = `<form><div class="ProseMirror" contenteditable="true" role="textbox" data-opacity="0"></div>`
+    + `<div class="ProseMirror" contenteditable="true" role="textbox" id="main"></div>`
+    + `<button aria-haspopup="menu" data-tone="neutral">Thinking</button></form>`;
+  expect(await mainChatGptComposerIndex(composersOf(twoInOneForm))).toBe(1);
 });
 
 test("two visible editors no longer fail the turn when one composer owns the effort control", async () => {
