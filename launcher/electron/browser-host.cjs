@@ -2966,6 +2966,9 @@ class BrowserHost {
           temporary: actualUrl.origin === expectedUrl.origin
             && actualUrl.pathname === expectedUrl.pathname
             && actualUrl.searchParams.get("temporary-chat") === "true",
+          // 19.10: Codex tasks now open saved chats, and a sign-in can land on the saved-chat home.
+          // A signed-in session there read as "Sign in to ChatGPT" until the view was moved.
+          home: actualUrl.origin === expectedUrl.origin && actualUrl.pathname === expectedUrl.pathname,
           readyState: document.readyState,
         };
       };
@@ -3027,12 +3030,13 @@ class BrowserHost {
       url: "",
       composer: false,
       temporary: false,
+      home: false,
       sessionAuthenticated: false,
       sessionCheckError: "ChatGPT session verification could not inspect the browser. Retry after the page finishes loading.",
       readyState: "unknown",
     }));
     let result = await probe(this.view.webContents);
-    if (!(result.composer && result.temporary && result.sessionAuthenticated)
+    if (!(result.composer && (result.temporary || result.home) && result.sessionAuthenticated)
       && this.authView
       && !this.authView.webContents.isDestroyed()) {
       const authResult = await probe(this.authView.webContents);
@@ -3059,13 +3063,13 @@ class BrowserHost {
     })();
     if ((this.manualOperation === "ChatGPT login" || (usedTemporaryChat && !this.activeTraceId && !this.manualOperation))
       && result.sessionAuthenticated
-      && !result.temporary
+      && !(result.temporary || result.home)
       && !this.view.webContents.isDestroyed()) {
       await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
       url = this.view.webContents.getURL();
       result = await probe(this.view.webContents);
     }
-    if (result.composer && result.temporary && result.sessionAuthenticated) {
+    if (result.composer && (result.temporary || result.home) && result.sessionAuthenticated) {
       if (this.authView && !this.authView.webContents.isDestroyed()) {
         this.closeAuthView(this.authView, true, false);
       }
