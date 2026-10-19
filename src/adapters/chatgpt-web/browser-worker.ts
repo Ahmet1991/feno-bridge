@@ -52,7 +52,7 @@ import {
 } from "./prompt";
 import {
   assertAuthenticatedChatGptPage,
-  assertTemporaryChatPage,
+  assertNewChatPage,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
@@ -62,9 +62,9 @@ import {
   CHATGPT_FILE_UPLOAD_INPUT_SELECTOR,
   CHATGPT_SEND_BUTTON_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
-  CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
   activateChatGptEffortMenu,
+  chatGptNewChatUrl,
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
   readChatGptEffortSnapshot,
@@ -311,6 +311,15 @@ export async function chatGptUnavailableProDetail(menu: Locator): Promise<string
 }
 
 export type ChatGptPersonalizationPreflight = "already-personalized" | "enabled";
+
+/** Whether the page is a ChatGPT Temporary Chat, new or already moved to /c/<id>. */
+export function chatGptPageIsTemporaryChat(page: Pick<Page, "url">): boolean {
+  try {
+    return new URL(page.url()).searchParams.get("temporary-chat") === "true";
+  } catch {
+    return false;
+  }
+}
 
 const CHATGPT_PERSONALIZATION_CONTROL_SELECTOR = [
   '[data-testid="thread-header-right-actions"] [aria-haspopup="menu"]',
@@ -1842,6 +1851,8 @@ export interface ResolvedBrowserConfig {
   turnTimeoutMs?: number;
   headed: boolean;
   autoApproveToolCalls: boolean;
+  /** Open new conversations as Temporary Chats instead of regular saved chats (default). */
+  temporaryChats?: boolean;
 }
 
 export function chatGptTurnIsComplete(state: {
@@ -2768,6 +2779,7 @@ export function resolveBrowserConfig(provider: CodexProviderConfig): ResolvedBro
     ...(turnTimeoutMs !== undefined ? { turnTimeoutMs } : {}),
     headed: configured.headed !== false,
     autoApproveToolCalls: configured.autoApproveToolCalls === true,
+    temporaryChats: configured.temporaryChats === true,
   };
 }
 
@@ -3545,18 +3557,27 @@ export class ChatGptBrowserWorker {
     }
   }
 
-  /** Put every browser operation on one fully hydrated Temporary Chat document. */
+  /**
+   * Put every browser operation on one fully hydrated new-chat document: a regular saved chat by
+   * default, a Temporary Chat when configured. Between 18.10 ~20:00 and 19.10 ~05:00 UTC ChatGPT
+   * removed connectors and the Personalized/Unpersonalized control from Temporary Chat. From then
+   * on every fresh Temporary Chat failed the personalization preflight, twice on 19.10 at 11:24
+   * UTC on the maintainer's install, while the Codex connector still worked in a saved chat
+   * (upstream #859, #864; 6.1.11 made saved chats its default too).
+   */
   private async prepareTemporaryChatSurface(
     page: Page,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
   ): Promise<Locator> {
+    const useSavedChats = this.config?.temporaryChats !== true;
+    const newChatUrl = chatGptNewChatUrl(useSavedChats);
     // Launcher verification refreshes its owned page before attaching Playwright so a newly added
     // connector is present in the catalog. Navigating again here destroys that freshly hydrated
     // document and made the first verification race a second SPA bootstrap. A leased turn starts on
     // about:blank and therefore still performs exactly one navigation through this same method.
-    if (page.url() !== CHATGPT_TEMPORARY_CHAT_URL) {
+    if (page.url() !== newChatUrl) {
       try {
-        await page.goto(CHATGPT_TEMPORARY_CHAT_URL, {
+        await page.goto(newChatUrl, {
           waitUntil: "domcontentloaded",
           timeout: 60_000,
         });
@@ -3570,18 +3591,18 @@ export class ChatGptBrowserWorker {
         }
         throw error;
       }
-      await captureDiagnostic?.("temporary-chat-navigation-complete");
+      await captureDiagnostic?.(useSavedChats ? "saved-chat-navigation-complete" : "temporary-chat-navigation-complete");
     }
     // A failed page read is not evidence of an expired login. Preserve the actual
     // observation error; the authenticated-session check below owns login failures.
     const composer = await this.temporaryChatComposer(page, captureDiagnostic);
-    if (await dismissChatGptTemporaryChatOnboarding(page)) {
+    if (!useSavedChats && await dismissChatGptTemporaryChatOnboarding(page)) {
       await captureDiagnostic?.("temporary-chat-onboarding-dismissed");
     }
     await captureDiagnostic?.("composer-ready");
     await throwIfChatGptSessionFailureAlert(page);
     await assertAuthenticatedChatGptPage(page);
-    await assertTemporaryChatPage(page);
+    await assertNewChatPage(page, useSavedChats);
     await captureDiagnostic?.("session-verified");
     return composer;
   }
@@ -4378,6 +4399,9 @@ export class ChatGptBrowserWorker {
       CHATGPT_PERSONALIZATION_TURN_PREFLIGHT_TIMEOUT_MS,
     );
     const ensurePersonalizationWithRecovery = async (): Promise<void> => {
+      // A regular saved chat has no Personalized/Unpersonalized control and offers connectors on
+      // its own, so only a Temporary Chat needs this preflight (19.10).
+      if (!chatGptPageIsTemporaryChat(page)) return;
       try {
         await runPersonalizationPreflight();
       } catch (error) {

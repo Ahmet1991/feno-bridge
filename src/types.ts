@@ -305,6 +305,8 @@ export interface CodexProviderConfig {
     proAvailable?: boolean;
     /** Authorize per-call "Allow once" confirmation clicks for this connector. */
     autoApproveToolCalls?: boolean;
+    /** Open Codex tasks in Temporary Chats; regular saved chats otherwise (19.10). */
+    temporaryChats?: boolean;
     /** Empirical per-message ChatGPT page capacity, independent of the model context window. */
     maxMessageChars?: number;
     /** DEV-only experimental transport: adapt one context across one, two, or three ChatGPT messages. */
