@@ -44,7 +44,7 @@ const {
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
 const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
-const { createUpdateController } = require("./update.cjs");
+const { createUpdateController, waitForQuietRuntime } = require("./update.cjs");
 const { writeReadyMarker } = require("./update-ready.cjs");
 const {
   createStateStore,
@@ -1057,7 +1057,7 @@ function registerIpc({ logger, stateStore }) {
       detail: copy.updateDetail,
     });
     if (confirmation.response !== 1) return false;
-    const launch = await updateController.beginInstall();
+    const launch = await updateController.beginInstall({ beforeLaunch: waitForQuietCodexBeforeUpdate });
     const result = await requestQuit();
     if (!result.ok) {
       updateController.cancelInstall(launch);
@@ -1080,6 +1080,22 @@ function registerIpc({ logger, stateStore }) {
     else if (action === "minimize") window.minimize();
     else if (action === "zoom") window.isMaximized() ? window.unmaximize() : window.maximize();
   });
+}
+
+async function waitForQuietCodexBeforeUpdate({ signal }) {
+  const result = await waitForQuietRuntime({
+    signal,
+    readActivity: async () => {
+      const config = runtimeSupervisor?.readConfig();
+      const health = config ? await runtimeSupervisor.proxyHealthPayload(config) : null;
+      if (!Number.isInteger(health?.active_http_turns) || !Number.isInteger(health?.active_browser_turns)) return null;
+      return {
+        active: health.active_http_turns + health.active_browser_turns,
+        lastEndedAt: browserHost?.lastTurnEndedAt ?? null,
+      };
+    },
+  });
+  launcherLogger?.info("launcher.update_waited_for_codex", result);
 }
 
 async function requestQuit() {

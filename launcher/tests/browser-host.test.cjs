@@ -455,7 +455,11 @@ test("smoke preserves an already-hydrated Temporary Chat page", () => {
 
 test("session inspection delegates navigation and capability detection to the shared browser helper", async () => {
   const calls = [];
+  const states = [];
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    state: { status: "loading", message: "Refreshing the ChatGPT connector catalog" },
+    turnTabs: new Map(),
+    setState(patch) { states.push(patch); },
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
     getConnectorName: () => "Codex Native2",
@@ -491,6 +495,8 @@ test("session inspection delegates navigation and capability detection to the sh
   assert.equal(calls[1].operation, "inspect");
   assert.equal(calls[1].appName, "Codex Native2");
   assert.deepEqual(calls[1].payload, { detectCapabilities: true });
+  // 20.10: the catalog refresh spinner must not outlive a successful inspection.
+  assert.deepEqual(states, [{ status: "ready", message: "ChatGPT is ready", authenticated: true }]);
 });
 
 test("session inspection fails closed on incomplete shared-helper capability evidence", async () => {
