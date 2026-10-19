@@ -110,6 +110,11 @@ export interface AppConfig {
   /** Optional adapter-silence budget for the Responses watchdog. */
   stallTimeoutSec?: number;
   autoApproveToolCalls: boolean;
+  /**
+   * Open Codex tasks in ChatGPT Temporary Chats instead of regular saved chats. Off by default
+   * since 19.10, when ChatGPT stopped offering connectors in Temporary Chat.
+   */
+  temporaryChats?: boolean;
   controlToken: string;
   runtimeCommand: string[];
   acknowledgedUnofficialAt?: string;
@@ -421,6 +426,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (typeof parsed.autoApproveToolCalls !== "boolean") {
     throw new Error(`Invalid autoApproveToolCalls in ${path}`);
   }
+  if (parsed.temporaryChats !== undefined && typeof parsed.temporaryChats !== "boolean") {
+    throw new Error(`Invalid temporaryChats in ${path}`);
+  }
   const requiredStrings: Array<keyof AppConfig> = [
     "appName", "chromeExecutablePath", "storageStatePath", "brokerSocketPath", "controlToken",
   ];
@@ -622,6 +630,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
         : {}),
       ...(config.stallTimeoutSec !== undefined ? { stallTimeoutSec: config.stallTimeoutSec } : {}),
       autoApproveToolCalls: manual ? false : config.autoApproveToolCalls,
+      ...(!manual && config.temporaryChats === true ? { temporaryChats: true } : {}),
     },
   };
 }

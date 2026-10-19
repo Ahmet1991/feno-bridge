@@ -1064,6 +1064,7 @@ test("connector preflight retries once after reloading a clean Temporary Chat", 
   };
   const menuRows = { filter: () => appResult };
   const page = {
+    url: () => "https://chatgpt.com/?temporary-chat=true",
     reload: async () => {
       reloads += 1;
       reloaded = true;
@@ -2171,6 +2172,7 @@ test.each([false, true])("cached personalization selects the connector without r
     getAttribute: async () => "",
   };
   const page = {
+    url: () => "https://chatgpt.com/?temporary-chat=true",
     getByRole: (...args: Parameters<typeof personalizedTemporaryChatRole>) => {
       personalizationChecks += 1;
       return personalizedTemporaryChatRole(...args);
@@ -2730,6 +2732,7 @@ test("an aborted connector proof clears its mention before the preflight release
     evaluate: async () => { calls.push("cleanup-read"); return ""; },
   };
   const page = {
+    url: () => "https://chatgpt.com/?temporary-chat=true",
     getByRole: () => absent,
     getByText: () => ({ exactConnectorLabel: true }),
     locator: (selector: string) => {
@@ -2784,6 +2787,7 @@ test("a lost connector mention cannot be used as evidence to change personalizat
     evaluate: async () => ({ text: "", focused: false }),
   };
   const page = {
+    url: () => "https://chatgpt.com/?temporary-chat=true",
     getByRole: () => absent,
     getByText: () => ({}),
     locator: (selector: string) => {

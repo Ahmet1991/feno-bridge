@@ -279,6 +279,7 @@ export class LauncherBrowserHelperClient {
             browserDiagnosticsPath: this.config.browserDiagnosticsPath,
             turnTimeoutMs: this.config.turnTimeoutMs,
             autoApproveToolCalls: this.config.autoApproveToolCalls,
+            temporaryChats: this.config.temporaryChats,
           },
           turn: {
             traceId: turn.traceId,

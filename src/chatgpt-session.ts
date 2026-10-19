@@ -42,7 +42,10 @@ export const CHATGPT_STOP_BUTTON_SELECTOR = [
   '[data-testid="stop-button"]',
   // Measured 26.09: the composer's primary slot is Send (type=submit) when idle and Stop
   // (type=button, same slot styling) while generating. Structure, not the localized label.
-  'form[data-chatgpt-composer] button[type="button"].size-token-button-composer',
+  // 19.10: a regular saved chat fills the same slot with "Start voice mode" (type=button, icon
+  // #voice-regular-20) whenever the composer is empty, so a finished turn read as still running
+  // forever. Temporary Chat has no voice mode. The Stop button draws its icon inline.
+  'form[data-chatgpt-composer] button[type="button"].size-token-button-composer:not(:has(use[href*="#voice"]))',
   'form[data-chatgpt-composer] button[type="button"][aria-label="Stop"]',
   'form[data-chatgpt-composer] button[type="button"][aria-label="Durdur"]',
 ].join(", ");
