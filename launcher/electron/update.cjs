@@ -5,6 +5,9 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
 const RELEASE_REPOSITORY = "Ahmet1991/feno-bridge";
+const UPDATE_QUIET_WINDOW_MS = 2 * 60_000;
+const UPDATE_QUIET_TIMEOUT_MS = 30 * 60_000;
+const UPDATE_QUIET_POLL_INTERVAL_MS = 2_000;
 const RELEASE_API_URL = `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases/latest`;
 const RELEASE_HEADERS = {
   Accept: "application/vnd.github+json",
@@ -467,7 +470,7 @@ function createUpdateController({
     }
   }
 
-  async function beginInstall() {
+  async function beginInstall({ beforeLaunch } = {}) {
     if (pending) throw new Error("An update is already being prepared");
     if (state.status !== "available" || !candidate) throw new Error("No launcher update is available");
     const available = candidate;
@@ -498,6 +501,9 @@ function createUpdateController({
           fs.chmodSync(path.join(tempRoot, "linux-appimage-runner.sh"), 0o755);
         }
 
+        // The worker gives the launcher two minutes to exit, so any wait belongs before it starts.
+        if (beforeLaunch) await beforeLaunch({ signal });
+        signal.throwIfAborted();
         const workerPath = path.join(tempRoot, "update-worker.cjs");
         fs.copyFileSync(path.join(__dirname, "update-worker.cjs"), workerPath);
         fs.copyFileSync(path.join(__dirname, "update-ready.cjs"), path.join(tempRoot, "update-ready.cjs"));
@@ -552,6 +558,35 @@ function createUpdateController({
   };
 }
 
+// 20.10: the Update button proved the session idle, then spent minutes downloading, and the restart
+// cancelled a Codex task that had started meanwhile. A task also runs its local tools between turns,
+// so an idle sample right after a turn is not enough: wait until no turn has run for a quiet window.
+// After the timeout the update proceeds as the confirmation dialog warned.
+async function waitForQuietRuntime({
+  readActivity,
+  quietMs = UPDATE_QUIET_WINDOW_MS,
+  timeoutMs = UPDATE_QUIET_TIMEOUT_MS,
+  pollMs = UPDATE_QUIET_POLL_INTERVAL_MS,
+  signal,
+  now = Date.now,
+  sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+}) {
+  const startedAt = now();
+  for (;;) {
+    signal?.throwIfAborted();
+    const activity = await readActivity();
+    const at = now();
+    const waitedMs = at - startedAt;
+    if (!activity) return { quiet: false, waitedMs, reason: "activity-unavailable" };
+    if (activity.active === 0
+      && (!Number.isFinite(activity.lastEndedAt) || at - activity.lastEndedAt >= quietMs)) {
+      return { quiet: true, waitedMs };
+    }
+    if (waitedMs >= timeoutMs) return { quiet: false, waitedMs, reason: "timeout" };
+    await sleep(pollMs);
+  }
+}
+
 module.exports = {
   buildJob,
   checkedFetch,
@@ -566,5 +601,6 @@ module.exports = {
   releaseAssetName,
   releaseVersion,
   validateReleaseAssetUrl,
+  waitForQuietRuntime,
   windowsApplicationPath,
 };

@@ -14,7 +14,7 @@ test("the Update button checks the ChatGPT session before it offers to install (
   const refresh = handler.indexOf("browserHost.refreshAuthentication()");
   const refusal = handler.indexOf("throw new Error(copy.updateSignInRequired)");
   const dialog = handler.indexOf("dialog.showMessageBox");
-  const install = handler.indexOf("updateController.beginInstall()");
+  const install = handler.indexOf("updateController.beginInstall(");
   assert.ok(refresh > 0, "the handler re-checks the session");
   assert.ok(refresh < refusal && refusal < dialog && dialog < install, "check, refuse, then confirm and install");
 });

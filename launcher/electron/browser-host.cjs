@@ -2578,6 +2578,7 @@ class BrowserHost {
     untouched = false,
     superseded = false,
   ) {
+    this.lastTurnEndedAt = Date.now();
     const tab = [...this.turnTabs.values()].find((candidate) => candidate.traceId === traceId);
     if (!tab) {
       const closedOwner = this.closedTurnOwners.get(traceId);
@@ -3239,6 +3240,10 @@ class BrowserHost {
       throw new Error("Browser helper returned contradictory ChatGPT capability evidence");
     }
     if (startedIdle) await this.returnToIdle();
+    // 20.10: the capability check reloads the home view as "Refreshing the ChatGPT connector
+    // catalog", and the probe keeps the status during a manual operation, so after every runtime
+    // upgrade the launcher showed that spinner until the next Codex task replaced it.
+    else if (!this.activeTraceId) this.setState({ status: "ready", message: "ChatGPT is ready", authenticated: true });
     return inspected;
   }
 
