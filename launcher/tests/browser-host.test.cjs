@@ -911,6 +911,37 @@ test("launcher authentication requires the Temporary Chat composer and complete 
   assert.equal(result.status, "ready");
 });
 
+test("a signed-in session on the saved-chat home reads as ready (19.10)", async () => {
+  // Codex tasks open saved chats since ChatGPT took connectors out of Temporary Chat, and a sign-in
+  // can land on https://chatgpt.com/. A signed-in session there showed "Sign in to ChatGPT".
+  const fixture = {
+    state: { authenticated: false },
+    activeTraceId: null,
+    manualOperation: null,
+    view: {
+      webContents: {
+        isDestroyed: () => false,
+        getURL: () => "https://chatgpt.com/",
+        executeJavaScript: async () => ({
+          url: "https://chatgpt.com/",
+          composer: true,
+          temporary: false,
+          home: true,
+          sessionAuthenticated: true,
+          readyState: "complete",
+        }),
+      },
+    },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return { ...this.state }; },
+    logger: { info() {} },
+  };
+
+  const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+  assert.equal(result.authenticated, true);
+  assert.equal(result.status, "ready");
+});
+
 test("session verification distinguishes a missing login from network and invalid-response failures", async () => {
   const vm = require("node:vm");
   const url = "https://chatgpt.com/?temporary-chat=true";
