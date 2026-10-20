@@ -5088,10 +5088,12 @@ export class ChatGptBrowserWorker {
     const acceptanceTimeoutMs = Math.min(60_000, remainingMs(0));
     const acceptanceDeadline = Date.now() + acceptanceTimeoutMs;
     let acceptanceSettled = false;
-    const accepted = Promise.all(files.map(file => (
+    const attachmentTiles = files.map(file => (
       composerForm.getByRole("group", { name: file.name, exact: true })
         .or(composerForm.locator(`.composer-attachment-surface:is(button, [role="button"])[aria-label=${JSON.stringify(file.name)}]`))
-        .waitFor({ state: "visible", timeout: acceptanceTimeoutMs })
+    ));
+    const accepted = Promise.all(attachmentTiles.map(tile => (
+      tile.waitFor({ state: "visible", timeout: acceptanceTimeoutMs })
     ))).finally(() => { acceptanceSettled = true; });
     accepted.catch(() => {});
     // When ChatGPT shows its limit notice, it does so within seconds; without watching for it the
@@ -5126,6 +5128,24 @@ export class ChatGptBrowserWorker {
         + (alerts.length > 0 ? `: ${alerts.join(" | ")}` : ""),
         { cause: error },
       );
+    }
+    // 20.10: a visible tile is not an uploaded file. While it uploads, the tile carries a progressbar
+    // and Send can still read as enabled (on the saved-chat home for the whole upload, in a
+    // conversation for about a second before "File upload pending"). An Enter pressed then is
+    // dropped: a 109 KB screenshot's image continuation waited out its 20 s send stage with the
+    // prompt still in the composer. Measured in DEV under a throttled upload: the progressbar
+    // leaves the tile when the upload lands.
+    const uploadDeadline = Math.min(Date.now() + 90_000, stageDeadline);
+    const uploading = async (): Promise<number> => {
+      let count = 0;
+      for (const tile of attachmentTiles) count += await tile.locator('[role="progressbar"]').count().catch(() => 0);
+      return count;
+    };
+    while (await uploading() > 0) {
+      if (Date.now() >= uploadDeadline) {
+        throw new Error("ChatGPT did not finish uploading the prompt attachments");
+      }
+      await new Promise(resolveSleep => setTimeout(resolveSleep, 250));
     }
     const send = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR);
     const deadline = Math.min(Date.now() + 60_000, stageDeadline);

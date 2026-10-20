@@ -3040,6 +3040,8 @@ test("retained tool turns select the connector before inserting context", async 
 test("image attachment readiness uses exact file tiles and not localized remove-button text", async () => {
   const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
   const calls: Array<[string, string?]> = [];
+  // 20.10: the tile shows a progressbar until its upload lands, while Send may already read enabled.
+  const progressReads = [1, 0];
   const send = {
     isEnabled: async () => {
       calls.push(["sendEnabled"]);
@@ -3050,11 +3052,25 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     getByRole: (role: string, options: { name: string; exact: boolean }) => {
       expect(role).toBe("group");
       expect(options).toEqual({ name: "codex-input-image-1.png", exact: true });
-      const tile: { or: (other: unknown) => typeof tile; waitFor: (state: { state: string; timeout: number }) => Promise<void> } = {
+      const tile: {
+        or: (other: unknown) => typeof tile;
+        waitFor: (state: { state: string; timeout: number }) => Promise<void>;
+        locator: (selector: string) => { count: () => Promise<number> };
+      } = {
         or: () => tile,
         waitFor: async (state: { state: string; timeout: number }) => {
           expect(state).toEqual({ state: "visible", timeout: 60_000 });
           calls.push(["fileTile", options.name]);
+        },
+        locator: (selector: string) => {
+          expect(selector).toBe('[role="progressbar"]');
+          return {
+            count: async () => {
+              const uploading = progressReads.shift() ?? 0;
+              calls.push(["uploading", String(uploading)]);
+              return uploading;
+            },
+          };
         },
       };
       return tile;
@@ -3103,6 +3119,8 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     ["inputReady"],
     ["setFiles", "codex-input-image-1.png"],
     ["fileTile", "codex-input-image-1.png"],
+    ["uploading", "1"],
+    ["uploading", "0"],
     ["sendEnabled"],
   ]);
 });
