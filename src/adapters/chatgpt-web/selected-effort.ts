@@ -7,8 +7,19 @@ const EFFORT_LABELS: ReadonlyArray<ReadonlyArray<string>> = [
   ["Pro"],
 ];
 
+/**
+ * The effort part of a closed-trigger label. 21.10: with GPT-6 the trigger names the model before
+ * the effort ("6 Yüksek", "6 High"), so no label matched and every turn opened the effort menu
+ * again, about three seconds per message. Only a leading version number is dropped.
+ */
+function effortPart(label: string): string {
+  return label.replace(/\s+/g, " ").trim()
+    .replace(/^(?:gpt[- ]?)?\d+(?:\.\d+)?\s+(?=\S)/i, "")
+    .toLocaleLowerCase("en-US");
+}
+
 export function selectedEffortMatches(label: string, targetIndex: number): boolean {
-  const clean = label.replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
+  const clean = effortPart(label);
   return (EFFORT_LABELS[targetIndex] ?? []).some(value => value.toLocaleLowerCase("en-US") === clean);
 }
 
@@ -22,6 +33,6 @@ export function sameEffortLabel(left: string, right: string): boolean {
   if (clean(left) === clean(right)) return true;
   return EFFORT_LABELS.some(labels => {
     const known = labels.map(value => value.toLocaleLowerCase("en-US"));
-    return known.includes(clean(left)) && known.includes(clean(right));
+    return known.includes(effortPart(left)) && known.includes(effortPart(right));
   });
 }

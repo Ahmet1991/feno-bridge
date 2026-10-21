@@ -22,3 +22,17 @@ test("one effort read in two languages is the same selection (01.10)", () => {
   expect(sameEffortLabel("Orta", "High")).toBeFalse();
   expect(sameEffortLabel("Thinking effort", "High")).toBeFalse();
 });
+
+test("a GPT-6 closed label names the model before the effort (21.10)", () => {
+  // Measured in DEV: the trigger reads "6 Yüksek"; without this every turn reopened the menu.
+  expect(selectedEffortMatches("6 Yüksek", 2)).toBeTrue();
+  expect(selectedEffortMatches("6\nHigh", 2)).toBeTrue();
+  expect(selectedEffortMatches("6.1 Orta", 1)).toBeTrue();
+  expect(selectedEffortMatches("GPT-6 Ekstra Yüksek", 3)).toBeTrue();
+  expect(selectedEffortMatches("6 Yüksek", 3)).toBeFalse();
+  expect(selectedEffortMatches("6 Ekstra Yüksek", 2)).toBeFalse();
+  expect(selectedEffortMatches("6", 2)).toBeFalse();
+  expect(selectedEffortMatches("6 Yüksek Pro", 2)).toBeFalse();
+  expect(sameEffortLabel("6 Yüksek", "High")).toBeTrue();
+  expect(sameEffortLabel("6 Yüksek", "6 Orta")).toBeFalse();
+});
