@@ -16,6 +16,7 @@ import {
   hasCurrentChatGptEnvironmentContext,
   hasRawChatGptEnvironmentContextDeclaringCwd,
   unattributedChatGptEnvironmentMessages,
+  isChatGptCompactedTurnStart,
   isChatGptCompactionContinuation,
   MissingTrustedCodexEnvironmentError,
   type ChatGptSandboxPolicy,
@@ -150,6 +151,22 @@ function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironme
 }
 
 /**
+ * Whether a current environment claim agrees with the native rollout that confirms it. 23.10: Codex
+ * 0.163 records no workspace roots in turn_context, so the rollout's roots fall back to its cwd while
+ * the envelope lists the desktop's extra folders. Only that shape is relaxed: full access on both
+ * sides, the same cwd, and a rollout whose roots are just that cwd. The turn then receives the
+ * rollout's own, narrower environment. A rollout that declares more roots must match exactly.
+ */
+function claimAgreesWithRollout(claim: ChatGptTurnEnvironment, rollout: ChatGptTurnEnvironment): boolean {
+  if (sameAuthority(claim, rollout)) return true;
+  return claim.sandboxPolicy.type === "dangerFullAccess"
+    && rollout.sandboxPolicy.type === "dangerFullAccess"
+    && pathIdentity(claim.cwd) === pathIdentity(rollout.cwd)
+    && rollout.roots.length === 1
+    && pathIdentity(rollout.roots[0]!) === pathIdentity(rollout.cwd);
+}
+
+/**
  * Codex emits its trusted environment envelope when a task starts or its environment changes,
  * not on every follow-up. This store carries only that trusted authority across turns. Tool
  * declarations are always taken from the current request and are never persisted.
@@ -180,7 +197,8 @@ export class ChatGptThreadEnvironmentStore {
       // and failed live turns outright while this store already held the right cwd.
       const currentContextClaimsCwd = hasCurrentContext && currentChatGptEnvironmentDeclaresCwd(parsed);
       const lineage = extractChatGptThreadSpawnLineage(parsed);
-      const currentCompaction = currentContextClaimsCwd && isChatGptCompactionContinuation(parsed);
+      const currentCompaction = currentContextClaimsCwd
+        && (isChatGptCompactionContinuation(parsed) || isChatGptCompactedTurnStart(parsed));
       const historicalMessages = !currentCompaction && lineage
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
       const steeringClaim = currentContextClaimsCwd && !currentCompaction
@@ -204,7 +222,7 @@ export class ChatGptThreadEnvironmentStore {
           tools: parsed.context.tools,
         });
         if (rolloutEnvironment) {
-          if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment)) {
+          if (currentClaim && !claimAgreesWithRollout(currentClaim, rolloutEnvironment)) {
             throw new Error(`${currentCompaction ? "Compaction continuation" : "Steering"} environment conflicts with its current Codex rollout`);
           }
           this.set(rolloutIdentity.threadId, rolloutEnvironment);

@@ -927,6 +927,115 @@ describe("trusted Codex task environment continuity", () => {
     expect(rolloutPath.includes("sessions")).toBeTrue();
   });
 
+  /**
+   * 23.10: Codex Desktop 0.163 compacts a thread when its model changes. A task started on
+   * gpt-6.1-sol and continued on Feno sent the re-injected instructions and environment (tagged with
+   * the new turn), the previous turn's retained message, the compaction item, the app's page
+   * context, then the new instruction. The walk stopped at the retained message, and every retry
+   * failed with "missing cwd in trusted Codex environment context".
+   */
+  function modelSwitchCompactionRequest(environment = environmentXml): CodexParsedRequest {
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    (request as { _rolloutPath?: string })._rolloutPath = rolloutPath;
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    const current = { turn_id: rolloutTurnId };
+    body.input = [
+      { type: "additional_tools", id: "at_tools", tools: [] },
+      { type: "message", role: "developer", id: "msg_base", internal_chat_message_metadata_passthrough: {
+        ...current, content_item_kinds: ["model.base_instructions"] },
+      content: [{ type: "input_text", text: "You are Codex." }] },
+      { type: "message", role: "user", id: "msg_environment", internal_chat_message_metadata_passthrough: {
+        ...current, content_item_kinds: ["agents_md.instructions", "environments.environment_context"] },
+      content: [
+        { type: "input_text", text: "# AGENTS.md instructions" },
+        { type: "input_text", text: environment },
+      ] },
+      { type: "message", role: "user", id: "msg_retained", internal_chat_message_metadata_passthrough: {
+        turn_id: "01a06c66-0000-75c6-a0df-318f890ef6de", content_item_kinds: ["user.text"] },
+      content: [{ type: "input_text", text: "Start the download" }] },
+      { type: "compaction", id: "cmp_switch", encrypted_content: "opaque", internal_chat_message_metadata_passthrough: current },
+      { type: "message", role: "developer", id: "msg_time", internal_chat_message_metadata_passthrough: {
+        ...current, content_item_kinds: ["additional_content.codex_apps_client_time_context"] },
+      content: [{ type: "input_text", text: "<codex_apps_client_time_context/>" }] },
+      { type: "message", role: "user", id: "msg_page", internal_chat_message_metadata_passthrough: {
+        ...current, content_item_kinds: ["additional_content.codex_apps_open_page"] },
+      content: [{ type: "input_text", text: '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>' }] },
+      { type: "message", role: "developer", id: "msg_page_instructions", internal_chat_message_metadata_passthrough: {
+        ...current, content_item_kinds: ["additional_content.codex_apps_open_page_instructions"] },
+      content: [{ type: "input_text", text: "Page instructions" }] },
+      { type: "message", role: "user", id: "msg_active", internal_chat_message_metadata_passthrough: {
+        ...current, content_item_kinds: ["user.text"] },
+      content: [{ type: "input_text", text: "Continue the download" }] },
+    ];
+    (request as { _codexHome?: string })._codexHome = codexHome;
+    return request;
+  }
+
+  test("a thread compacted for a model switch keeps its re-injected environment (23.10)", () => {
+    const request = modelSwitchCompactionRequest();
+    const codexHome = (request as { _codexHome?: string })._codexHome!;
+    expect(chatGptRequestItemShape(request)).toBe(
+      "additional_tools/- message/developer[base_instructions]= message/user[instructions+environment_context]="
+        + " message/user[text]~ compaction/= message/developer[codex_apps_client_time_context]="
+        + " message/user[codex_apps_open_page]= message/developer[codex_apps_open_page_instructions]= message/user[text]=",
+    );
+    const environment = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request);
+    expect(environment.cwd).toBe(root);
+    expect(environment.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+  });
+
+  test("extra desktop folders in a full-access claim do not conflict with a rootless rollout (23.10)", () => {
+    // Codex 0.163 writes no workspace_roots into turn_context, while the envelope lists the desktop's
+    // projectless folder and its visualizations folder beside the cwd.
+    const extra = resolve(root, "visualizations");
+    const request = modelSwitchCompactionRequest(`<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root><root>${extra}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`);
+    const { _codexHome: codexHome, _rolloutPath: rolloutPath } = request as { _codexHome?: string; _rolloutPath?: string };
+    const rootless = childTurnContext();
+    delete (rootless.payload as Record<string, unknown>).workspace_roots;
+    writeFileSync(rolloutPath!, [
+      JSON.stringify({ type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } }),
+      JSON.stringify(rootless),
+    ].join("\n") + "\n");
+    const environment = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome!).resolve(request);
+    expect(environment.cwd).toBe(root);
+    // The turn receives the rollout's narrower authority, not the claim's extra folders.
+    expect(environment.roots).toEqual([root]);
+  });
+
+  test("a restricted claim with extra folders still conflicts with a rootless rollout", () => {
+    const extra = resolve(root, "visualizations");
+    const request = modelSwitchCompactionRequest(`<environment_context>
+  <cwd>${root}</cwd>
+  <filesystem><workspace_roots><root>${root}</root><root>${extra}</root></workspace_roots>${workspaceWriteProfileXml}</filesystem>
+</environment_context>`);
+    const { _codexHome: codexHome, _rolloutPath: rolloutPath } = request as { _codexHome?: string; _rolloutPath?: string };
+    const body = request._rawBody as { client_metadata: Record<string, string> };
+    body.client_metadata["x-codex-turn-metadata"] = JSON.stringify({
+      ...JSON.parse(body.client_metadata["x-codex-turn-metadata"]!), sandbox_mode: "workspace-write",
+    });
+    const rootless = childTurnContext(rolloutTurnId, { sandbox_policy: { type: "workspace-write", network_access: false } });
+    delete (rootless.payload as Record<string, unknown>).workspace_roots;
+    writeFileSync(rolloutPath!, [
+      JSON.stringify({ type: "session_meta", payload: { id: rolloutThreadId, source: "vscode" } }),
+      JSON.stringify(rootless),
+    ].join("\n") + "\n");
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome!).resolve(request)).toThrow();
+  });
+
+  test("a model-switch environment that disagrees with the native rollout is refused", () => {
+    const elsewhere = resolve(root, "elsewhere");
+    const request = modelSwitchCompactionRequest(`<environment_context>
+  <cwd>${elsewhere}</cwd>
+  <filesystem><workspace_roots><root>${elsewhere}</root></workspace_roots>${dangerFullAccessProfileXml}</filesystem>
+</environment_context>`);
+    const codexHome = (request as { _codexHome?: string })._codexHome!;
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request))
+      .toThrow("Compaction continuation environment conflicts with its current Codex rollout");
+  });
+
   test.skipIf(process.platform !== "win32")("a Windows namespaced index resolves cwd from the exact active rollout", () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
     const databasePath = join(codexHome, "state_5.sqlite");
