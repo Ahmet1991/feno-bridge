@@ -85,13 +85,15 @@ test("send and stop resolve the composer's primary slot without localized labels
   expect(matches(form(true), CHATGPT_SEND_BUTTON_SELECTOR)).toEqual([]);
   expect(matches(form(false), CHATGPT_STOP_BUTTON_SELECTOR)).toEqual([]);
   expect(matches(form(false), CHATGPT_SEND_BUTTON_SELECTOR)).toEqual(["send"]);
-  // 19.10, saved chat: an empty composer shows the voice-mode button in the primary slot.
-  const savedChatIdle = `<form data-chatgpt-composer>
-    <button type="button" class="h-token-button-composer" id="dictate" aria-label="Dikte et"></button>
-    <button type="button" class="cursor-interaction size-token-button-composer bg-composer-primary" id="voice" aria-label="Sesli iletişimi başlat" data-state="closed"><svg><use href="/cdn/assets/icons-a37f3c54c7d1d31c.svg#voice-regular-20"></use></svg></button>
-  </form>`;
-  expect(matches(savedChatIdle, CHATGPT_STOP_BUTTON_SELECTOR)).toEqual([]);
-  expect(matches(savedChatIdle, CHATGPT_SEND_BUTTON_SELECTOR)).toEqual([]);
+  // Saved chats use the original voice icon (19.10) or the Codex-prefixed icon (23.10).
+  for (const voiceIcon of ["voice-regular-20", "codex-icon-voice-regular-20"]) {
+    const savedChatIdle = `<form data-chatgpt-composer>
+      <button type="button" class="h-token-button-composer" id="dictate" aria-label="Dikte et"></button>
+      <button type="button" class="cursor-interaction size-token-button-composer bg-composer-primary" id="voice" aria-label="Sesli iletişimi başlat" data-state="closed"><svg><use href="/cdn/assets/icons-a37f3c54c7d1d31c.svg#${voiceIcon}"></use></svg></button>
+    </form>`;
+    expect(matches(savedChatIdle, CHATGPT_STOP_BUTTON_SELECTOR)).toEqual([]);
+    expect(matches(savedChatIdle, CHATGPT_SEND_BUTTON_SELECTOR)).toEqual([]);
+  }
 });
 
 test("the upload input resolves only the unfiltered composer file input", () => {
