@@ -374,6 +374,30 @@ export function isChatGptCompactionContinuation(parsed: CodexParsedRequest): boo
     && isAcceptedCompactionContinuation(parsed, identity, revision);
 }
 
+/**
+ * A turn that starts on a freshly compacted history. 23.10: Codex Desktop 0.163 compacts a thread
+ * when its model changes, and a task begun on gpt-6.1-sol then continued on Feno sent the
+ * re-injected instructions and environment (tagged with the new turn), the previous turn's
+ * retained message, the compaction item, the app's page context and the new instruction. The
+ * environment walk stopped at the retained message and every retry failed with "missing cwd".
+ * Like a mid-turn compaction, the environment it carries is a claim for the native rollout to
+ * confirm, never authority on its own.
+ */
+export function isChatGptCompactedTurnStart(parsed: CodexParsedRequest): boolean {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) return false;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const compactionIndex = input.findLastIndex(value => {
+    const item = record(value);
+    return item?.type === "compaction" && itemTurnId(item) === turnId;
+  });
+  if (compactionIndex < 0 || hasAssistantOutputBetween(input, compactionIndex + 1, input.length)) return false;
+  const metadata = clientTurnMetadata(parsed);
+  const activeIndex = input.findLastIndex(value => isUserOrParentInstruction(record(value), metadata));
+  return activeIndex > compactionIndex && itemTurnId(input[activeIndex]) === turnId;
+}
+
 /** Parse a claim only: the caller must compare it with this turn's native rollout authority. */
 export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
