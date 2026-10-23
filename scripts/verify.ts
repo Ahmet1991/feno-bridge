@@ -22,6 +22,8 @@ try {
   await run(["run", "audit"]);
   await run(["run", "launcher:audit"]);
   await run(["run", "typecheck"]);
+  // Electron 42 downloads its binary on first use. Do this outside timed tests.
+  await run(["launcher/node_modules/electron/install.js"]);
   await run(["run", "test"]);
   await run(["run", "launcher:typecheck"]);
   await run(["run", "launcher:test"]);
