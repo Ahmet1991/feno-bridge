@@ -7,15 +7,42 @@ const EFFORT_LABELS: ReadonlyArray<ReadonlyArray<string>> = [
   ["Pro"],
 ];
 
+const VERSION_PREFIX = /^(?:gpt[- ]?)?\d+(?:\.\d+)?\s+(?=\S)/i;
+
+function knownEffort(value: string): boolean {
+  return EFFORT_LABELS.some(labels => labels.some(label => label.toLocaleLowerCase("en-US") === value));
+}
+
 /**
  * The effort part of a closed-trigger label. 21.10: with GPT-6 the trigger names the model before
  * the effort ("6 Yüksek", "6 High"), so no label matched and every turn opened the effort menu
- * again, about three seconds per message. Only a leading version number is dropped.
+ * again, about three seconds per message; a leading version number is dropped. 24.10: the trigger
+ * also shows its caption on a line of its own ("Akıl yürütme düzeyi" / "6 High"). The last line
+ * names the effort only when no other line does; two effort words stay ambiguous.
  */
 function effortPart(label: string): string {
-  return label.replace(/\s+/g, " ").trim()
-    .replace(/^(?:gpt[- ]?)?\d+(?:\.\d+)?\s+(?=\S)/i, "")
-    .toLocaleLowerCase("en-US");
+  const lines = label.split(/\r?\n/).map(line => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const efforts = lines.map(line => line.replace(VERSION_PREFIX, "").toLocaleLowerCase("en-US"));
+  const last = efforts.at(-1) ?? "";
+  if (efforts.length > 1 && knownEffort(last) && efforts.filter(knownEffort).length === 1) return last;
+  return lines.join(" ").replace(VERSION_PREFIX, "").toLocaleLowerCase("en-US");
+}
+
+/**
+ * 24.10: the closed trigger carries the selected effort as data-selected-reasoning-effort ("high"
+ * measured live), which no translation or caption changes. Only values seen or documented count.
+ */
+const EFFORT_ATTRIBUTE_VALUES: ReadonlyArray<ReadonlyArray<string>> = [
+  [],
+  ["medium"],
+  ["high"],
+  ["xhigh", "extra_high", "extra-high"],
+  [],
+];
+
+export function selectedEffortAttributeMatches(value: string | null | undefined, targetIndex: number): boolean {
+  const clean = value?.trim().toLowerCase();
+  return Boolean(clean) && (EFFORT_ATTRIBUTE_VALUES[targetIndex] ?? []).includes(clean!);
 }
 
 export function selectedEffortMatches(label: string, targetIndex: number): boolean {

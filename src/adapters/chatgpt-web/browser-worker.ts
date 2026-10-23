@@ -5,7 +5,7 @@ import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
 import { formatBrowserTurnReactionLog } from "./reaction-timing";
 import { chatGptWebContextOverflowWarning } from "./usage";
 import { ChatGptPersonalizationProofCache } from "./personalization-proof-cache";
-import { sameEffortLabel, selectedEffortMatches } from "./selected-effort";
+import { sameEffortLabel, selectedEffortAttributeMatches, selectedEffortMatches } from "./selected-effort";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Request, type Response } from "playwright-core";
 import {
   atomicWriteFile,
@@ -3267,7 +3267,9 @@ export class ChatGptBrowserWorker {
     // still use the existing slider and its post-selection verification.
     if (await currentEffort.getAttribute("aria-expanded").catch(() => null) === "false") {
       const closedLabel = await currentEffort.innerText().catch(() => "");
-      if (selectedEffortMatches(closedLabel, uiEffortIndex)) {
+      const closedEffort = await currentEffort.getAttribute("data-selected-reasoning-effort").catch(() => null);
+      if (closedLabel.trim()
+        && (selectedEffortAttributeMatches(closedEffort, uiEffortIndex) || selectedEffortMatches(closedLabel, uiEffortIndex))) {
         return {
           ...mode,
           selection: { url: page.url(), label: closedLabel.trim() },
