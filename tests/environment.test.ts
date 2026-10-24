@@ -984,6 +984,38 @@ describe("trusted Codex task environment continuity", () => {
     expect(environment.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
   });
 
+  test("the same turn's tool-result request keeps the model-switch environment (24.10)", () => {
+    // Live: the first request of the switched turn resolved; the next one, carrying the answer,
+    // the tool call and its output after the instruction, failed with "missing cwd".
+    const request = modelSwitchCompactionRequest();
+    const codexHome = (request as { _codexHome?: string })._codexHome!;
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    const current = { turn_id: rolloutTurnId };
+    body.input.push(
+      { type: "message", role: "assistant", id: "msg_answer", internal_chat_message_metadata_passthrough: current,
+        content: [{ type: "output_text", text: "Checking." }] },
+      { type: "function_call", id: "fc_1", call_id: "call_1", name: "shell", arguments: "{}", internal_chat_message_metadata_passthrough: current },
+      { type: "function_call_output", call_id: "call_1", output: "ok", internal_chat_message_metadata_passthrough: current },
+    );
+    expect(chatGptRequestItemShape(request).endsWith(
+      "message/user[text]= message/assistant= function_call/= function_call_output/=",
+    )).toBeTrue();
+    expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request).cwd).toBe(root);
+  });
+
+  test("a prior answer between the compaction and the instruction is not a compacted turn start", () => {
+    const request = modelSwitchCompactionRequest();
+    const codexHome = (request as { _codexHome?: string })._codexHome!;
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    const active = body.input.pop()!;
+    body.input.push(
+      { type: "message", role: "assistant", id: "msg_between", internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+        content: [{ type: "output_text", text: "Earlier answer" }] },
+      active,
+    );
+    expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toThrow("missing cwd");
+  });
+
   test("extra desktop folders in a full-access claim do not conflict with a rootless rollout (23.10)", () => {
     // Codex 0.163 writes no workspace_roots into turn_context, while the envelope lists the desktop's
     // projectless folder and its visualizations folder beside the cwd.

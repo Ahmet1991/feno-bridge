@@ -392,10 +392,15 @@ export function isChatGptCompactedTurnStart(parsed: CodexParsedRequest): boolean
     const item = record(value);
     return item?.type === "compaction" && itemTurnId(item) === turnId;
   });
-  if (compactionIndex < 0 || hasAssistantOutputBetween(input, compactionIndex + 1, input.length)) return false;
+  if (compactionIndex < 0) return false;
   const metadata = clientTurnMetadata(parsed);
   const activeIndex = input.findLastIndex(value => isUserOrParentInstruction(record(value), metadata));
-  return activeIndex > compactionIndex && itemTurnId(input[activeIndex]) === turnId;
+  // The instruction must follow the compaction, past only its own context. What comes after it is
+  // this turn's own progress. 24.10: the turn's first request resolved and its tool call ran, then
+  // the request carrying the result (answer, call, output after the instruction) failed with
+  // "missing cwd" again.
+  return activeIndex > compactionIndex && itemTurnId(input[activeIndex]) === turnId
+    && !hasAssistantOutputBetween(input, compactionIndex + 1, activeIndex);
 }
 
 /** Parse a claim only: the caller must compare it with this turn's native rollout authority. */
