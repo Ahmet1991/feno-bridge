@@ -2025,6 +2025,83 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   ]);
 });
 
+test("connector selection waits for exact identity after the visible pill is replaced", async () => {
+  let activated = false;
+  let reads = 0;
+  let resolutions = 0;
+  let cleanups = 0;
+  const pendingComposer = { pending: true };
+  const readyComposer = { ready: true };
+  const appResult = {
+    waitFor: async () => {},
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+  };
+  const composer = {
+    fill: async () => {},
+    focus: async () => {},
+    pressSequentially: async () => {},
+    press: async (key: string) => { if (key === "Enter") activated = true; },
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as any).selectConnector;
+  const result = await selectConnector.call({
+    config: { appName: "Codex Native2" },
+    activeComposer: async () => {
+      if (!activated) return composer;
+      resolutions += 1;
+      return reads < 2 ? pendingComposer : readyComposer;
+    },
+    connectorIsSelected: async (current: unknown) => {
+      if (!activated) return false;
+      reads += 1;
+      return current === readyComposer;
+    },
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+    selectedConnectorControl: () => ({ waitFor: async () => {} }),
+    clearChatGptComposerState: async () => { cleanups += 1; },
+  }, {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({}),
+    locator: () => ({ filter: () => appResult }),
+  });
+  expect(result).toBe(readyComposer);
+  expect(resolutions).toBeGreaterThan(1);
+  expect(cleanups).toBe(0);
+});
+
+test.each(["timeout", "abort"])("pending connector identity fails closed on %s", async reason => {
+  let activated = false;
+  let cleanups = 0;
+  let activations = 0;
+  const controller = new AbortController();
+  const appResult = {
+    waitFor: async () => {},
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+  };
+  const composer = {
+    fill: async () => {}, focus: async () => {}, pressSequentially: async () => {},
+    press: async () => { activated = true; activations += 1; },
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as any).selectConnector;
+  const pending = selectConnector.call({
+    config: { appName: "Codex Native2" },
+    activeComposer: async () => composer,
+    connectorIsSelected: async () => false,
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+    selectedConnectorControl: () => ({ waitFor: async () => { expect(activated).toBeTrue(); } }),
+    clearChatGptComposerState: async () => { cleanups += 1; },
+  }, {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({}), locator: () => ({ filter: () => appResult }),
+  }, async (checkpoint: string) => {
+    if (reason === "abort" && checkpoint === "connector-selection-pending") controller.abort();
+  }, false, undefined, controller.signal);
+  await expect(pending).rejects.toThrow(reason === "abort" ? "aborted" : 'did not select "Codex Native2"');
+  expect(cleanups).toBe(1);
+  expect(activations).toBe(1);
+}, 15_000);
+
 test("connector selection moves highlight to the exact hidden-viewport row before Enter", async () => {
   const keys: string[] = [];
   let arrowCount = 0;
