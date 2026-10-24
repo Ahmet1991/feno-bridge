@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "5.0.87",
+  "version": "5.0.88",
   "private": true,
   "description": "Feno Bridge desktop launcher",
   "author": "miuuyy",
@@ -31,17 +31,18 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.2.0",
-    "electron": "42.11.9",
+    "electron": "42.11.18",
     "electron-builder": "^26.8.1",
     "typescript": "^5.9.3",
     "vite": "^6.4.4"
   },
   "overrides": {
     "@xmldom/xmldom": "0.8.15",
-    "fast-uri": "3.1.8",
+    "fast-uri": "3.1.9",
     "http-cache-semantics": "4.3.0",
     "js-yaml": "4.3.2",
-    "source-map-js": "1.2.2"
+    "source-map-js": "1.2.2",
+    "undici": "7.30.1"
   },
   "build": {
     "appId": "dev.codexwebgpt.launcher",
