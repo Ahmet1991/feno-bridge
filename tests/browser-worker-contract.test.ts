@@ -2148,6 +2148,49 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   expect(keys).toEqual(["ArrowDown", "ArrowDown", "Enter"]);
 });
 
+test.each([true, false])("connector highlight uses bounded menu reopening with exact-row proof (recovers=%s)", async recovers => {
+  let mentionTriggers = 0;
+  let cleanups = 0;
+  let selected = false;
+  const keys: string[] = [];
+  const appResult = {
+    waitFor: async () => {}, count: async () => 1,
+    getAttribute: async (name: string) => name === "aria-current" && recovers && mentionTriggers >= 2
+      ? "true" : null,
+  };
+  const composer = {
+    fill: async () => {}, focus: async () => {},
+    pressSequentially: async () => { mentionTriggers += 1; },
+    press: async (key: string) => {
+      keys.push(key);
+      if (key === "Enter") selected = recovers && mentionTriggers === 2;
+    },
+  };
+  const page = {
+    getByRole: personalizedTemporaryChatRole, getByText: () => ({}),
+    locator: () => ({ filter: (options: { visible?: boolean }) => options.visible
+      ? { count: async () => 1 } : appResult }),
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as any).selectConnector;
+  const worker = {
+    config: { appName: "Codex Native2" },
+    activeComposer: async () => composer,
+    connectorIsSelected: async () => selected,
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+    selectedConnectorControl: () => ({ waitFor: async () => { expect(selected).toBeTrue(); } }),
+    clearChatGptComposerState: async () => { cleanups += 1; },
+  };
+
+  if (recovers) {
+    await expect(selectConnector.call(worker, page)).resolves.toBe(composer);
+  } else {
+    await expect(selectConnector.call(worker, page)).rejects.toThrow('could not highlight "Codex Native2"');
+  }
+  expect(mentionTriggers).toBe(recovers ? 2 : MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS);
+  expect(cleanups).toBe(recovers ? 1 : MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS);
+  expect(keys.filter(key => key === "Enter")).toHaveLength(recovers ? 1 : 0);
+});
+
 test("connector navigation waits for the previous arrow to commit before sending another", async () => {
   const keys: string[] = [];
   const timers: ReturnType<typeof setTimeout>[] = [];
@@ -2301,6 +2344,53 @@ test("repeated connector verification reuses its selected pill before clearing t
 
   expect(fillCalls).toBe(0);
   expect(checkpoints).toEqual(["connector-already-selected"]);
+});
+
+test("prompt attachment replaces a stale draft when the connector is already selected", async () => {
+  const state = { selected: true, draft: "old request", cleanups: 0, insertions: 0 };
+  const composer = {
+    fill: async (value: string) => { state.draft = value; state.selected = false; },
+    focus: async () => {},
+    pressSequentially: async (value: string) => { state.draft += value; },
+    press: async (key: string) => {
+      if (key === "Enter") { state.selected = true; state.draft = ""; }
+      else expect(key).toBe(CHATGPT_COMPOSER_DOCUMENT_END_KEY);
+    },
+  };
+  const appResult = {
+    waitFor: async () => {}, count: async () => 1,
+    getAttribute: async () => "",
+  };
+  const page = {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({}),
+    locator: () => ({ filter: () => appResult, evaluateAll: async () => [] }),
+  };
+  const prototype = ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown): Promise<unknown>;
+    attachPrompt(page: unknown, prompt: string, localTools: boolean): Promise<void>;
+  };
+  const worker = {
+    config: { appName: "Codex Native2" },
+    selectConnector: prototype.selectConnector,
+    activeComposer: async () => composer,
+    connectorIsSelected: async () => state.selected,
+    attachedPromptText: async () => state.draft.trimStart(),
+    selectedConnectorControl: () => ({ waitFor: async () => { expect(state.selected).toBeTrue(); } }),
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+    clearChatGptComposerState: async () => {
+      state.cleanups += 1; state.draft = ""; state.selected = false;
+    },
+    insertPromptText: async (_page: unknown, text: string) => {
+      state.insertions += 1; state.draft += text;
+    },
+    assertPromptAttached: async (_page: unknown, prompt: string) => {
+      expect(state.draft.trimStart()).toBe(prompt);
+    },
+  };
+
+  await prototype.attachPrompt.call(worker, page, "new request", true);
+  expect(state).toEqual({ selected: true, draft: " new request", cleanups: 1, insertions: 1 });
 });
 
 test.each([false, true])("cached personalization selects the connector without re-proving and recovers within the same turn after a missing menu (missing=%s)", async missing => {

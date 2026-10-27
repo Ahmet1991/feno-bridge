@@ -4323,8 +4323,15 @@ export class ChatGptBrowserWorker {
     let composer = await this.activeComposer(page, 30_000, abortSignal);
     // A visible, exact chip is stronger evidence than opening the mention menu again.
     if (await this.connectorIsSelected(composer, abortSignal)) {
-      await capture("connector-already-selected");
-      return composer;
+      if ((await this.attachedPromptText(page, abortSignal, composer)).length === 0) {
+        await capture("connector-already-selected");
+        return composer;
+      }
+      // The connector chip may survive a failed turn together with its previous draft.
+      // Clear that draft before selecting the connector for the next request.
+      await this.clearChatGptComposerState(page);
+      throwIfPromptAttachmentAborted(abortSignal);
+      composer = await this.activeComposer(page, 30_000, abortSignal);
     }
     let sessionKey = await this.personalizationSessionKey?.(page);
     const proofStatus = this.personalizationProofCache?.status(this.proofKey(page), sessionKey);
@@ -4452,6 +4459,7 @@ export class ChatGptBrowserWorker {
       await composer.fill("", { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
 
       let firstMenuCaptured = false;
+      connectorHighlightRetry: for (;;) {
       while (attemptBudget.triggerAttempts < MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS) {
         attemptBudget.triggerAttempts += 1;
         composer = await this.activeComposer(page, 30_000, abortSignal);
@@ -4566,6 +4574,16 @@ export class ChatGptBrowserWorker {
         }
       }
       if (!await rowHighlighted()) {
+        if (attemptBudget.triggerAttempts < MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS) {
+          // The exact row exists but the menu has not assigned it keyboard ownership.
+          // Discard this mention and reopen within the same trigger budget; never Enter
+          // until the exact row proves its own highlight.
+          await capture("connector-highlight-retry");
+          await this.clearChatGptComposerState(page);
+          throwIfPromptAttachmentAborted(abortSignal);
+          composer = await this.activeComposer(page, 30_000, abortSignal);
+          continue connectorHighlightRetry;
+        }
         throw new Error(`ChatGPT connector menu could not highlight ${JSON.stringify(this.config.appName)}`);
       }
       await composer.press("Enter", {
@@ -4609,6 +4627,7 @@ export class ChatGptBrowserWorker {
       if (provedThisTurn) this.personalizationProofCache?.remember(this.proofKey(page), sessionKey);
       await capture("connector-selected");
       return selectedComposer;
+      }
     } catch (error) {
       this.personalizationProofCache?.invalidate(this.proofKey(page));
       try {
