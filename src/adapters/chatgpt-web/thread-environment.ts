@@ -157,9 +157,14 @@ function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironme
  * sides, the same cwd, and a rollout whose roots are just that cwd. The turn then receives the
  * rollout's own, narrower environment. A rollout that declares more roots must match exactly.
  */
-function claimAgreesWithRollout(claim: ChatGptTurnEnvironment, rollout: ChatGptTurnEnvironment): boolean {
+function claimAgreesWithRollout(
+  claim: ChatGptTurnEnvironment,
+  rollout: ChatGptTurnEnvironment,
+  workspaceRootsDeclared: boolean,
+): boolean {
   if (sameAuthority(claim, rollout)) return true;
-  return claim.sandboxPolicy.type === "dangerFullAccess"
+  return !workspaceRootsDeclared
+    && claim.sandboxPolicy.type === "dangerFullAccess"
     && rollout.sandboxPolicy.type === "dangerFullAccess"
     && pathIdentity(claim.cwd) === pathIdentity(rollout.cwd)
     && rollout.roots.length === 1
@@ -212,7 +217,7 @@ export class ChatGptThreadEnvironmentStore {
       const compactionSourceTurnId = parsed._compactionRequest
         ? extractChatGptCompactionSourceRevision(parsed).turnId : undefined;
       if (rolloutIdentity && identity.turnId) {
-        const rolloutEnvironment = resolveCurrentCodexRolloutEnvironment({
+        const rolloutRecord = resolveCurrentCodexRolloutEnvironment({
           codexHome: this.codexHome,
           ...(this.sqliteHome ? { sqliteHome: this.sqliteHome } : {}),
           lineage: rolloutIdentity,
@@ -221,8 +226,29 @@ export class ChatGptThreadEnvironmentStore {
           ...(historicalMessages ? { historicalEnvironmentMessages: historicalMessages } : {}),
           tools: parsed.context.tools,
         });
-        if (rolloutEnvironment) {
-          if (currentClaim && !claimAgreesWithRollout(currentClaim, rolloutEnvironment)) {
+        if (rolloutRecord) {
+          const { environment: rolloutEnvironment, workspaceRootsDeclared } = rolloutRecord;
+          const existing = hasCurrentContext && !currentContextClaimsCwd
+            ? this.get(identity.threadId) : undefined;
+          if (existing) {
+            // Desktop's midnight diff repeats auxiliary roots, while turn_context may record
+            // only cwd. Keep the already proven authority: narrowing it here changes the active
+            // broker channel's identity and aborts the tool loop despite unchanged permissions.
+            assertDeclaredRootsWithinAuthority(currentChatGptEnvironmentWorkspaceRoots(parsed), existing.roots);
+            const retained: ChatGptTurnEnvironment = {
+              cwd: existing.cwd,
+              roots: existing.roots,
+              writableRoots: existing.writableRoots,
+              sandboxPolicy: existing.sandboxPolicy,
+              tools: parsed.context.tools ?? [],
+            };
+            if (!claimAgreesWithRollout(retained, rolloutEnvironment, workspaceRootsDeclared)) {
+              throw new Error("Ambient environment update conflicts with its current Codex rollout");
+            }
+            this.set(identity.threadId, retained);
+            return retained;
+          }
+          if (currentClaim && !claimAgreesWithRollout(currentClaim, rolloutEnvironment, workspaceRootsDeclared)) {
             throw new Error(`${currentCompaction ? "Compaction continuation" : "Steering"} environment conflicts with its current Codex rollout`);
           }
           this.set(rolloutIdentity.threadId, rolloutEnvironment);

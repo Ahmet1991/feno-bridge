@@ -605,6 +605,11 @@ function validateMetadataConsistency(
   }
 }
 
+export interface CodexRolloutEnvironment {
+  environment: ChatGptTurnEnvironment;
+  workspaceRootsDeclared: boolean;
+}
+
 export function resolveCurrentCodexRolloutEnvironment(options: {
   codexHome: string;
   sqliteHome?: string;
@@ -613,7 +618,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
   compactionSourceTurnId?: string;
   tools?: readonly CodexTool[];
   historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
-}): ChatGptTurnEnvironment | undefined {
+}): CodexRolloutEnvironment | undefined {
   const { codexHome, lineage, turnId, tools, compactionSourceTurnId } = options;
   const nativeThreadId = CODEX_ID.test(lineage.threadId);
   const nativeTurnId = CODEX_ID.test(turnId);
@@ -632,7 +637,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
     throw new Error("Codex has no canonical rollout for the requested subagent thread");
   }
 
-  const matching: ChatGptTurnEnvironment[] = [];
+  const matching: CodexRolloutEnvironment[] = [];
   let unusableCandidates = 0;
   let unusableReason: Error | undefined;
   for (const candidate of candidates) {
@@ -669,7 +674,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
       if (options.historicalEnvironmentMessages) {
         verifyHistoricalEnvironmentMessages(fd, size, turnId, options.historicalEnvironmentMessages);
       }
-      matching.push(environment);
+      matching.push({ environment, workspaceRootsDeclared: latest.workspace_roots !== undefined });
     } finally {
       closeSync(fd);
     }
