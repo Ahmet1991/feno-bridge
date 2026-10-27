@@ -2148,6 +2148,84 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   expect(keys).toEqual(["ArrowDown", "ArrowDown", "Enter"]);
 });
 
+test("connector navigation waits for the previous arrow to commit before sending another", async () => {
+  const keys: string[] = [];
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  let current = 0;
+  let queued = 0;
+  let selected = false;
+  const appResult = {
+    waitFor: async () => {}, count: async () => 1,
+    getAttribute: async (name: string) => name === "aria-current" && current === 1 ? "true" : null,
+  };
+  const composer = {
+    fill: async () => {}, focus: async () => {}, pressSequentially: async () => {},
+    press: async (key: string) => {
+      keys.push(key);
+      if (key === "ArrowDown") {
+        queued = (queued + 1) % 3;
+        const next = queued;
+        timers.push(setTimeout(() => { current = next; }, 0));
+      }
+      if (key === "Enter") selected = current === 1;
+    },
+  };
+  try {
+    const selectConnector = (ChatGptBrowserWorker.prototype as any).selectConnector;
+    await expect(selectConnector.call({
+      config: { appName: "Codex Native2" },
+      activeComposer: async () => composer,
+      connectorIsSelected: async () => selected,
+      connectorMentionRowTitles: async () => ["Codex Native2"],
+      selectedConnectorControl: () => ({ waitFor: async () => {} }),
+      clearChatGptComposerState: async () => {},
+    }, {
+      getByRole: personalizedTemporaryChatRole, getByText: () => ({}),
+      locator: () => ({ filter: (options: { visible?: boolean }) => options.visible
+        ? { count: async () => 3 } : appResult }),
+    })).resolves.toBe(composer);
+    expect(keys).toEqual(["ArrowDown", "Enter"]);
+  } finally {
+    timers.forEach(clearTimeout);
+  }
+});
+
+test("connector selection reports its own expired deadline instead of starting a 1ms DOM read", async () => {
+  const realNow = Date.now;
+  let clockAdvance = 0;
+  let activated = false;
+  const composer = {
+    fill: async () => {}, focus: async () => {}, pressSequentially: async () => {},
+    press: async () => { activated = true; },
+  };
+  const appResult = {
+    waitFor: async () => {}, count: async () => 1,
+    getAttribute: async (name: string) => name === "aria-current" ? "true" : null,
+  };
+  Date.now = () => realNow() + clockAdvance;
+  try {
+    const selectConnector = (ChatGptBrowserWorker.prototype as any).selectConnector;
+    await expect(selectConnector.call({
+      config: { appName: "Codex Native2" },
+      activeComposer: async (_page: unknown, timeout: number) => {
+        if (activated && timeout <= 1) throw new Error("ChatGPT browser DOM observation did not respond within 1ms");
+        return composer;
+      },
+      connectorIsSelected: async () => false,
+      connectorMentionRowTitles: async () => ["Codex Native2"],
+      selectedConnectorControl: () => ({ waitFor: async () => {} }),
+      clearChatGptComposerState: async () => {},
+    }, {
+      getByRole: personalizedTemporaryChatRole, getByText: () => ({}),
+      locator: () => ({ filter: () => appResult }),
+    }, async (checkpoint: string) => {
+      if (checkpoint === "connector-selection-pending") clockAdvance = 10_001;
+    })).rejects.toThrow('did not select "Codex Native2" connector');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("connector selection follows aria-current in the list-navigation mention menu", async () => {
   // Measured 26.09: rows are button[data-list-navigation-item]; the keyboard highlight is
   // aria-current="true" (no data-highlighted) and starts on the first row, "Codex Zero Risk".

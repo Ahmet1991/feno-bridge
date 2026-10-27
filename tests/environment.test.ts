@@ -1113,6 +1113,59 @@ describe("trusted Codex task environment continuity", () => {
     });
   });
 
+  test("a midnight diff preserves an active turn's trusted auxiliary roots after native rollout fallback", () => {
+    const { codexHome, request, rolloutPath } = resumedRootFixture();
+    const auxiliary = resolve(root, "..", "native-visualizations");
+    // Byte-realistic Codex 0.163 omits workspace_roots, as in the production midnight failure.
+    const native = readFileSync(rolloutPath, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+    delete native[1].payload.workspace_roots;
+    writeFileSync(rolloutPath, native.map(value => JSON.stringify(value)).join("\n") + "\n");
+    const body = request._rawBody as { input: Array<Record<string, unknown>> };
+    const previousTurnId = "01a06c66-0000-75c6-a0df-318f890ef6de";
+    body.input.unshift({
+      type: "message", role: "user", id: "msg_initial_environment",
+      internal_chat_message_metadata_passthrough: { turn_id: previousTurnId },
+      content: [{ type: "input_text", text: environmentXml.replace(
+        `<root>${root}</root>`, `<root>${root}</root><root>${auxiliary}</root>`,
+      ) }],
+    }, {
+      type: "message", role: "user", id: "msg_previous_instruction",
+      internal_chat_message_metadata_passthrough: { turn_id: previousTurnId },
+      content: [{ type: "input_text", text: "Inspect the workspace" }],
+    }, {
+      type: "message", role: "assistant", id: "msg_previous_answer",
+      internal_chat_message_metadata_passthrough: { turn_id: previousTurnId },
+      content: [{ type: "output_text", text: "Done" }],
+    });
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    const initial = store.resolve(request);
+    expect(initial.roots).toEqual([root, auxiliary]);
+    // The rollout retains only cwd, while Desktop repeats its original workspace list at midnight.
+    body.input.push(
+      { type: "function_call", call_id: "call_before_midnight", name: "exec_command", arguments: "{}" },
+      { type: "message", role: "user", id: "msg_midnight_diff",
+        internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId },
+        content: [{ type: "input_text", text:
+        `<environment_context><current_date>2026-10-27</current_date><timezone>Europe/Istanbul</timezone>`
+        + `<filesystem><workspace_roots><root>${root}</root><root>${auxiliary}</root></workspace_roots>`
+        + `${dangerFullAccessProfileXml}</filesystem></environment_context>` }] },
+      { type: "function_call_output", call_id: "call_before_midnight", output: "ok" },
+    );
+    expect(store.resolve(request)).toEqual(initial);
+    const midnight = body.input[body.input.length - 2]!;
+    const content = midnight.content as Array<{ type: string; text: string }>;
+    const originalDiff = content[0]!.text;
+    content[0]!.text = originalDiff.replaceAll(auxiliary, resolve(root, "..", "unproven-workspace"));
+    expect(() => store.resolve(request)).toThrow("outside the trusted thread authority");
+    content[0]!.text = originalDiff;
+    expect(store.resolve(request)).toEqual(initial);
+    // An explicit removal is a real authority change, not a missing native field.
+    native[1].payload.workspace_roots = [root];
+    writeFileSync(rolloutPath, native.map(value => JSON.stringify(value)).join("\n") + "\n");
+    content[0]!.text = originalDiff.replace(`<root>${auxiliary}</root>`, "");
+    expect(() => store.resolve(request)).toThrow("conflicts with its current Codex rollout");
+  });
+
   function steeredRolloutFixture(child: boolean, workspaceRoots: string[]) {
     const fixture = resumedRootFixture();
     const { request, rolloutPath } = fixture;

@@ -135,7 +135,10 @@ export const CHATGPT_RESPONSE_DOM_GRACE_MS = 60_000;
  */
 export const CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS = 180_000;
 export const CHATGPT_EMPTY_RESPONSE_GRACE_MS = 10_000;
-export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 60_000;
+// Upstream ffe041f / #885 observed a final 125 seconds after Stop disappeared. Quiet UI
+// without completion evidence is not a failed answer; allow the bounded MCP inactivity
+// window. Proven empty completions and lost response DOM retain their shorter checks.
+export const CHATGPT_COMPLETION_ACTION_GRACE_MS = 10 * 60_000;
 export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const CHATGPT_TOOL_APPROVAL_CARD_SELECTOR = '[data-testid="tool-approval-card"]';
@@ -4557,6 +4560,9 @@ export class ChatGptBrowserWorker {
             signal: abortSignal,
             timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
           });
+          // The menu commits its keyboard highlight asynchronously. Reading the old highlight
+          // immediately can queue several arrows and activate the wrong connector on Enter.
+          await withBrowserTurnAbort(settleChatGptUi(), abortSignal);
         }
       }
       if (!await rowHighlighted()) {
@@ -4592,8 +4598,12 @@ export class ChatGptBrowserWorker {
         }
         await withBrowserTurnAbort(settleChatGptUi(), abortSignal);
         throwIfPromptAttachmentAborted(abortSignal);
+        const remainingSelectionMs = selectionDeadline - Date.now();
+        if (remainingSelectionMs <= 0) {
+          throw new Error(`ChatGPT composer did not select ${JSON.stringify(this.config.appName)} connector`);
+        }
         selectedComposer = await this.activeComposer(
-          page, Math.max(1, selectionDeadline - Date.now()), abortSignal,
+          page, remainingSelectionMs, abortSignal,
         );
       }
       if (provedThisTurn) this.personalizationProofCache?.remember(this.proofKey(page), sessionKey);
