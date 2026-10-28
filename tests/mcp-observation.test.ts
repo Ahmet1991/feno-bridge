@@ -33,6 +33,9 @@ test("MCP observations separate pre-handler validation and returned tool errors 
     expect(events.map(event => event.event)).toEqual(Array(3).fill(["call_received", "reply_sent"]).flat());
     expect(events.filter(event => event.event === "reply_sent").map(event => event.is_error)).toEqual([true, true, false]);
     expect(events.map(event => event.call)).toEqual([1, 1, 2, 2, 3, 3]);
+    expect(events.filter(event => event.event === "reply_sent").map(event => event.error_source)).toEqual(["tool_result", "tool_result", "none"]);
+    expect(events.every(event => typeof event.at === "string" && !Number.isNaN(Date.parse(event.at as string)))).toBeTrue();
+    expect(events.every(event => typeof event.request_ref === "string" && (event.request_ref as string).length > 0)).toBeTrue();
     expect(JSON.stringify(events)).not.toContain(secret);
     expect(JSON.stringify(events)).not.toContain("private_key");
     expect(JSON.stringify(events)).not.toContain("content");
@@ -63,6 +66,7 @@ test("MCP observation failures, arbitrary IDs and unknown names never alter tran
   expect(events.at(-1)).toMatchObject({ event: "reply_send_failed", tool: "unknown" });
   expect(JSON.stringify(events)).not.toContain(secret);
   expect(JSON.stringify(events)).not.toContain(originalError.message);
+  expect(events.at(-1)?.request_ref).toBeDefined();
   const duplicate = { jsonrpc: "2.0" as const, id: 7, method: "tools/call", params: { name: "codex_exec" } };
   transport.onmessage?.(duplicate);
   transport.onmessage?.(duplicate);
@@ -72,4 +76,20 @@ test("MCP observation failures, arbitrary IDs and unknown names never alter tran
   expect(events).toHaveLength(count);
   transport.onclose?.();
   expect(closed).toBeTrue();
+});
+
+test("MCP protocol errors retain redacted correlation and error origin without exposing raw details", async () => {
+  const events: Array<Record<string, unknown>> = [];
+  const id = "private-request-with-sensitive-content";
+  const transport: Transport = {
+    start: async () => {}, close: async () => {}, onmessage: () => {},
+    send: async () => {},
+  };
+  observeMcpToolCalls(transport, new Set(["codex_tool_call"]), event => events.push(event));
+  transport.onmessage?.({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "codex_tool_call" } });
+  await transport.send({ jsonrpc: "2.0", id, error: { code: -32603, message: "private upstream error" } });
+  expect(events.at(-1)).toMatchObject({ event: "reply_sent", error_source: "mcp_protocol", protocol_error_code: -32603 });
+  expect(events[0]?.request_ref).toEqual(events[1]?.request_ref);
+  expect(JSON.stringify(events)).not.toContain(id);
+  expect(JSON.stringify(events)).not.toContain("private upstream error");
 });

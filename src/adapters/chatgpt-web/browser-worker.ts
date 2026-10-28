@@ -4558,8 +4558,9 @@ export class ChatGptBrowserWorker {
         return await appResult.getAttribute("data-highlighted", options) !== null
           || await appResult.getAttribute("aria-current", options) === "true";
       };
+      let visibleRowCount: number | undefined;
       if (!await rowHighlighted()) {
-        const visibleRowCount = await withBrowserTurnAbort(
+        visibleRowCount = await withBrowserTurnAbort(
           withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).count()),
           abortSignal,
         );
@@ -4573,7 +4574,30 @@ export class ChatGptBrowserWorker {
           await withBrowserTurnAbort(settleChatGptUi(), abortSignal);
         }
       }
+      let activatedByPointer = false;
       if (!await rowHighlighted()) {
+        // Some ChatGPT mention menus render the exact result but never mark any row as
+        // keyboard-highlighted (28 Oct, one visible row after three ArrowDown attempts).
+        // A real, on-screen row can be selected directly. Skip this for the hidden 1x1
+        // maintenance viewport, where pointer interaction cannot reach the menu.
+        const viewport = page.viewportSize?.();
+        const bounds = visibleRowCount === 1 && viewport && viewport.width > 1 && viewport.height > 1
+          ? await appResult.boundingBox()
+          : null;
+        if (viewport && bounds && bounds.width > 0 && bounds.height > 0
+          && bounds.x >= 0 && bounds.y >= 0
+          && bounds.x + bounds.width <= viewport.width
+          && bounds.y + bounds.height <= viewport.height) {
+          try {
+            await appResult.click({ signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS });
+            activatedByPointer = true;
+            await capture("connector-choice-clicked");
+          } catch (error) {
+            if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+          }
+        }
+      }
+      if (!activatedByPointer && !await rowHighlighted()) {
         if (attemptBudget.triggerAttempts < MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS) {
           // The exact row exists but the menu has not assigned it keyboard ownership.
           // Discard this mention and reopen within the same trigger budget; never Enter
@@ -4586,10 +4610,12 @@ export class ChatGptBrowserWorker {
         }
         throw new Error(`ChatGPT connector menu could not highlight ${JSON.stringify(this.config.appName)}`);
       }
-      await composer.press("Enter", {
-        signal: abortSignal,
-        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-      });
+      if (!activatedByPointer) {
+        await composer.press("Enter", {
+          signal: abortSignal,
+          timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+        });
+      }
       await capture("connector-choice-activated");
       // Selecting a connector replaces the Lexical composer subtree. Resolve the active composer
       // again instead of returning the pre-selection locator, otherwise the real turn can focus a

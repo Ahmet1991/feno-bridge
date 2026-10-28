@@ -2148,6 +2148,102 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   expect(keys).toEqual(["ArrowDown", "ArrowDown", "Enter"]);
 });
 
+test("connector selection clicks the unique visible row when ChatGPT never sets keyboard highlight", async () => {
+  const keys: string[] = [];
+  let selected = false;
+  let clicks = 0;
+  let mentionTriggers = 0;
+  const row = {
+    waitFor: async () => {},
+    count: async () => 1,
+    getAttribute: async () => null,
+    boundingBox: async () => ({ x: 370, y: 403, width: 402, height: 36 }),
+    click: async () => { clicks += 1; selected = true; },
+  };
+  const composer = {
+    fill: async () => {}, focus: async () => {},
+    pressSequentially: async () => { mentionTriggers += 1; },
+    press: async (key: string) => { keys.push(key); },
+  };
+  const selectedComposer = { selected: true };
+  const page = {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({}),
+    viewportSize: () => ({ width: 800, height: 600 }),
+    locator: () => ({
+      filter: (options: { visible?: boolean }) => options.visible
+        ? { count: async () => 1 }
+        : row,
+    }),
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as any).selectConnector;
+  await expect(selectConnector.call({
+    config: { appName: "Codex Native2" },
+    activeComposer: async () => selected ? selectedComposer : composer,
+    connectorIsSelected: async () => selected,
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+    selectedConnectorControl: () => ({ waitFor: async () => { expect(selected).toBeTrue(); } }),
+    clearChatGptComposerState: async () => {},
+  }, page)).resolves.toBe(selectedComposer);
+  expect(mentionTriggers).toBe(1);
+  expect(clicks).toBe(1);
+  expect(keys).toEqual(["ArrowDown"]);
+});
+
+test.each([
+  { caseName: "zero visible rows", visibleRows: 0, bounds: { x: 370, y: 403, width: 402, height: 36 }, pointerTimeout: false },
+  { caseName: "two visible rows", visibleRows: 2, bounds: { x: 370, y: 403, width: 402, height: 36 }, pointerTimeout: false },
+  { caseName: "row outside viewport", visibleRows: 1, bounds: { x: 801, y: 403, width: 402, height: 36 }, pointerTimeout: false },
+  { caseName: "null row bounds", visibleRows: 1, bounds: null, pointerTimeout: false },
+  { caseName: "pointer TimeoutError", visibleRows: 1, bounds: { x: 370, y: 403, width: 402, height: 36 }, pointerTimeout: true },
+])("connector pointer fallback fails closed for $caseName", async ({ visibleRows, bounds, pointerTimeout }) => {
+  let selected = false;
+  let clicks = 0;
+  let enters = 0;
+  const row = {
+    waitFor: async () => {},
+    count: async () => 1,
+    getAttribute: async () => null,
+    boundingBox: async () => bounds,
+    click: async () => {
+      clicks += 1;
+      if (pointerTimeout) {
+        const error = new Error("pointer did not activate row");
+        error.name = "TimeoutError";
+        throw error;
+      }
+      selected = true;
+    },
+  };
+  const composer = {
+    fill: async () => {}, focus: async () => {}, pressSequentially: async () => {},
+    press: async (key: string) => { if (key === "Enter") enters += 1; },
+  };
+  const page = {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({}),
+    viewportSize: () => ({ width: 800, height: 600 }),
+    locator: () => ({
+      filter: (options: { visible?: boolean }) => options.visible
+        ? { count: async () => visibleRows }
+        : row,
+    }),
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as any).selectConnector;
+  await expect(selectConnector.call({
+    config: { appName: "Codex Native2" },
+    activeComposer: async () => composer,
+    connectorIsSelected: async () => selected,
+    connectorMentionRowTitles: async () => ["Codex Native2"],
+    selectedConnectorControl: () => ({ waitFor: async () => {} }),
+    clearChatGptComposerState: async () => {},
+  }, page)).rejects.toThrow('could not highlight "Codex Native2"');
+  expect(selected).toBeFalse();
+  expect(enters).toBe(0);
+  if (pointerTimeout) expect(clicks).toBeGreaterThan(0);
+  else expect(clicks).toBe(0);
+});
+
 test.each([true, false])("connector highlight uses bounded menu reopening with exact-row proof (recovers=%s)", async recovers => {
   let mentionTriggers = 0;
   let cleanups = 0;

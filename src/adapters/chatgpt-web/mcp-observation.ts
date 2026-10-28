@@ -1,4 +1,10 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { createHash } from "node:crypto";
+
+function requestReference(id: string | number): string {
+  // Only record a stable digest: request IDs can carry private, opaque data.
+  return `mcp:${createHash("sha256").update(String(id)).digest("hex").slice(0, 16)}`;
+}
 
 /** Content-free receipt/reply observations. A sent MCP result is not proof of tool execution. */
 export function observeMcpToolCalls(
@@ -7,10 +13,10 @@ export function observeMcpToolCalls(
   write: (event: Record<string, unknown>) => void = event => console.error(`[chatgpt-web-mcp] transport=${JSON.stringify(event)}`),
 ): Transport {
   let sequence = 0;
-  const pending = new Map<string | number, { call: number; tool: string; started: number } | null>();
+  const pending = new Map<string | number, { call: number; tool: string; started: number; request_ref: string } | null>();
   const emit = (event: Record<string, unknown>) => {
     // Logging is observational: a broken sink cannot change the invocation or its result.
-    try { write({ pid: process.pid, ...event }); } catch { /* Preserve transport semantics. */ }
+    try { write({ at: new Date().toISOString(), pid: process.pid, ...event }); } catch { /* Preserve transport semantics. */ }
   };
   const receive = transport.onmessage;
   transport.onmessage = (message, extra) => {
@@ -24,9 +30,9 @@ export function observeMcpToolCalls(
       } else if (pending.size >= 1_024) {
         emit({ event: "uncorrelated_call", reason: "tracking_limit", tool });
       } else {
-        const call = { call: ++sequence, tool, started: performance.now() };
+        const call = { call: ++sequence, tool, started: performance.now(), request_ref: requestReference(message.id) };
         pending.set(message.id, call);
-        emit({ event: "call_received", call: call.call, tool });
+        emit({ event: "call_received", call: call.call, tool, request_ref: call.request_ref });
       }
     }
     receive?.(message, extra);
@@ -40,14 +46,17 @@ export function observeMcpToolCalls(
       if (call) {
         const result = "result" in message ? message.result : undefined;
         emit({
-          event: "reply_sent", call: call.call, tool: call.tool,
+          event: "reply_sent", call: call.call, tool: call.tool, request_ref: call.request_ref,
           elapsed_ms: Math.round(performance.now() - call.started),
           outcome: "error" in message ? "protocol_error" : "result",
+          error_source: "error" in message ? "mcp_protocol" : result?.isError === true ? "tool_result" : "none",
+          ...("error" in message && typeof message.error?.code === "number"
+            ? { protocol_error_code: message.error.code } : {}),
           ...("result" in message ? { is_error: result?.isError === true } : {}),
         });
       }
     } catch (error) {
-      if (call) emit({ event: "reply_send_failed", call: call.call, tool: call.tool });
+      if (call) emit({ event: "reply_send_failed", call: call.call, tool: call.tool, request_ref: call.request_ref, error_source: "transport_send" });
       throw error;
     } finally {
       if (call && id !== undefined && id !== null) pending.delete(id);
