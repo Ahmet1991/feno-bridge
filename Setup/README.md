@@ -9,3 +9,19 @@ Feno Bridge kuruluysa yeni sürüm çıktığında uygulama içindeki **Check up
 Yeni Codex konuşmalarında Feno'ya özgü bilinen çözümler için [CHATGPT.md](../CHATGPT.md) kaynak alınır. Feno açıldığında o sürümün rehberi Codex skill klasörüne eşitlenir; yeni bir Codex konuşması başlatıldığında ilgili Feno ve Computer Use isteklerinde kullanılabilir. Eksik Computer Use eklentisini bu rehber kendi başına kurmaz.
 
 Depo ve sürümler herkese açıktır; GitHub hesabı gerekmez. Kurulum dosyası büyük olduğundan Git kaynak ağacında tutulmaz, GitHub Release dosyası olarak yayımlanır.
+
+## Akentek PC Bridge (geliştirme dalı)
+
+Akentek PC Bridge, mevcut **Codex Native2** tünelinin içinde ayrıca `pc_*` araçları sunmak üzere
+hazırlanmıştır. Şu anki public Feno sürümünde bu özelliğin yüklü olduğu varsayılmamalıdır.
+Yeni sürüm dağıtılmadan önce Windows testleri ve ayrıca kullanıcı onayı gerekir.
+
+Windows'ta Feno **Ayarlar → Akentek PC Bridge** bölümünden proje klasörü seçilir. **İzin ver**
+düğmesi Windows üzerinde dosya, uygulama ve 60 dakikalık süreyi gösteren ikinci bir yerel onay
+açar. Onay olmadan PC araçları kapalıdır. İzin yalnızca seçili proje klasörünü ve listelenen
+uygulamaları kapsar; UAC, kilit ekranı ve yönetici erişimi aşılmaz. GitHub runner/Android emülatör
+ile ilgili sonuçlar, o PC'deki yollar ve cihazlar gerçekten doğrulandığında kullanılabilir.
+
+**Acil iptal:** Aynı ekrandaki **Acil durdur** düğmesine bas. Feno kapatıldığında veya yerel izin
+imzası/geçerliliği kaybolduğunda PC araçları erişimi reddeder. Mevcut Codex bağlantısı ve Feno
+güncelleme düzeni bu izin mekanizmasından bağımsızdır.

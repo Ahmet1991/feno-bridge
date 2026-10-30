@@ -70,6 +70,45 @@ Run this list on a maintained Windows 11 x64 machine with a real ChatGPT account
 Any failed or unexecuted item blocks a stable release. An alpha may ship with a named failed item
 only when the release notes describe the limitation and recovery path explicitly.
 
+## Akentek PC Bridge acceptance gate (feature branch only)
+
+PC Bridge is an additive **Codex Native2** namespace. Zero Risk keeps its original eight-tool
+contract. No existing tunnel ID, route, Codex token validation or user ChatGPT profile is changed.
+This feature remains OFF until the user grants access in the Windows Feno launcher.
+
+Before installation or publishing, obtain explicit deployment approval and verify on the actual
+Windows PC:
+
+1. Record installed Feno version, launcher health and tunnel/connector visibility. Confirm the
+   connector refresh presents all `pc_*` tools to an ordinary ChatGPT chat without a Codex turn.
+2. Before approval, `pc_status` reports disabled and read, write, job, screenshot and input tools
+   fail with `pc_access_denied`. No model tool or remote browser action may grant itself access.
+3. Choose the real Fenotip Android project folder in Feno Settings. Inspect the native Windows
+   confirmation and approve exactly 60 minutes. Confirm every selected permission and app.
+4. Read and patch only a disposable text file inside that project using the original SHA256. Test
+   rejection of sibling folders, junctions, `..`, private keys and a stale SHA256.
+5. Prove typecheck and CI commands return a job ID promptly; inspect redacted logs, cancellation,
+   process-tree termination and exclusive Android emulator ownership. Record the actual
+   `fenotip-tv` runner label and GitHub repo before claiming runner health is online.
+6. Check Windows desktop window listing, fresh PNG capture, a click and keypress in an explicitly
+   allowed window, then ADB device selection, TV emulator screen/input/screen. Confirm the
+   Windows helper works in the unlocked interactive session and denies locked/UAC desktops.
+7. Revoke in the launcher. Confirm every PC operation immediately denies and active jobs stop.
+   Repeat with expiry, forced launcher shutdown, permission-signature corruption and connector
+   reconnect. After restart the PC grant must still be OFF.
+8. Run the original Codex Full-mode token-gated turn and Zero Risk flow. Validate CI and Windows
+   package smoke. Keep webOS, production web deploy and installed public version unchanged.
+
+Redact all proof: never publish the HMAC key, tunnel credentials, account cookies, API tokens or
+private document contents. The signed local lease is stored under the Feno runtime directory;
+its local user-profile ACL is part of the Windows validation. A Windows package test is mandatory:
+Linux unit tests cannot prove PowerShell `user32.dll`/WinForms desktop behavior.
+
+**Rollback:** From Feno Settings select **Acil durdur / Revoke now**. This immediately replaces
+the signed grant with a revoked snapshot; loss of launcher heartbeat also fails closed. To remove
+the feature before release, revert the feature commits on its isolated branch. Do not alter the
+installed tunnel identity or existing Codex configuration to roll it back.
+
 ### v3.0.0 result
 
 Maintainer validation passed on Windows 11 x64 on 2026-08-22 using the published v3.0.0-alpha

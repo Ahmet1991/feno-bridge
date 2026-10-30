@@ -2916,7 +2916,9 @@ describe("ChatGPT outer-native harness v4", () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      expect(listed.tools.map(tool => tool.name).sort()).toEqual([
+      const codexTools = listed.tools.filter(tool => tool.name.startsWith("codex_"));
+      const pcTools = listed.tools.filter(tool => tool.name.startsWith("pc_"));
+      expect(codexTools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
         "codex_tool_call",
@@ -2924,7 +2926,14 @@ describe("ChatGPT outer-native harness v4", () => {
         "codex_view_image",
         "codex_write_stdin",
       ]);
-      const publicConnectorAbi = listed.tools.map(tool => ({
+      expect(pcTools.map(tool => tool.name).sort()).toEqual([
+        "pc_adb_devices", "pc_adb_input", "pc_adb_screencap", "pc_cancel_job", "pc_capture_screen",
+        "pc_desktop_input", "pc_job_logs", "pc_job_status", "pc_list_files", "pc_list_windows",
+        "pc_read_file", "pc_runner_status", "pc_start_job", "pc_status", "pc_write_patch",
+      ]);
+      // Keep the legacy Codex ABI byte-for-byte stable even though the Native2 connector
+      // intentionally gains independent PC tools and needs a connector schema refresh.
+      const publicConnectorAbi = codexTools.map(tool => ({
         name: tool.name,
         title: tool.title ?? null,
         description: tool.description ?? null,
@@ -2936,11 +2945,14 @@ describe("ChatGPT outer-native harness v4", () => {
       // An intentional hash change therefore requires an explicit connector refresh or identity migration.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
         .toBe("9bb14902149337b52ce8598889497b1aba5a3265f28291df950bb38b5700a421");
-      for (const tool of listed.tools) {
+      for (const tool of codexTools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
         expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
         expect(properties).not.toHaveProperty("binding_id");
         expect(tool.outputSchema).toBeUndefined();
+      }
+      for (const tool of pcTools) {
+        expect((tool.inputSchema.properties as Record<string, unknown>).turn_token).toBeUndefined();
       }
       expect(listed.tools.find(tool => tool.name === "codex_exec")?.annotations).toMatchObject({
         readOnlyHint: false,

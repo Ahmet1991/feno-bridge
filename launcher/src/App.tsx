@@ -21,6 +21,7 @@ import type {
   LauncherState,
   LogRecord,
   OperationState,
+  PcControlStatus,
   Surface,
 } from "./types";
 
@@ -1610,6 +1611,49 @@ function SettingsSurface({
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const [pcControl, setPcControl] = useState<PcControlStatus>({ enabled: false, roots: [], permissions: [], allowedApps: [] });
+  const [pcRoot, setPcRoot] = useState("");
+  const [pcBusy, setPcBusy] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshPc = () => void api!.pcStatus().then(status => {
+      if (!mounted) return;
+      setPcControl(status);
+      if (status.enabled && status.roots[0]) setPcRoot(status.roots[0]);
+    }).catch(() => {});
+    refreshPc();
+    const timer = setInterval(refreshPc, 10_000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, []);
+
+  const choosePcProject = async () => {
+    setPcBusy(true);
+    try {
+      const chosen = await api!.pcPickRoot();
+      if (chosen) setPcRoot(chosen);
+    } catch (cause) { setError(messageOf(cause)); }
+    finally { setPcBusy(false); }
+  };
+  const approvePc = async () => {
+    setPcBusy(true);
+    setError(null);
+    try {
+      setPcControl(await api!.pcApprove({
+        durationMs: 60 * 60 * 1_000,
+        roots: [pcRoot],
+        permissions: ["status", "files.read", "files.write", "jobs", "screen.read", "desktop.input", "adb", "runner"],
+        allowedApps: ["Code.exe", "emulator.exe", "studio64.exe", "notepad.exe"],
+      }));
+    } catch (cause) { setError(messageOf(cause)); }
+    finally { setPcBusy(false); }
+  };
+  const revokePc = async () => {
+    setPcBusy(true);
+    try { setPcControl(await api!.pcRevoke()); }
+    catch (cause) { setError(messageOf(cause)); }
+    finally { setPcBusy(false); }
+  };
 
   const updateLanguage = async (next: Language) => {
     try {
@@ -1758,6 +1802,44 @@ function SettingsSurface({
           {copy.restartCodex}
         </NoticeRow>
       ) : null}
+
+      <SectionHeading label="Akentek PC Bridge" spaced />
+      <div className="settings-list">
+        <SettingRow
+          label={language === "tr" ? "Bilgisayar kontrolü" : "Computer control"}
+          body={pcControl.enabled
+            ? `${language === "tr" ? "Erişim açık, bitiş" : "Access enabled until"}: ${new Date(pcControl.expiresAt ?? 0).toLocaleString(language === "tr" ? "tr-TR" : "en-US")}`
+            : language === "tr" ? "Kapalı. Yalnızca bu bilgisayardan süreli izin verilebilir." : "Disabled. Requires time-limited approval on this computer."}
+        >
+          <StateDot state={pcControl.enabled ? "ready" : "busy"} />
+        </SettingRow>
+        <div className="diagnostic-row">
+          <Icon name="logs" />
+          <span>
+            <strong>{language === "tr" ? "İzinli proje klasörü" : "Approved project folder"}</strong>
+            <small>{pcRoot || (language === "tr" ? "Henüz seçilmedi" : "Not selected")}</small>
+          </span>
+          <button disabled={pcBusy || snapshot.platform !== "win32"} onClick={() => void choosePcProject()} type="button">
+            {language === "tr" ? "Seç" : "Choose"}
+          </button>
+        </div>
+        <div className="diagnostic-row">
+          <Icon name="activity" />
+          <span>
+            <strong>{language === "tr" ? "60 dakikalık yerel erişim" : "60-minute local access"}</strong>
+            <small>{language === "tr" ? "Dosya, test/build, ekran ve Android emülatörü. Windows onayı gerekir." : "Files, tests/build, screen and Android emulator. Requires Windows confirmation."}</small>
+          </span>
+          {pcControl.enabled ? (
+            <button disabled={pcBusy} onClick={() => void revokePc()} type="button">
+              {language === "tr" ? "Acil durdur" : "Revoke now"}
+            </button>
+          ) : (
+            <button disabled={pcBusy || !pcRoot || snapshot.platform !== "win32"} onClick={() => void approvePc()} type="button">
+              {language === "tr" ? "İzin ver" : "Allow"}
+            </button>
+          )}
+        </div>
+      </div>
 
       <SectionHeading label={copy.diagnostics} spaced />
       <button className="diagnostic-row" disabled={busy} onClick={() => void runDoctor()} type="button">

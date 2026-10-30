@@ -1,0 +1,66 @@
+name: Akentek PC Bridge Windows DEV Preview
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/akentek-pc-bridge-preview.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  package-preview:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/akentek-pc-bridge'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Prepare baseline Windows Bun runtime
+        shell: pwsh
+        run: ./scripts/prepare-windows-baseline-bun.ps1 -Version 1.4.0 -GitHubEnv $env:GITHUB_ENV
+      - run: bun run typecheck
+      - run: bun run launcher:build
+      - run: bun run --cwd launcher build:runtime
+      - name: Package portable unpacked preview without installing
+        shell: pwsh
+        working-directory: launcher
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
+          node ./node_modules/electron-builder/out/cli/cli.js --win --dir --publish never
+          if ($LASTEXITCODE -ne 0) { throw 'electron-builder portable packaging failed' }
+          $portable = Join-Path (Get-Location) 'release\win-unpacked'
+          $exe = Join-Path $portable 'Feno Bridge.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Portable EXE is missing' }
+          if (-not (Test-Path -LiteralPath (Join-Path $portable 'resources\runtime'))) { throw 'Bundled runtime is missing' }
+          $starter = @'
+          @echo off
+          cd /d "%~dp0"
+          start "" "%~dp0Feno Bridge.exe" --dev-profile
+          '@
+          Set-Content -LiteralPath (Join-Path $portable 'Start-Akentek-PC-Bridge-DEV.cmd') -Value $starter -Encoding Ascii
+          $guide = @'
+          AKENTEK PC BRIDGE - DEV PREVIEW ONLY
+
+          1. Extract ALL files from the GitHub Actions artifact ZIP.
+          2. Double-click Start-Akentek-PC-Bridge-DEV.cmd.
+          3. The Feno Bridge DEV profile is separate from your installed Feno Bridge.
+          4. Do not double-click Feno Bridge.exe directly; that omits DEV isolation.
+          5. Do not uninstall, replace, or reconfigure your existing Codex/Feno installation.
+          6. This preview still requires local Windows consent and connector setup before PC tools work.
+          7. Closing the DEV app stops the preview. The installed Feno app is untouched.
+          '@
+          Set-Content -LiteralPath (Join-Path $portable 'READ-ME-FIRST.txt') -Value $guide -Encoding UTF8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: akentek-pc-bridge-dev-win-x64
+          path: launcher/release/win-unpacked/**
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 1

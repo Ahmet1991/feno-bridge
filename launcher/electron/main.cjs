@@ -21,6 +21,8 @@ const {
 } = require("electron");
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
+const { createPcConsentController } = require("./pc-consent.cjs");
+const { createPcConsentChannel } = require("./pc-consent-channel.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
   syncBundledGuidance,
@@ -123,6 +125,10 @@ let catalogVerificationInFlight = false;
 let updateController = null;
 let startupReadiness = null;
 let launcherLogger = null;
+let pcConsentController = null;
+let pcConsentChannel = null;
+let pcConsentHeartbeat = null;
+let pcApprovedScope = null;
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -614,6 +620,56 @@ function registerIpc({ logger, stateStore }) {
     if (runtimeChannels.has(channel)) await runtimeStartup;
     return handler(...args);
   });
+  const requireTrustedPcRenderer = (event) => {
+    if (!mainWindow || mainWindow.isDestroyed()
+      || event.sender !== mainWindow.webContents
+      || !event.senderFrame || !rendererNavigationAllowed(event.senderFrame.url)) {
+      throw new Error("pc_access_denied");
+    }
+  };
+  handle("launcher:pc-status", (event) => {
+    requireTrustedPcRenderer(event);
+    const status = pcConsentController?.status() ?? { enabled: false };
+    return { ...status, ...(status.enabled && pcApprovedScope ? pcApprovedScope : { roots: [], permissions: [], allowedApps: [] }) };
+  });
+  handle("launcher:pc-pick-root", async (event) => {
+    requireTrustedPcRenderer(event);
+    if (process.platform !== "win32") throw new Error("pc_access_denied");
+    const selection = await dialog.showOpenDialog(mainWindow, {
+      title: "Choose an Akentek PC Bridge project directory",
+      properties: ["openDirectory"],
+    });
+    return selection.canceled ? null : selection.filePaths[0] ?? null;
+  });
+  handle("launcher:pc-approve", async (event, selection) => {
+    requireTrustedPcRenderer(event);
+    if (process.platform !== "win32" || !pcConsentController || !pcConsentChannel
+      || !selection || !Array.isArray(selection.roots) || selection.roots.length !== 1) {
+      throw new Error("pc_access_denied");
+    }
+    let canonicalRoot;
+    try {
+      canonicalRoot = fs.realpathSync.native(selection.roots[0]);
+      if (!fs.statSync(canonicalRoot).isDirectory()) throw new Error("not directory");
+    } catch { throw new Error("pc_access_denied"); }
+    const checked = { ...selection, roots: [canonicalRoot] };
+    const grant = await pcConsentController.approve(checked);
+    try {
+      pcConsentChannel.activate(grant);
+      pcApprovedScope = { roots: [...grant.roots], permissions: [...grant.permissions], allowedApps: [...grant.allowedApps] };
+    } catch {
+      pcConsentController.revoke();
+      throw new Error("pc_access_denied");
+    }
+    return { ...pcConsentController.status(), ...pcApprovedScope };
+  });
+  handle("launcher:pc-revoke", (event) => {
+    requireTrustedPcRenderer(event);
+    pcConsentController?.revoke();
+    pcConsentChannel?.revoke();
+    pcApprovedScope = null;
+    return { enabled: false, roots: [], permissions: [], allowedApps: [] };
+  });
   handle("launcher:snapshot", async () => ({
     profile: LAUNCHER_PROFILE.kind,
     profilePaths: {
@@ -1104,6 +1160,11 @@ async function requestQuit() {
   }
   shutdownInProgress = true;
   try {
+    // Revoke workstation control before any potentially long shutdown operation.
+    pcConsentController?.revoke();
+    pcConsentChannel?.revoke();
+    pcApprovedScope = null;
+    if (pcConsentHeartbeat) clearInterval(pcConsentHeartbeat);
     const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Feno Bridge`);
@@ -1163,6 +1224,37 @@ async function start() {
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
 
   await app.whenReady();
+
+  // Launcher owns this Feno-private signed lease. Restart rotates the key and
+  // defaults OFF; no existing Codex tunnel credential or route is touched.
+  const pcRuntimeDir = path.join(CORE_HOME, "runtime");
+  pcConsentChannel = createPcConsentChannel({ directory: pcRuntimeDir });
+  pcConsentChannel.start();
+  if (process.platform === "win32") {
+    fs.copyFileSync(path.join(__dirname, "pc-windows-helper.ps1"), path.join(pcRuntimeDir, "pc-windows-helper.ps1"));
+  }
+  pcConsentController = createPcConsentController({
+    confirmLocally: async (selection) => {
+      if (process.platform !== "win32" || !mainWindow || mainWindow.isDestroyed()) return false;
+      const response = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        title: "Akentek PC Bridge — Local approval",
+        message: "Allow ChatGPT to operate this PC for a limited time?",
+        detail: `Duration: ${Math.ceil(selection.durationMs / 60_000)} minutes\nProject: ${selection.roots.join(", ")}\nPermissions: ${selection.permissions.join(", ")}\nApplications: ${selection.allowedApps.join(", ") || "none"}\n\nDesktop control can also affect files outside the project through an allowed application. Approve only while supervising. You can revoke access in Feno settings.`,
+        buttons: ["Allow PC control", "Cancel"],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      return response.response === 0;
+    },
+    audit: ({ action }) => launcherLogger?.info?.("pc_control.local_consent", { action }),
+  });
+  pcConsentHeartbeat = setInterval(() => {
+    try { pcConsentChannel?.heartbeat(); }
+    catch { pcConsentController?.revoke(); pcApprovedScope = null; }
+  }, 5_000);
+  pcConsentHeartbeat.unref?.();
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {

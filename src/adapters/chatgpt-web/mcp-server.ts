@@ -4,6 +4,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { namespacedToolName, type CodexTool } from "../../types";
 import { VERSION } from "../../version";
+import { PcAuthorizer } from "../../pc-control/authorization";
+import { createLocalPcHost, registerPcTools } from "../../pc-control/mcp-tools";
+import { createPcPolicySync } from "../../pc-control/consent-sync";
+import { getConfigDir } from "../../config";
+import { join as joinPath } from "node:path";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
@@ -456,6 +461,26 @@ export async function runChatGptMcpServer(options: {
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
     contract === "safe" ? { instructions: ZERO_RISK_MCP_INSTRUCTIONS } : undefined,
   );
+
+  // Additive native PC namespace. Keep Zero Risk's public MCP ABI exactly unchanged.
+  // The launcher-to-MCP approval transport is wired separately and must authenticate locally.
+  if (contract === "native") {
+    const pcAuthorizer = new PcAuthorizer();
+    const pcHost = createLocalPcHost(pcAuthorizer);
+    const policySync = createPcPolicySync({
+      directory: joinPath(getConfigDir(), "runtime"),
+      authorizer: pcAuthorizer,
+      onRevoked: () => { void pcHost.revokeActiveJobs?.(); },
+    });
+    policySync.refresh();
+    const pcHealthTimer = setInterval(() => policySync.refresh(), 5_000);
+    pcHealthTimer.unref();
+    registerPcTools(server, {
+      authorizer: pcAuthorizer,
+      host: pcHost,
+      beforeRequest: () => policySync.refresh(),
+    });
+  }
 
   const claimTurn = async (
     toolName: string,
