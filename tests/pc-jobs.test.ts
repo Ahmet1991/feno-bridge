@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcessByStdio } from "node:child_process";
@@ -40,7 +40,7 @@ test("jobs accept only configured commands, and never take a shell string from M
   const result = await manager.startPcJob({ kind: "unit-tests", projectRoot: root }, authorizer);
   expect(typeof result.jobId).toBe("string");
   expect(manager.pcJobStatus(result.jobId, authorizer).state).toBe("running");
-  expect(spawned).toEqual([{ command: "bun", args: ["test", "./tests"], cwd: root }]);
+  expect(spawned).toEqual([{ command: "bun", args: ["test", "./tests"], cwd: realpathSync.native(root) }]);
 });
 
 test("long jobs immediately return an ID, redact logs, and can cancel their process tree", async () => {

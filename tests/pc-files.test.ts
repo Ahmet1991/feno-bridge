@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PcAuthorizer } from "../src/pc-control/authorization";
@@ -45,7 +45,7 @@ describe("PC file access stays inside locally approved canonical roots", () => {
     const files = await listPcFiles(root, ".", authorizer);
     expect(files).toContainEqual({ name: "text.txt", kind: "file" });
     expect(await readPcFile(join(root, "text.txt"), authorizer)).toEqual({
-      path: join(root, "text.txt"), content: "old\n", sha256: sha("old\n"),
+      path: realpathSync.native(join(root, "text.txt")), content: "old\n", sha256: sha("old\n"),
     });
     expect(() => resolveAllowedPath(join(root, "missing.txt"), [root])).toThrow("pc_access_denied");
   });
@@ -72,7 +72,7 @@ describe("PC file access stays inside locally approved canonical roots", () => {
     await expect(applyPcPatch(file, sha("first\nsecond\n"), "malformed patch", auth)).rejects.toThrow("pc_access_denied");
     expect(readFileSync(file, "utf8")).toBe("first\nsecond\n");
     expect(await applyPcPatch(file, sha("first\nsecond\n"), patch, auth)).toEqual({
-      path: file, newSha256: sha("first\nedited\n"),
+      path: realpathSync.native(file), newSha256: sha("first\nedited\n"),
     });
     expect(readFileSync(file, "utf8")).toBe("first\nedited\n");
   });
