@@ -130,6 +130,10 @@ export interface LauncherSnapshot {
 }
 
 export interface LauncherApi {
+  pcStatus(): Promise<PcControlStatus>;
+  pcPickRoot(): Promise<string | null>;
+  pcApprove(input: { durationMs: number; roots: string[]; permissions: PcControlPermission[]; allowedApps: string[] }): Promise<PcControlStatus>;
+  pcRevoke(): Promise<PcControlStatus>;
   snapshot(): Promise<LauncherSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;
@@ -189,6 +193,15 @@ export interface LauncherApi {
   onOperation(listener: (state: OperationState) => void): () => void;
   onLog(listener: (record: LogRecord) => void): () => void;
   onUpdateState(listener: (state: UpdateState) => void): () => void;
+}
+
+export type PcControlPermission = "status" | "files.read" | "files.write" | "jobs" | "screen.read" | "desktop.input" | "adb" | "runner";
+export interface PcControlStatus {
+  enabled: boolean;
+  expiresAt?: number;
+  roots: string[];
+  permissions: PcControlPermission[];
+  allowedApps: string[];
 }
 
 declare global {
