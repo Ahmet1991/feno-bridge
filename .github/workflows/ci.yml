@@ -64,6 +64,24 @@ jobs:
         if: runner.os == 'Linux'
         run: command -v xvfb-run || (sudo apt-get update && sudo apt-get install -y xvfb)
       - run: bun run app:smoke
+      - name: Checksum Akentek PC Bridge Windows preview
+        if: runner.os == 'Windows' && github.event_name == 'pull_request' && github.head_ref == 'feat/akentek-pc-bridge'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem launcher/artifacts -Filter '*-win-x64.exe' -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Windows preview installer" }
+          $hash = (Get-FileHash $installers[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($installers[0].Name)" | Out-File -FilePath "$($installers[0].FullName).sha256" -Encoding ascii -NoNewline
+      - name: Upload Akentek PC Bridge Windows preview (not a release)
+        if: runner.os == 'Windows' && github.event_name == 'pull_request' && github.head_ref == 'feat/akentek-pc-bridge'
+        uses: actions/upload-artifact@v4
+        with:
+          name: akentek-pc-bridge-windows-preview
+          path: |
+            launcher/artifacts/*-win-x64.exe
+            launcher/artifacts/*-win-x64.exe.sha256
+          if-no-files-found: error
+          retention-days: 7
 
   actionlint:
     runs-on: ubuntu-latest
