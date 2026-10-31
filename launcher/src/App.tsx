@@ -21,6 +21,7 @@ import type {
   LauncherState,
   LogRecord,
   OperationState,
+  PcControlStatus,
   Surface,
 } from "./types";
 
@@ -1610,6 +1611,66 @@ function SettingsSurface({
   const [busy, setBusy] = useState(false);
   const [turnsCancelled, setTurnsCancelled] = useState(false);
   const [integrationRemoved, setIntegrationRemoved] = useState(false);
+  const [pcControl, setPcControl] = useState<PcControlStatus>({ enabled: false, roots: [], permissions: [], allowedApps: [] });
+  const [pcRoot, setPcRoot] = useState("");
+  const [pcBusy, setPcBusy] = useState(false);
+  const [pcAdvancedTerminal, setPcAdvancedTerminal] = useState(false);
+  const [pcBroadDesktop, setPcBroadDesktop] = useState(false);
+  const [pcPersistent, setPcPersistent] = useState(false);
+  const pcSelectionTouched = useRef(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const refreshPc = () => void api!.pcStatus().then(status => {
+      if (!mounted) return;
+      setPcControl(status);
+      if (status.enabled && status.roots[0] && !pcSelectionTouched.current) {
+        setPcRoot(status.roots[0]);
+        setPcAdvancedTerminal(status.permissions.includes("terminal.exec"));
+        setPcBroadDesktop(status.allowedApps.some(app => app.toLowerCase() === "chrome.exe"));
+        setPcPersistent(status.expiresAt === null);
+      }
+    }).catch(() => {});
+    refreshPc();
+    const timer = setInterval(refreshPc, 10_000);
+    return () => { mounted = false; clearInterval(timer); };
+  }, []);
+
+  const choosePcProject = async () => {
+    setPcBusy(true);
+    try {
+      const chosen = await api!.pcPickRoot();
+      if (chosen) {
+        pcSelectionTouched.current = true;
+        setPcRoot(chosen);
+      }
+    } catch (cause) { setError(messageOf(cause)); }
+    finally { setPcBusy(false); }
+  };
+  const approvePc = async () => {
+    setPcBusy(true);
+    setError(null);
+    try {
+      setPcControl(await api!.pcApprove({
+        durationMs: pcPersistent ? null : 60 * 60 * 1_000,
+        roots: [pcRoot],
+        permissions: ["status", "files.read", "files.write", "jobs", "screen.read", "desktop.input", "adb", "runner",
+          ...(pcAdvancedTerminal ? ["terminal.exec" as const] : [])],
+        allowedApps: ["Code.exe", "emulator.exe", "studio64.exe", "notepad.exe",
+          ...(pcAdvancedTerminal ? ["explorer.exe", "WindowsTerminal.exe", "powershell.exe", "cmd.exe"] : []),
+          ...(pcBroadDesktop ? ["chrome.exe", "msedge.exe", "firefox.exe", "WINWORD.EXE", "EXCEL.EXE",
+            "POWERPNT.EXE", "AcroRd32.exe", "SumatraPDF.exe"] : [])],
+      }));
+      pcSelectionTouched.current = false;
+    } catch (cause) { setError(messageOf(cause)); }
+    finally { setPcBusy(false); }
+  };
+  const revokePc = async () => {
+    setPcBusy(true);
+    try { setPcControl(await api!.pcRevoke()); pcSelectionTouched.current = false; }
+    catch (cause) { setError(messageOf(cause)); }
+    finally { setPcBusy(false); }
+  };
 
   const updateLanguage = async (next: Language) => {
     try {
@@ -1758,6 +1819,92 @@ function SettingsSurface({
           {copy.restartCodex}
         </NoticeRow>
       ) : null}
+
+      <SectionHeading label="Akentek PC Bridge" spaced />
+      <div className="settings-list">
+        <SettingRow
+          label={language === "tr" ? "Bilgisayar kontrolü" : "Computer control"}
+          body={pcControl.enabled
+            ? pcControl.expiresAt
+              ? `${language === "tr" ? "Erişim açık, bitiş" : "Access enabled until"}: ${new Date(pcControl.expiresAt).toLocaleString(language === "tr" ? "tr-TR" : "en-US")}`
+              : language === "tr" ? "Süresiz yerel izin açık; Acil durdur ile kapatabilirsin." : "Persistent local approval enabled; use Emergency stop to revoke."
+            : language === "tr" ? "Kapalı. Bu bilgisayarda yerel onay gerekir." : "Disabled. Requires local approval on this computer."}
+        >
+          <StateDot state={pcControl.enabled ? "ready" : "busy"} />
+        </SettingRow>
+        <div className="diagnostic-row">
+          <Icon name="logs" />
+          <span>
+            <strong>{language === "tr" ? "İzinli proje klasörü" : "Approved project folder"}</strong>
+            <small>{pcRoot || (language === "tr" ? "Henüz seçilmedi" : "Not selected")}</small>
+          </span>
+          <button disabled={pcBusy || snapshot.platform !== "win32"} onClick={() => void choosePcProject()} type="button">
+            {language === "tr" ? "Seç" : "Choose"}
+          </button>
+        </div>
+        <div className="diagnostic-row">
+          <Icon name="activity" />
+          <span>
+            <strong>{pcPersistent
+              ? language === "tr" ? "Süresiz yerel DEV erişimi" : "Persistent local DEV access"
+              : language === "tr" ? "60 dakikalık yerel erişim" : "60-minute local access"}</strong>
+            <small>{language === "tr" ? "Dosya, test/build, ekran ve Android emülatörü. Windows onayı gerekir." : "Files, tests/build, screen and Android emulator. Requires Windows confirmation."}</small>
+          </span>
+          {pcControl.enabled ? (
+            <button disabled={pcBusy} onClick={() => void revokePc()} type="button">
+              {language === "tr" ? "Acil durdur" : "Revoke now"}
+            </button>
+          ) : (
+            <button disabled={pcBusy || !pcRoot || snapshot.platform !== "win32"} onClick={() => void approvePc()} type="button">
+              {language === "tr" ? "İzin ver" : "Allow"}
+            </button>
+          )}
+        </div>
+        <div className="diagnostic-row">
+          <Icon name="alert" />
+          <span>
+            <strong>{language === "tr" ? "Gelişmiş terminal (ayrı yerel onay)" : "Advanced terminal (separate local approval)"}</strong>
+            <small>{language === "tr"
+              ? "Riskli: onaylandığında komutlar Windows hesabının tüm erişimleriyle çalışır; proje klasörü bir güvenlik kafesi değildir."
+              : "High risk: commands run with your Windows account privileges; the project folder is not an OS sandbox."}</small>
+          </span>
+          <input aria-label={language === "tr" ? "Gelişmiş terminal izni" : "Advanced terminal permission"} type="checkbox"
+            checked={pcAdvancedTerminal} disabled={pcBusy || snapshot.platform !== "win32" || snapshot.profile !== "development"}
+            onChange={event => { pcSelectionTouched.current = true; setPcAdvancedTerminal(event.target.checked); }} />
+        </div>
+        <div className="diagnostic-row">
+          <Icon name="browser" />
+          <span>
+            <strong>{language === "tr" ? "Geniş masaüstü: tarayıcı ve Office" : "Expanded desktop: browsers and Office"}</strong>
+            <small>{language === "tr"
+              ? "Chrome, Edge, Firefox, Word, Excel ve PDF pencerelerini de açar. Bu pencerelerde kişisel hesapların görünür olabilir."
+              : "Adds Chrome, Edge, Firefox, Word, Excel and PDF windows; signed-in personal accounts can be visible."}</small>
+          </span>
+          <input aria-label={language === "tr" ? "Geniş masaüstü izni" : "Expanded desktop permission"} type="checkbox"
+            checked={pcBroadDesktop} disabled={pcBusy || snapshot.platform !== "win32" || snapshot.profile !== "development"}
+            onChange={event => { pcSelectionTouched.current = true; setPcBroadDesktop(event.target.checked); }} />
+        </div>
+        <div className="diagnostic-row">
+          <Icon name="info" />
+          <span>
+            <strong>{language === "tr" ? "DEV erişimi süresiz (ayrıca yerel onay)" : "Persistent DEV approval (separate local confirmation)"}</strong>
+            <small>{language === "tr"
+              ? "Bilgisayar yeniden açılsa da izin geri yüklenir. Sadece DEV'de, Windows şifreli saklama varsa kullanılabilir. Acil durdur kalıcı izni de siler."
+              : "Restores after restarts only on DEV with Windows-protected storage. Emergency stop removes the stored permission."}</small>
+          </span>
+          <input aria-label={language === "tr" ? "Süresiz DEV izni" : "Persistent DEV permission"} type="checkbox"
+            checked={pcPersistent} disabled={pcBusy || snapshot.platform !== "win32" || snapshot.profile !== "development"}
+            onChange={event => { pcSelectionTouched.current = true; setPcPersistent(event.target.checked); }} />
+        </div>
+        {pcControl.enabled && (pcAdvancedTerminal !== pcControl.permissions.includes("terminal.exec")
+          || pcBroadDesktop !== pcControl.allowedApps.some(app => app.toLowerCase() === "chrome.exe")
+          || pcRoot !== (pcControl.roots[0] ?? "") || pcPersistent !== (pcControl.expiresAt === null)) ? (
+          <button className="diagnostic-row" disabled={pcBusy || !pcRoot || snapshot.platform !== "win32"}
+            onClick={() => void approvePc()} type="button">
+            {language === "tr" ? "Yetkiyi yerel onayla güncelle" : "Update permissions with local approval"}
+          </button>
+        ) : null}
+      </div>
 
       <SectionHeading label={copy.diagnostics} spaced />
       <button className="diagnostic-row" disabled={busy} onClick={() => void runDoctor()} type="button">
