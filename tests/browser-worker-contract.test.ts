@@ -7,7 +7,7 @@ import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
-import { isHeavyChatGptStage } from "../src/adapters/chatgpt-web/browser-worker";
+import { isHeavyChatGptStage, xpathStringLiteral } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptTurnIdentitySelector } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptPromptPrefixLadder } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptTurnProgressWatchdog } from "../src/adapters/chatgpt-web/browser-worker";
@@ -2023,6 +2023,69 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
     ["press"],
     ["waitForSelectedConnector"],
   ]);
+});
+
+test("xpath string literals survive both quote styles", () => {
+  expect(xpathStringLiteral("Codex Native2")).toBe("'Codex Native2'");
+  expect(xpathStringLiteral("Bob's")).toBe(`"Bob's"`);
+  expect(xpathStringLiteral(`a'b"c`)).toBe(`concat('a', "'", 'b"c')`);
+});
+
+test("connector selection falls back to the title text node for a compact menu row", async () => {
+  const timeout = new Error("menu timeout");
+  timeout.name = "TimeoutError";
+  const calls: string[] = [];
+  let connectorSelected = false;
+  const compactResult = {
+    waitFor: async () => { calls.push("waitForTitleNode"); },
+    count: async () => 1,
+    getAttribute: async (name: string) => name === "aria-current" ? "true" : null,
+  };
+  const wholeElementResult = {
+    waitFor: async () => { calls.push("waitForWholeElement"); throw timeout; },
+  };
+  const selectedConnector = { waitFor: async () => { calls.push("waitForSelectedConnector"); } };
+  const composer = {
+    fill: async () => {},
+    focus: async () => {},
+    pressSequentially: async () => { calls.push("type"); },
+    press: async (key: string) => {
+      expect(key).toBe("Enter");
+      connectorSelected = true;
+      calls.push("Enter");
+    },
+  };
+  const page = {
+    getByRole: personalizedTemporaryChatRole,
+    getByText: () => ({ wholeElement: true }),
+    locator: (selector: string) => {
+      if (selector.startsWith("xpath=")) {
+        expect(selector).toBe("xpath=.//text()[normalize-space(.)='Codex Native2']/..");
+        return { titleTextNode: true };
+      }
+      return {
+        filter: (options: { has: { titleTextNode?: true } }) => (
+          options.has.titleTextNode ? compactResult : wholeElementResult
+        ),
+      };
+    },
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown): Promise<unknown>;
+  }).selectConnector;
+
+  await selectConnector.call({
+    config: { appName: CHATGPT_CONNECTOR_NAME },
+    connectorIsSelected: async () => connectorSelected,
+    connectorMentionRowTitles: async (rows: unknown) => rows === compactResult
+      ? [CHATGPT_CONNECTOR_NAME]
+      : [CHATGPT_CONNECTOR_NAME, "Codex Native2 Kanal2", DEV_CHATGPT_CONNECTOR_NAME],
+    connectorMentionFailure: async () => { throw new Error("must not report a missing connector"); },
+    selectedConnectorControl: () => selectedConnector,
+    activeComposer: async () => composer,
+  }, page);
+
+  expect(calls).toEqual(["type", "waitForWholeElement", "waitForTitleNode", "Enter", "waitForSelectedConnector"]);
 });
 
 test("connector selection waits for exact identity after the visible pill is replaced", async () => {

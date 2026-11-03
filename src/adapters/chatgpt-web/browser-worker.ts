@@ -151,6 +151,12 @@ export const CHATGPT_TURN_NO_PROGRESS_MS = 15 * 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
+
+export function xpathStringLiteral(value: string): string {
+  if (!value.includes("'")) return `'${value}'`;
+  if (!value.includes('"')) return `"${value}"`;
+  return `concat(${value.split("'").map(part => `'${part}'`).join(`, "'", `)})`;
+}
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
 /**
@@ -4218,7 +4224,16 @@ export class ChatGptBrowserWorker {
         withChatGptBrowserObservationTimeout(visibleRows.evaluateAll(elements => elements.map(element => {
           if (element.matches('button[data-list-navigation-item="true"]')) {
             const content = element.querySelector('[data-menu-row-content="true"]');
-            if (!content) return "";
+            if (!content) {
+              // Compact rows (03.11) put the title and description in one span as sibling
+              // text nodes; the first non-blank text node is the title.
+              const walker = element.ownerDocument.createTreeWalker(element, 4 /* NodeFilter.SHOW_TEXT */);
+              for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                const text = (node.nodeValue ?? "").replace(/\s+/g, " ").trim();
+                if (text) return text;
+              }
+              return "";
+            }
             const firstTitleLeaf = [content, ...Array.from(content.querySelectorAll("*"))].find(candidate => (
               candidate.children.length === 0 && (candidate.textContent ?? "").trim().length > 0
             ));
@@ -4255,7 +4270,8 @@ export class ChatGptBrowserWorker {
       return `ChatGPT connector menu did not open (no visible menu rows)`
         + ` after ${triggerAttempts} complete mention trigger attempt(s)`;
     }
-    if (this.config.appName === CHATGPT_CONNECTOR_NAME && titles.includes(DEV_CHATGPT_CONNECTOR_NAME)) {
+    if (this.config.appName === CHATGPT_CONNECTOR_NAME && titles.includes(DEV_CHATGPT_CONNECTOR_NAME)
+      && !titles.includes(CHATGPT_CONNECTOR_NAME)) {
       return `ChatGPT exposes the isolated DEV connector ${JSON.stringify(DEV_CHATGPT_CONNECTOR_NAME)},`
         + ` but production requires a separate connector named ${JSON.stringify(CHATGPT_CONNECTOR_NAME)};`
         + ` create ${JSON.stringify(CHATGPT_CONNECTOR_NAME)} against the production tunnel and leave the DEV connector unchanged`;
@@ -4341,9 +4357,18 @@ export class ChatGptBrowserWorker {
     // Legacy rows first; the new list-navigation buttons are the fallback when no
     // legacy menu row exists. Neither structure exposes a dependable ARIA menu role.
     const menuRows = page.locator('.__menu-item[tabindex="0"], button[data-list-navigation-item="true"]');
-    const appResult = menuRows.filter({
+    let appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
+    // getByText(exact) compares a whole element's text, so it misses a compact row whose title
+    // and description are sibling text nodes in one span. Match the title text node instead.
+    let matchingTitleTextNode = false;
+    const matchTitleTextNode = () => {
+      matchingTitleTextNode = true;
+      appResult = menuRows.filter({
+        has: page.locator(`xpath=.//text()[normalize-space(.)=${xpathStringLiteral(this.config.appName)}]/..`),
+      });
+    };
     const runPersonalizationPreflight = () => ensureChatGptPersonalizedConnectorAccess(
       page,
       capture,
@@ -4486,6 +4511,17 @@ export class ChatGptBrowserWorker {
         } catch (error) {
           if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
           const visibleRows = await this.connectorMentionRowTitles(menuRows, abortSignal);
+          if (!matchingTitleTextNode && visibleRows.includes(this.config.appName)) {
+            // The exact title is in the open menu but not as a whole element (compact row).
+            matchTitleTextNode();
+            try {
+              await appResult.waitFor({ state: "visible", timeout: 2_500, signal: abortSignal });
+              await capture("connector-menu-visible");
+              break;
+            } catch (retryError) {
+              if (!(retryError instanceof Error) || retryError.name !== "TimeoutError") throw retryError;
+            }
+          }
           if (cachedProof && !visibleRows.includes(this.config.appName)) {
             // The cached proof went stale. Verify personalization on this same turn, then retry.
             this.personalizationProofCache?.invalidate(this.proofKey(page));
@@ -4497,6 +4533,7 @@ export class ChatGptBrowserWorker {
             continue;
           }
           const knownIdentityMismatch = this.config.appName === CHATGPT_CONNECTOR_NAME
+            && !visibleRows.includes(this.config.appName)
             && (
               visibleRows.includes(DEV_CHATGPT_CONNECTOR_NAME)
               || LEGACY_CHATGPT_CONNECTOR_NAMES.some(name => visibleRows.includes(name))
