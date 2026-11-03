@@ -18,6 +18,7 @@ const DEFAULT_STATE = Object.freeze({
   experimentalBiggerContext: false,
   experimentalSkillAttachments: false,
   zeroRiskProEnabled: false,
+  codexRouteEnabled: true,
   browserSmokePassed: false,
   browserSmokeVersion: null,
   sidebarOpen: true,
@@ -50,6 +51,7 @@ function readState(filePath) {
       "experimentalBiggerContext",
       "experimentalSkillAttachments",
       "zeroRiskProEnabled",
+      "codexRouteEnabled",
       "browserSmokePassed",
       "sidebarOpen",
     ]) {

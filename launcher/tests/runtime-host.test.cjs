@@ -1346,3 +1346,48 @@ test("skill file experiment uses the setup transaction in production and DEV, an
   await assert.rejects(() => manual.host.setSkillAttachments(true), /Zero Risk/);
   assert.equal(manual.invocation(), undefined);
 });
+
+test("Codex routing can be turned off and back on without restarting the runtime", async () => {
+  const off = bridgeFixture({ active: true });
+  assert.equal((await off.host.setCodexRoute(false)).active, false);
+  assert.deepEqual(off.calls, ["route status", "route disconnect", "route status"]);
+  const on = bridgeFixture({ active: false });
+  assert.equal((await on.host.setCodexRoute(true)).active, true);
+  assert.deepEqual(on.calls, ["route status", "route connect", "route status"]);
+});
+
+test("setup restores the previous Codex route afterwards while Codex routing is turned off", async () => {
+  const events = [];
+  let routeActive = false;
+  const host = new RuntimeHost({
+    app: { getPath: () => os.tmpdir() },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: "/source",
+    browserDescriptorPath: "/runtime/launcher-browser.json",
+    supervisor: {
+      readSetupConfig: () => null,
+      readConfig: () => null,
+      stopForSetup: async () => { events.push("stop"); },
+      startIfConfigured: async () => { events.push("start"); return { status: "ready" }; },
+    },
+    getCodexRouteEnabled: () => false,
+  });
+  host.captureSetupCheckpoint = () => [];
+  host.run = async (_name, args) => {
+    const action = args.join(" ");
+    if (action === "route status") {
+      events.push(`status:${routeActive}`);
+      return { code: 0, stdout: JSON.stringify({ installed: true, active: routeActive, errors: [] }), stderr: "" };
+    }
+    if (action === "route disconnect") {
+      events.push("disconnect");
+      routeActive = false;
+      return { code: 0, stdout: JSON.stringify({ changed: true, active: false }), stderr: "" };
+    }
+    events.push(args.includes("--preflight-only") ? "preflight" : "setup");
+    if (!args.includes("--preflight-only")) routeActive = true;
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  await host.runSetup("bigger-context", ["setup", "--full", "--replace-codex-route"], {});
+  assert.deepEqual(events, ["preflight", "stop", "setup", "start", "status:true", "disconnect", "status:false"]);
+});

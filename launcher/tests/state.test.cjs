@@ -28,6 +28,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       experimentalBiggerContext: false,
       experimentalSkillAttachments: false,
       zeroRiskProEnabled: false,
+      codexRouteEnabled: true,
       browserSmokePassed: false,
       browserSmokeVersion: null,
       sidebarOpen: true,
@@ -55,6 +56,7 @@ test("launcher state persists onboarding, language, and autostart atomically", (
       experimentalBiggerContext: false,
       experimentalSkillAttachments: false,
       zeroRiskProEnabled: false,
+      codexRouteEnabled: true,
       browserSmokePassed: true,
       browserSmokeVersion: "0.2.0",
       sidebarOpen: true,
@@ -132,6 +134,7 @@ test("persisted sidebar corruption is repaired without changing the rest of laun
       experimentalBiggerContext: false,
       experimentalSkillAttachments: false,
       zeroRiskProEnabled: false,
+      codexRouteEnabled: true,
       browserSmokePassed: false,
       browserSmokeVersion: null,
       sidebarOpen: true,
@@ -180,4 +183,19 @@ test("session refresh reminders are deferred by exactly 48 hours", () => {
   assert.equal(SESSION_REFRESH_REMINDER_INTERVAL_MS, 48 * 60 * 60 * 1000);
   assert.equal(nextSessionRefreshReminderAt(now), "2026-08-07T12:00:00.000Z");
   assert.throws(() => nextSessionRefreshReminderAt(Number.NaN), /must be finite/);
+});
+
+test("Codex routing defaults on and keeps an explicit opt-out", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-codex-route-"));
+  try {
+    const file = path.join(dir, "launcher-state.json");
+    const store = createStateStore(file);
+    assert.equal(store.read().codexRouteEnabled, true);
+    store.update({ codexRouteEnabled: false });
+    assert.equal(createStateStore(file).read().codexRouteEnabled, false);
+    fs.writeFileSync(file, JSON.stringify({ ...createStateStore(file).read(), codexRouteEnabled: "off" }));
+    assert.equal(createStateStore(file).read().codexRouteEnabled, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -186,6 +186,12 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
       stopCatalogVerificationMonitor();
       return;
     }
+    if (current.codexRouteEnabled === false) {
+      // Codex is not routed through Feno, so there is no Codex catalog request to wait for.
+      send("launcher:state-changed", stateStore.update({ codexCatalogVerified: true }));
+      stopCatalogVerificationMonitor();
+      return;
+    }
     if (catalogVerificationInFlight || !runtimeSupervisor) return;
     catalogVerificationInFlight = true;
     try {
@@ -605,7 +611,7 @@ function smokePassedForCurrentVersion(state) {
 function registerIpc({ logger, stateStore }) {
   const runtimeChannels = new Set([
     "launcher:setup-core", "launcher:setup-mcp", "launcher:uninstall-integration",
-    "launcher:bigger-context", "launcher:skill-attachments", "launcher:zero-risk-pro",
+    "launcher:bigger-context", "launcher:skill-attachments", "launcher:zero-risk-pro", "launcher:codex-route",
     "launcher:browser-interaction-mode", "launcher:mcp-verify", "launcher:doctor",
     "launcher:cancel-turns", "launcher:browser-passkey-login", "launcher:browser-logout",
     "launcher:browser-smoke", "launcher:update-install", "launcher:complete-onboarding",
@@ -973,6 +979,19 @@ function registerIpc({ logger, stateStore }) {
     if (!IS_DEV_PROFILE) startCatalogVerificationMonitor({ logger, stateStore });
     return state;
   });
+  handle("launcher:codex-route", async (_event, enabled) => {
+    if (IS_DEV_PROFILE) throw new Error("The isolated DEV launcher never routes Codex");
+    const desired = enabled === true;
+    const route = await runtimeHost.setCodexRoute(desired);
+    const state = stateStore.update({
+      codexRouteEnabled: desired,
+      codexCatalogVerified: !desired,
+      ...(route.changed === true ? { codexRestartRequired: true } : {}),
+    });
+    send("launcher:state-changed", state);
+    if (desired) startCatalogVerificationMonitor({ logger, stateStore });
+    return state;
+  });
   handle("launcher:zero-risk-pro", async (_event, enabled) => {
     const blocked = browserOperationBlockMessage(browserHost, "Zero Risk model profiles");
     if (blocked) throw new Error(blocked);
@@ -1275,6 +1294,7 @@ async function start() {
     publishOperation,
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
+    getCodexRouteEnabled: () => stateStore.read().codexRouteEnabled !== false,
   });
   const configuredInteractionMode = runtimeHost.runtimeConfigSnapshot().config?.browserInteractionMode;
   if ((configuredInteractionMode === "automatic" || configuredInteractionMode === "manual")
@@ -1443,6 +1463,10 @@ async function start() {
     }
     const runtime = await runtimeSupervisor.startIfConfigured();
     if (runtime.status !== "ready") return runtime;
+    if (stateStore.read().codexRouteEnabled === false) {
+      const route = await runtimeHost.restoreBridgeRoute("bridge-route-opt-out");
+      return { ...runtime, bridgeRouteChanged: route.changed === true, codexRouteEnabled: false };
+    }
     const route = await runtimeHost.connectBridgeRoute();
     return { ...runtime, bridgeRouteChanged: route.changed === true };
   })().then(async (runtime) => {
@@ -1455,7 +1479,10 @@ async function start() {
         experimentalBiggerContext: config.experimentalBiggerContext === true,
         experimentalSkillAttachments: config.experimentalSkillAttachments === true,
         zeroRiskProEnabled: config.zeroRiskProEnabled === true,
-        ...(runtime.bridgeRouteChanged ? {
+        ...(runtime.codexRouteEnabled === false ? {
+          codexCatalogVerified: true,
+          ...(runtime.bridgeRouteChanged ? { codexRestartRequired: true } : {}),
+        } : runtime.bridgeRouteChanged ? {
           codexCatalogVerified: false,
           codexRestartRequired: true,
         } : {}),
