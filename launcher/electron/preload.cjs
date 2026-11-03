@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   setAutostart: (enabled) => ipcRenderer.invoke("launcher:autostart", enabled),
   setBiggerContext: (enabled) => ipcRenderer.invoke("launcher:bigger-context", enabled),
   setSkillAttachments: (enabled) => ipcRenderer.invoke("launcher:skill-attachments", enabled),
+  setCodexRoute: (enabled) => ipcRenderer.invoke("launcher:codex-route", enabled),
   setZeroRiskPro: (enabled) => ipcRenderer.invoke("launcher:zero-risk-pro", enabled),
   setBrowserInteractionMode: (mode) => ipcRenderer.invoke("launcher:browser-interaction-mode", mode),
   setPreference: (key, value) => ipcRenderer.invoke("launcher:set-preference", key, value),

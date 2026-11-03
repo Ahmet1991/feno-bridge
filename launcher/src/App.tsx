@@ -1651,6 +1651,17 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setCodexRoute = async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setCodexRoute(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const setSkillAttachments = async (enabled: boolean) => {
     setBusy(true);
     setError(null);
@@ -1748,6 +1759,15 @@ function SettingsSurface({
             onChange={(checked) => void setSkillAttachments(checked)}
           />
         </SettingRow>
+        {!devProfile ? (
+          <SettingRow body={copy.codexRouteBody} label={copy.codexRoute}>
+            <Switch
+              checked={snapshot.state.codexRouteEnabled}
+              disabled={busy || snapshot.state.coreSetupComplete !== true}
+              onChange={(checked) => void setCodexRoute(checked)}
+            />
+          </SettingRow>
+        ) : null}
         <SettingRow body={copy.chooseLanguageHint} label={copy.language}>
           <LanguageMenu copy={copy} language={language} onChange={(next) => void updateLanguage(next)} />
         </SettingRow>

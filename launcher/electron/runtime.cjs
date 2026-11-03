@@ -178,6 +178,7 @@ class RuntimeHost {
     publishOperation,
     supervisor,
     getBrowserInteractionMode = () => "automatic",
+    getCodexRouteEnabled = () => true,
   }) {
     this.app = app;
     this.logger = logger;
@@ -205,6 +206,7 @@ class RuntimeHost {
     this.publishOperation = publishOperation;
     this.supervisor = supervisor;
     this.getBrowserInteractionMode = getBrowserInteractionMode;
+    this.getCodexRouteEnabled = getCodexRouteEnabled;
     this.active = null;
     this.activeChild = null;
     this.lifecycleOperation = null;
@@ -866,6 +868,11 @@ class RuntimeHost {
     }
   }
 
+  async setCodexRoute(enabled) {
+    if (enabled === true) return this.connectBridgeRoute();
+    return this.restoreBridgeRoute("bridge-route-opt-out");
+  }
+
   async connectBridgeRoute() {
     this.assertProductionProfile("Codex bridge routing");
     const name = "bridge-connect";
@@ -1410,6 +1417,9 @@ class RuntimeHost {
         throw new Error(`Setup completed, but the launcher-owned runtime is ${runtime.status}: ${runtime.detail || "not ready"}`);
       }
       await options.afterRuntimeReady?.();
+      if (this.launcherProfile === "production" && this.getCodexRouteEnabled() === false) {
+        await this.restoreBridgeRouteWithinOperation(name);
+      }
       return result;
     } catch (error) {
       const primary = error instanceof Error ? error.message : String(error);

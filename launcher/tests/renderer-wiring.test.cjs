@@ -448,3 +448,16 @@ test("catalog verification reports a failed request instead of requesting anothe
   assert.equal(state.codexRestartRequired, false);
   assert.ok(events.some(([event]) => event === "codex.model_catalog_verified"));
 });
+
+test("a Codex routing opt-out survives launcher restarts, setup, and catalog checks", () => {
+  const productionStartup = electronMain.indexOf("} else void (async () => {");
+  const runtimeStart = electronMain.indexOf("runtimeSupervisor.startIfConfigured()", productionStartup);
+  const optOut = electronMain.indexOf('runtimeHost.restoreBridgeRoute("bridge-route-opt-out")', runtimeStart);
+  const routeConnect = electronMain.indexOf("runtimeHost.connectBridgeRoute()", runtimeStart);
+  assert.ok(optOut > runtimeStart && optOut < routeConnect, "startup must restore an opted-out route instead of connecting it");
+  assert.match(electronMain, /getCodexRouteEnabled: \(\) => stateStore\.read\(\)\.codexRouteEnabled !== false/);
+  assert.match(electronMain, /if \(current\.codexRouteEnabled === false\) \{[\s\S]*?codexCatalogVerified: true/);
+  assert.match(electronMain, /handle\("launcher:codex-route"[\s\S]*?runtimeHost\.setCodexRoute\(desired\)/);
+  assert.match(preloadSource, /setCodexRoute: \(enabled\) => ipcRenderer\.invoke\("launcher:codex-route", enabled\)/);
+  assert.match(appSource, /checked=\{snapshot\.state\.codexRouteEnabled\}/);
+});
