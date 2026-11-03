@@ -77,9 +77,22 @@ test("current list-navigation rows extract only the first nonempty title leaf", 
     .toContain('menu opened but exposed no row named "Codex Native"');
 });
 
+test("compact mention row yields its title text node, not title plus description", async () => {
+  // Measured in the launcher on 03.11: the production row kept title and description as
+  // sibling text nodes in one span, while the other rows used data-menu-row-content.
+  const { document } = createWindow(`<div>
+    <button data-list-navigation-item="true" data-plugin-impression-id="asdk_app_a"><span class="truncate">Codex Native2<!-- --> <!-- -->Automatic ChatGPT Web bridge to the active local Codex task.<!-- --> <!-- --> </span></button>
+    <button data-list-navigation-item="true"><div data-menu-row-content="true"><span>Codex Native2 DEV</span><span>Akentek PC Bridge DEV Local: separate local Windows DEV bridge.</span></div></button>
+  </div>`);
+  const rows = menuRows(Array.from(document.querySelectorAll("button")) as Element[]);
+  expect(await worker().connectorMentionRowTitles(rows)).toEqual(["Codex Native2", "Codex Native2 DEV"]);
+  const message = await worker().connectorMentionFailure(rows, 1);
+  expect(message).not.toContain("isolated DEV connector");
+});
+
 test("visible menu with unrecognized titles is not reported as an unopened menu", async () => {
   const { document } = createWindow(
-    '<button data-list-navigation-item="true"><span>Unrecognized row</span></button>',
+    '<button data-list-navigation-item="true"><span> </span></button>',
   );
   const rows = menuRows(Array.from(document.querySelectorAll("button")) as Element[]);
   expect(await worker().connectorMentionFailure(rows, 3))
