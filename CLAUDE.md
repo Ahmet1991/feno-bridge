@@ -17,8 +17,13 @@ modelinde ver. İstisnalar: sohbet, kısa sorular ve köprünün kendi onarımı
 
       D=~/.feno-gorev/<kısa-ad>
       codex exec -m chatgpt-web/high -c model_reasoning_effort=high --full-auto \
+        -c 'openai_base_url="http://127.0.0.1:17841/v1"' \
+        -c 'model_catalog_json="C:/Users/ahmet/.feno-gorev/feno-models.json"' \
         -C "<çalışma klasörü>" -o "$D/son.md" - < "$D/gorev.md" > "$D/log.txt" 2>&1
 
+- Kullanıcının kendi Codex'i Feno'ya bağlı değildir (Ayarlar → "Codex'i Feno üzerinden yönlendir"
+  kapalı). Köprüyü yalnız bu komut kullanır; iki `-c` satırından biri eksikse çağrı doğrudan
+  OpenAI'ye gider ve `chatgpt-web/high` modelini tanımaz. Bu köprü arızası değildir.
 - `--dangerously-bypass-approvals-and-sandbox` kullanma. Modeli değiştirme, başka modele düşme.
   Bir flag tutmazsa `codex exec --help` ile doğrula.
 - Codex'in yaptığını kendin yeniden yapma. Sonucu `son.md` dosyasından oku; logu yalnızca hata
