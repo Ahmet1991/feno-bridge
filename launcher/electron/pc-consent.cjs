@@ -33,11 +33,14 @@ function validateSelection(selection) {
 }
 
 /** Trusted launcher module. No MCP-facing approval endpoint is exported. */
-function createPcConsentController({ clock = Date.now, confirmLocally, audit = () => {} }) {
+function createPcConsentController({ clock = Date.now, confirmLocally, audit = () => {}, store }) {
   if (typeof confirmLocally !== "function") throw deny();
   let active;
   let approvalPending = false;
   let revocationGeneration = 0;
+  let permanentApprovalSaved = false;
+  const copySelection = selection => ({ durationMs: selection.durationMs, roots: [...selection.roots],
+    permissions: [...selection.permissions], allowedApps: [...selection.allowedApps] });
 
   const safeAudit = action => {
     try { audit({ action, at: clock() }); } catch { /* audit failure must not prevent revoke */ }
@@ -45,6 +48,7 @@ function createPcConsentController({ clock = Date.now, confirmLocally, audit = (
   return {
     async approve(selection) {
       validateSelection(selection);
+      selection = copySelection(selection);
       if (approvalPending) throw deny();
       approvalPending = true;
       const approvalGeneration = revocationGeneration;
@@ -63,6 +67,13 @@ function createPcConsentController({ clock = Date.now, confirmLocally, audit = (
           permissions: [...selection.permissions],
           allowedApps: [...selection.allowedApps],
         };
+        if (selection.durationMs === null) {
+          store?.save(copySelection(selection));
+          permanentApprovalSaved = Boolean(store);
+        } else {
+          store?.clear();
+          permanentApprovalSaved = false;
+        }
         active = grant;
         safeAudit("approved");
         return { ...grant, roots: [...grant.roots], permissions: [...grant.permissions], allowedApps: [...grant.allowedApps] };
@@ -78,18 +89,26 @@ function createPcConsentController({ clock = Date.now, confirmLocally, audit = (
         roots: [...selection.roots], permissions: [...selection.permissions],
         allowedApps: [...selection.allowedApps] };
       active = grant;
+      permanentApprovalSaved = Boolean(store);
       safeAudit("restored");
       return { ...grant, roots: [...grant.roots], permissions: [...grant.permissions], allowedApps: [...grant.allowedApps] };
     },
     status() {
-      return active && (active.expiresAt === null || active.expiresAt > clock())
+      const status = active && (active.expiresAt === null || active.expiresAt > clock())
         ? { enabled: true, expiresAt: active.expiresAt }
         : { enabled: false };
+      return permanentApprovalSaved ? { ...status, permanentApprovalSaved: true } : status;
     },
     revoke() {
       revocationGeneration++;
       active = undefined;
       safeAudit("revoked");
+      store?.clear();
+      permanentApprovalSaved = false;
+    },
+    suspend() {
+      revocationGeneration++;
+      active = undefined;
     },
   };
 }

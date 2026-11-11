@@ -33,6 +33,24 @@ Uzak MCP araçları kendi kendilerine yerel izin açamaz. Kilitli Windows oturum
 
 İşlerin durumları, günlükleri ve iptali mevcut `pc_job_status`, `pc_job_logs`, `pc_cancel_job` araçlarıyla yönetilir.
 
+Yama motoru LF ve Windows CRLF satır sonlarını mantıksal satırlar olarak karşılaştırır. Eklenen satırlar dosyanın satır sonu biçimini kullanır; değişmeyen satırların kendi biçimi ve dosyanın son yeni satır durumu korunur. Böylece geçerli bir LF yama, CRLF çalışma kopyasında yanlışlıkla `pc_access_denied / INVALID_ARGUMENT` üretmez. SHA256, kök klasör, gizli içerik ve yerel izin kontrolleri devam eder.
+
+Yeni dosya/klasör oluşturma bu DEV paketinde Windows'a özeldir. Üst klasörler ve yazılan dosya, yeniden adlandırmayı engelleyen yerel tutamaçlarla korunur; açık dosyanın kimliği yazmadan önce karşılaştırılır. Diğer işletim sistemlerinde bu iki yeni işlem güvenli yerel uygulama eklenene kadar kapalıdır. Mevcut dosya okuma/yama araçları bundan etkilenmez. Windows testleri klasör kaçışını yönetici yetkisi gerektirmeyen junction ile sınar; dosya sembolik bağ testi Unix'te çalışır.
+
+Canlı DEV ile uyumluluk için şifreli süresiz seçim `launcher/pc-permanent-consent.enc` dosyasında korunur. Uygulamadan çıkış erişimi askıya alır; pencereyi tepsiye kapatmak erişimi sürdürür. `Acil durdur / İzni sil`, etkin erişimle birlikte kayıtlı seçimi de siler; kayıt silinemiyorsa etkin erişim yine durur ve kayıt bulunduğu arayüzde gösterilir.
+
+## Terminal sonucu, çıktı geçmişi ve pencere odağı
+
+`pc_status` içindeki `terminalBusy` ve `activeJobs` alanları çalışma yuvasının dolu olup olmadığını gösterir; yalnızca onaylı `jobs` izni varken sunulur. `pc_terminal_busy`, aynı hosttaki önceki terminalin kapanmasını beklemek gerektiğini belirtir. `pc_job_busy` eşzamanlı iş sınırıdır; `pc_job_history_full` tutulan iş geçmişinin sınırıdır. Bu durumlar yeni yerel izin gerektirmez. Otomatik olarak başka bir işi iptal etme veya aynı başarısız çağrıyı durmadan tekrarlama.
+
+Eski SHA ile yama çağrısı `pc_sha_mismatch` döndürür. Dosyayı `pc_read_file` ile yeniden oku; yeni SHA ve güncel içerikle yamayı yeniden kur. İzin, proje kökü ve hassas dosya/içerik denetimleri bu hata ayrımından önce uygulanır; gerçek izin ihlalleri `pc_access_denied` kalır.
+
+Terminal, açık bir `exit` komutunun değerini korur. Son komut yerel bir program veya iç içe PowerShell ise başarısızlık kodu PowerShell'in genel `1` değerine indirgenmez; örneğin `17` olarak döner. Başarısız bir programdan sonraki başarılı PowerShell ifadesi, eski `$LASTEXITCODE` nedeniyle başarısız sayılmaz. Süre sınırı, işlem ağacı kapsaması ve iptal davranışı korunur.
+
+`pc_job_logs`, her çağrıda en fazla 250 satır / 64 KiB döndürür. `nextCursor` ile sonraki sayfayı iste; `endCursor` değerine ulaşınca mevcut çıktı tamamlanmıştır. Her işin geçmişi en fazla 20.000 satır / 2 MiB UTF-8 içeriktir. Sınıra ulaşılıp eski satırlar atıldıysa `truncated: true` ve eldeki ilk satırın `firstCursor` değeri döner; eksik geçmiş tam gibi gösterilmez. Çok sayıda satır içeren tek bir terminal paketi satır satır işlenir; stdout ve stderr ayrı UTF-8 çözücüler kullanır. Gizli değerlerin maskelenmesi devam eder.
+
+Masaüstü odağı yalnızca onaylı hedef için istenir. Yerel etkinleştirme başarısızsa hedefin Windows UI Automation sağlayıcısı kullanılır; odaklanamayan Not Defteri çerçevesinde yalnızca kendi odaklanabilir belge alanı seçilir. Ön plandaki alt pencere, ancak seçilen kök pencerenin gerçek çocuğuysa ve aynı işleme aitse geçerli sayılır. Başka işlem/pencere, modal pencere, kilitli oturum ve gerçek odak reddi durumlarında tuş veya tıklama gönderilmez; `pc_focus_required` korunur.
+
 ## Yayına geçiş engeli
 
 Canlı Windows Feno Bridge DEV üzerinde **bu depodakinden ayrı** süresiz izin düzeltmeleri zaten bulunuyor. Bu kaynak değişiklikleri canlı Windows değişiklikleriyle karşılaştırılmadan, yedeklenmeden ve Windows'ta test edilmeden **kurulmaz**. Özellikle mevcut `pc_status` sonucundaki `expiresAt: null` korunmalıdır. Kodun geçmesi, canlı Windows'a başarıyla kurulduğu anlamına gelmez.

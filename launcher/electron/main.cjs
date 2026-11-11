@@ -23,7 +23,7 @@ const {
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { createPcConsentController } = require("./pc-consent.cjs");
-const { createPcConsentChannel } = require("./pc-consent-channel.cjs");
+const { createPcConsentChannel, suspendPcAccess } = require("./pc-consent-channel.cjs");
 const { createPcPersistentConsent } = require("./pc-persistent-consent.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
@@ -131,6 +131,29 @@ let pcConsentController = null;
 let pcConsentChannel = null;
 let pcConsentHeartbeat = null;
 let pcApprovedScope = null;
+
+function ensurePcConsentHeartbeat() {
+  if (pcConsentHeartbeat) return;
+  let publicationFailed = false;
+  pcConsentHeartbeat = setInterval(() => {
+    try {
+      pcConsentChannel?.heartbeat();
+      if (publicationFailed) {
+        publicationFailed = false;
+        try { logger.info("pc_control.heartbeat_recovered", {}); } catch { /* logging must not stop recovery */ }
+      }
+    } catch (error) {
+      // Readers deny stale leases. Retain the locally approved scope and retry;
+      // explicit revoke/quit still suspend the controller and clear this timer.
+      if (!publicationFailed) {
+        publicationFailed = true;
+        const code = typeof error?.code === "string" && /^[A-Z0-9_]{1,40}$/.test(error.code) ? error.code : "WRITE_FAILED";
+        try { logger.warn("pc_control.heartbeat_failed", { code }); } catch { /* no sensitive error details */ }
+      }
+    }
+  }, 5_000);
+  pcConsentHeartbeat.unref?.();
+}
 let pcPersistentConsent = null;
 
 function findFreePort() {
@@ -662,25 +685,20 @@ function registerIpc({ logger, stateStore }) {
     const checked = { ...selection, roots: [canonicalRoot] };
     const grant = await pcConsentController.approve(checked);
     try {
-      pcPersistentConsent?.clear();
-      if (checked.durationMs === null) pcPersistentConsent.save(checked);
       pcConsentChannel.activate(grant);
+      ensurePcConsentHeartbeat();
       pcApprovedScope = { roots: [...grant.roots], permissions: [...grant.permissions], allowedApps: [...grant.allowedApps] };
     } catch {
-      pcConsentController.revoke();
-      pcConsentChannel.revoke();
-      pcApprovedScope = null;
-      try { pcPersistentConsent?.clear(); } catch { /* fail closed for this session */ }
+      try { pcConsentController.revoke(); }
+      finally { pcApprovedScope = null; pcConsentChannel.revoke(); }
       throw new Error("pc_access_denied");
     }
     return { ...pcConsentController.status(), ...pcApprovedScope };
   });
   handle("launcher:pc-revoke", (event) => {
     requireTrustedPcRenderer(event);
-    pcConsentController?.revoke();
-    pcConsentChannel?.revoke();
-    pcApprovedScope = null;
-    pcPersistentConsent?.clear();
+    try { pcConsentController?.revoke(); }
+    finally { pcApprovedScope = null; pcConsentChannel?.revoke(); }
     return { enabled: false, roots: [], permissions: [], allowedApps: [] };
   });
   handle("launcher:snapshot", async () => ({
@@ -1174,10 +1192,9 @@ async function requestQuit() {
   shutdownInProgress = true;
   try {
     // Revoke workstation control before any potentially long shutdown operation.
-    pcConsentController?.revoke();
-    pcConsentChannel?.revoke();
     pcApprovedScope = null;
-    if (pcConsentHeartbeat) clearInterval(pcConsentHeartbeat);
+    try { suspendPcAccess({ controller: pcConsentController, channel: pcConsentChannel, heartbeat: pcConsentHeartbeat }); }
+    finally { pcConsentHeartbeat = null; }
     const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Feno Bridge`);
@@ -1239,14 +1256,20 @@ async function start() {
   await app.whenReady();
 
   // Launcher owns this Feno-private signed lease. Restart rotates the key and
-  // defaults OFF; no existing Codex tunnel credential or route is touched.
+  // defaults OFF until a previously encrypted local DEV selection is restored.
   const pcRuntimeDir = path.join(CORE_HOME, "runtime");
   pcConsentChannel = createPcConsentChannel({ directory: pcRuntimeDir });
   pcConsentChannel.start();
   if (process.platform === "win32") {
     fs.copyFileSync(path.join(__dirname, "pc-windows-helper.ps1"), path.join(pcRuntimeDir, "pc-windows-helper.ps1"));
   }
+  if (process.platform === "win32" && IS_DEV_PROFILE) {
+    pcPersistentConsent = createPcPersistentConsent({
+      filePath: path.join(launcherUserData, "pc-permanent-consent.enc"), encryption: safeStorage,
+    });
+  }
   pcConsentController = createPcConsentController({
+    store: pcPersistentConsent ?? undefined,
     confirmLocally: async (selection) => {
       if (process.platform !== "win32" || !mainWindow || mainWindow.isDestroyed()) return false;
       const response = await dialog.showMessageBox(mainWindow, {
@@ -1255,7 +1278,7 @@ async function start() {
         message: selection.durationMs === null
           ? "Grant persistent DEV PC control until you explicitly revoke it?"
           : "Allow ChatGPT to operate this PC for a limited time?",
-        detail: `Duration: ${selection.durationMs === null ? "UNTIL REVOKED (including restarts)" : `${Math.ceil(selection.durationMs / 60_000)} minutes`}\nProject: ${selection.roots.join(", ")}\nPermissions: ${selection.permissions.join(", ")}\nApplications: ${selection.allowedApps.join(", ") || "none"}\n\n${selection.permissions.includes("terminal.exec") ? "HIGH RISK: Advanced terminal commands run with your Windows account's privileges. This can read personal files and credentials, modify data outside the selected project and access the network. The project folder is NOT a security sandbox.\n\n" : ""}Desktop control can also affect files outside the project through an allowed application. Approve only while supervising. You can revoke access in Feno settings.`,
+        detail: `Duration: ${selection.durationMs === null ? "UNTIL REVOKED (including restarts)" : `${Math.ceil(selection.durationMs / 60_000)} minutes`}\nProject: ${selection.roots.join(", ")}\nPermissions: ${selection.permissions.join(", ")}\nApplications: ${selection.allowedApps.join(", ") || "none"}\n\n${selection.permissions.includes("terminal.exec") ? "HIGH RISK: Advanced terminal commands run with your Windows account's privileges. This can read personal files and credentials, modify data outside the selected project and access the network. The project folder is NOT a security sandbox.\n\n" : ""}Desktop control can also affect files outside the project through an allowed application. Approve only trusted access. Quitting Feno suspends access; closing the window to the tray keeps it enabled. Revoke and forget approval in Feno settings.`,
         buttons: ["Allow PC control", "Cancel"],
         defaultId: 1,
         cancelId: 1,
@@ -1266,29 +1289,23 @@ async function start() {
     audit: ({ action }) => launcherLogger?.info?.("pc_control.local_consent", { action }),
   });
   // DEV-specific OS-encrypted opt-in. Normal Feno and Codex profiles are untouched.
-  if (process.platform === "win32" && IS_DEV_PROFILE) {
-    pcPersistentConsent = createPcPersistentConsent({
-      filePath: path.join(launcherUserData, "pc-dev-persistent-consent.bin"), encryption: safeStorage,
-    });
+  if (pcPersistentConsent) {
     const restored = pcPersistentConsent.restore();
     if (restored) {
       try {
+        if (restored.roots.length !== 1
+          || fs.realpathSync.native(restored.roots[0]) !== restored.roots[0]
+          || !fs.statSync(restored.roots[0]).isDirectory()) throw new Error("pc_access_denied");
         const grant = pcConsentController.restoreTrustedPersistentSelection(restored);
         pcConsentChannel.activate(grant);
         pcApprovedScope = { roots: [...grant.roots], permissions: [...grant.permissions], allowedApps: [...grant.allowedApps] };
       } catch {
-        pcConsentController.revoke();
-        pcConsentChannel.revoke();
-        pcApprovedScope = null;
-        pcPersistentConsent.clear();
+        try { pcConsentController.revoke(); }
+        finally { pcApprovedScope = null; pcConsentChannel.revoke(); }
       }
     }
   }
-  pcConsentHeartbeat = setInterval(() => {
-    try { pcConsentChannel?.heartbeat(); }
-    catch { pcConsentController?.revoke(); pcApprovedScope = null; }
-  }, 5_000);
-  pcConsentHeartbeat.unref?.();
+  ensurePcConsentHeartbeat();
 
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
@@ -1679,6 +1696,10 @@ async function start() {
 
 void start().catch(async (error) => {
   startupFailed = true;
+  pcApprovedScope = null;
+  try { suspendPcAccess({ controller: pcConsentController, channel: pcConsentChannel, heartbeat: pcConsentHeartbeat }); }
+  catch { /* the cleared heartbeat expires even if signed publication fails */ }
+  pcConsentHeartbeat = null;
   const message = error instanceof Error ? error.message : String(error);
   try {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);

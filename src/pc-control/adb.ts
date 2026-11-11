@@ -127,12 +127,18 @@ export function createPcAdbController(options: {
     async adbScreenshot(serial: string): Promise<Uint8Array> {
       await requireDevice(serial);
       const result = await run(options.adbPath, ["-s", serial, "exec-out", "screencap", "-p"]);
+      // Some Vestel firmware writes this init-wrapper banner to stdout before the PNG.
+      // Accept only the observed bounded banner; arbitrary leading data remains invalid.
+      const banner = /^Init wrapper sys mutex successful\. Pid:[0-9]{1,10}\r?\n/.exec(
+        result.stdout.subarray(0, 80).toString("latin1"),
+      );
+      const png = banner ? result.stdout.subarray(banner[0].length) : result.stdout;
       if (result.exitCode !== 0 || result.stdout.length > MAX_ADB_OUTPUT
-        || result.stdout.length < 8 || !result.stdout.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+        || png.length < 8 || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
         throw new PcAccessDeniedError();
       }
       authorizer.assert("adb");
-      return result.stdout;
+      return png;
     },
   };
 }

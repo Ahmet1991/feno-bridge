@@ -2104,6 +2104,56 @@ code {
   font-size: var(--text-xs);
 }
 
+.pc-project-row {
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+}
+
+.pc-update-approval {
+  display: block;
+  text-align: left;
+}
+
+.pc-project-row small {
+  overflow-wrap: anywhere;
+}
+
+.pc-access-row {
+  grid-template-columns: 20px minmax(0, 1fr);
+  padding-block: 12px;
+}
+
+.pc-access-actions {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-access-actions button,
+.pc-access-actions select,
+.pc-project-row button {
+  width: auto;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border-secondary, #555);
+  border-radius: 6px;
+  background: var(--color-background-control);
+  color: var(--color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pc-access-actions select {
+  min-width: 160px;
+}
+
+.pc-access-actions :disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .doctor-summary {
   margin-top: 14px;
   border-left: 2px solid var(--red-300);

@@ -28,14 +28,26 @@ afterEach(() => {
 });
 
 describe("PC file access stays inside locally approved canonical roots", () => {
+  test("missing approved files are distinguished from denied paths without revealing protected targets", async () => {
+    const auth = grant(["files.read"]);
+    await expect(readPcFile(join(root, "missing.txt"), auth)).rejects.toMatchObject({ code: "pc_file_not_found" });
+    await expect(readPcFile(join(outside, "missing.txt"), auth)).rejects.toThrow("pc_access_denied");
+    await expect(readPcFile(join(root, ".env"), auth)).rejects.toThrow("pc_access_denied");
+    await expect(readPcFile(join(root, "missing.txt"), grant(["files.write"]))).rejects.toThrow("pc_access_denied");
+  });
+
   test("denies traversal, sibling root prefix, symlink and out-of-root creation", () => {
     writeFileSync(join(outside, "private.txt"), "do not read");
     expect(() => resolveAllowedPath(join(outside, "private.txt"), [root])).toThrow("pc_access_denied");
     expect(() => resolveAllowedPath(join(root, "..", "private.txt"), [root])).toThrow("pc_access_denied");
     expect(() => resolveAllowedPath(join(outside, "new.txt"), [root], { forCreate: true })).toThrow("pc_access_denied");
-    symlinkSync(join(outside, "private.txt"), join(root, "link.txt"));
-    expect(() => resolveAllowedPath(join(root, "link.txt"), [root])).toThrow("pc_access_denied");
-    symlinkSync(outside, join(root, "escape"), "dir");
+    // Windows junctions exercise canonical escapes without requiring Developer Mode.
+    if (process.platform !== "win32") {
+      symlinkSync(join(outside, "private.txt"), join(root, "link.txt"));
+      expect(() => resolveAllowedPath(join(root, "link.txt"), [root])).toThrow("pc_access_denied");
+    }
+    symlinkSync(outside, join(root, "escape"), process.platform === "win32" ? "junction" : "dir");
+    expect(() => resolveAllowedPath(join(root, "escape", "private.txt"), [root])).toThrow("pc_access_denied");
     expect(() => resolveAllowedPath(join(root, "escape", "created.txt"), [root], { forCreate: true })).toThrow("pc_access_denied");
   });
 
@@ -68,13 +80,23 @@ describe("PC file access stays inside locally approved canonical roots", () => {
       .rejects.toThrow("pc_access_denied");
     expect(readFileSync(file, "utf8")).toBe("first\nsecond\n");
     const auth = grant();
-    await expect(applyPcPatch(file, "00".repeat(32), patch, auth)).rejects.toThrow("pc_access_denied");
+    await expect(applyPcPatch(file, "00".repeat(32), patch, auth)).rejects.toThrow("pc_sha_mismatch");
     await expect(applyPcPatch(file, sha("first\nsecond\n"), "malformed patch", auth)).rejects.toThrow("pc_access_denied");
     expect(readFileSync(file, "utf8")).toBe("first\nsecond\n");
     expect(await applyPcPatch(file, sha("first\nsecond\n"), patch, auth)).toEqual({
       path: file, newSha256: sha("first\nedited\n"),
     });
     expect(readFileSync(file, "utf8")).toBe("first\nedited\n");
+  });
+
+  test("SHA conflict classification never bypasses sensitive-content or root checks",async()=>{
+    const file=join(root,"ordinary.txt");
+    writeFileSync(file,"api_key=fixture-sensitive-value\n");
+    const auth=grant();
+    await expect(applyPcPatch(file,"00".repeat(32),"@@ -1 +1 @@\n-old\n+new\n",auth)).rejects.toThrow("pc_access_denied");
+    const elsewhere=join(outside,"ordinary.txt");writeFileSync(elsewhere,"ordinary\n");
+    await expect(applyPcPatch(elsewhere,"00".repeat(32),"@@ -1 +1 @@\n-old\n+new\n",auth)).rejects.toThrow("pc_access_denied");
+    expect(readFileSync(file,"utf8")).toBe("api_key=fixture-sensitive-value\n");
   });
 
   test("revocation prevents writes", async () => {
@@ -87,7 +109,20 @@ describe("PC file access stays inside locally approved canonical roots", () => {
     expect(readFileSync(file, "utf8")).toBe("before\n");
   });
 
-  test("creates new project files and directories without replacing existing data", async () => {
+  for (const fixture of [
+    { name: "LF patch against Windows CRLF", before: "first\r\nsecond\r\n", patch: "@@ -1,2 +1,2 @@\n first\n-second\n+edited\n", after: "first\r\nedited\r\n" },
+    { name: "CRLF patch against LF", before: "first\nsecond\n", patch: "@@ -1,2 +1,2 @@\r\n first\r\n-second\r\n+edited\r\n", after: "first\nedited\n" },
+    { name: "CRLF file without a final newline", before: "first\r\nsecond", patch: "@@ -1,2 +1,2 @@\n first\n-second\n+edited\n", after: "first\r\nedited" },
+    { name: "untouched mixed line endings", before: "first\r\nsecond\nthird\r\n", patch: "@@ -3 +3 @@\n-third\n+edited\n", after: "first\r\nsecond\nedited\r\n" },
+  ]) test(`patch accepts ${fixture.name} without rewriting unrelated line endings`, async () => {
+    const file = join(root, "text.txt");
+    writeFileSync(file, fixture.before);
+    const result = await applyPcPatch(file, sha(fixture.before), fixture.patch, grant());
+    expect(readFileSync(file, "utf8")).toBe(fixture.after);
+    expect(result.newSha256).toBe(sha(fixture.after));
+  });
+
+  test.if(process.platform === "win32")("creates new project files and directories without replacing existing data", async () => {
     const auth = grant();
     const dir = join(root, "new-dir");
     expect(await createPcDirectory(dir, auth)).toEqual({ path: dir });

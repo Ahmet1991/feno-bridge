@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { PcAccessDeniedError, PcAuthorizer } from "./authorization";
 import { getConfigDir } from "../config";
+import { PcOperationError } from "./errors";
 
 type PcWindow = { id: string; title: string; processName: string };
 type PcHelperAction = "session" | "list" | "capture" | "click" | "right_click" | "scroll" | "key" | "type";
@@ -46,8 +47,10 @@ async function packagedWindowsHelper(action: PcHelperAction, args: Record<string
       settled = true;
       clearTimeout(timer);
       try {
-        if (code !== 0) throw new Error("helper failure");
-        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (code !== 0 && !(result?.ok === false && result?.reason === "focus_required"
+          && ["click", "right_click", "scroll", "key", "type"].includes(action))) throw new Error("helper failure");
+        resolve(result);
       } catch { reject(new PcAccessDeniedError()); }
     });
   });
@@ -135,6 +138,8 @@ export function createPcWindowsController(options: {
       }
       const selected = await assertWindow(input.windowId, "desktop.input");
       const response = await helper(input.action, { ...args, processName: selected.processName, title: selected.title });
+      if (response && typeof response === "object" && (response as { ok?: unknown }).ok === false
+        && (response as { reason?: unknown }).reason === "focus_required") throw new PcOperationError("pc_focus_required");
       if (!response || typeof response !== "object" || (response as { ok?: unknown }).ok !== true) throw new PcAccessDeniedError();
       authorizer.assert("desktop.input");
       return { ok: true };

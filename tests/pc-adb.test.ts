@@ -51,3 +51,19 @@ test("ADB executable discovery requires an existing absolute Android SDK binary"
   expect(resolveTrustedAdbPath({ ANDROID_HOME: sdk }, "win32")).toBe(executable);
   expect(resolveTrustedAdbPath({ ANDROID_HOME: join(sdk, "missing") }, "win32")).toBeUndefined();
 });
+
+test("physical Vestel screenshot removes only its known init-wrapper stdout banner", async () => {
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+  let prefix = Buffer.from("Init wrapper sys mutex successful. Pid:31477\n");
+  const controller = createPcAdbController({ authorizer: auth(), adbPath: "adb", runCommand: async (_exe, args) => {
+    if (args[0] === "devices") return { exitCode: 0, stdout: Buffer.from("List of devices attached\n192.168.1.103:5555\tdevice\n"), stderr: Buffer.alloc(0) };
+    return { exitCode: 0, stdout: Buffer.concat([prefix, png]), stderr: Buffer.alloc(0) };
+  } });
+  expect(Buffer.from(await controller.adbScreenshot("192.168.1.103:5555"))).toEqual(png);
+  prefix = Buffer.from("Init wrapper sys mutex successful. Pid:1\r\n");
+  expect(Buffer.from(await controller.adbScreenshot("192.168.1.103:5555"))).toEqual(png);
+  prefix = Buffer.from("unrecognized diagnostic\n");
+  await expect(controller.adbScreenshot("192.168.1.103:5555")).rejects.toThrow("pc_access_denied");
+  prefix = Buffer.from("Init wrapper sys mutex successful. Pid:not-a-number\n");
+  await expect(controller.adbScreenshot("192.168.1.103:5555")).rejects.toThrow("pc_access_denied");
+});

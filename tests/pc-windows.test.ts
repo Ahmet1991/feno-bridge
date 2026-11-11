@@ -9,6 +9,16 @@ function auth() {
   return policy;
 }
 
+test("a focus refusal is reported distinctly without accepting unsuccessful desktop input", async () => {
+  const controller = createPcWindowsController({ authorizer: auth(), isInteractive: async () => true,
+    runHelper: async action => action === "list"
+      ? [{ id: "101", title: "Document", processName: "notepad.exe" }]
+      : { ok: false, reason: "focus_required" },
+  });
+  await expect(controller.pcDesktopInput({ windowId: "101", action: "key", key: "ESC" }))
+    .rejects.toMatchObject({ code: "pc_focus_required" });
+});
+
 test("desktop requires an unlocked interactive session and an approved target app", async () => {
   let unlocked = false;
   const received: unknown[] = [];

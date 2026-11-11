@@ -198,6 +198,7 @@ export interface LauncherApi {
 export type PcControlPermission = "status" | "files.read" | "files.write" | "jobs" | "terminal.exec" | "screen.read" | "desktop.input" | "adb" | "runner";
 export interface PcControlStatus {
   enabled: boolean;
+  permanentApprovalSaved?: boolean;
   expiresAt?: number | null;
   roots: string[];
   permissions: PcControlPermission[];

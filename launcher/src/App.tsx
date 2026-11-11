@@ -1656,7 +1656,7 @@ function SettingsSurface({
         roots: [pcRoot],
         permissions: ["status", "files.read", "files.write", "jobs", "screen.read", "desktop.input", "adb", "runner",
           ...(pcAdvancedTerminal ? ["terminal.exec" as const] : [])],
-        allowedApps: ["Code.exe", "emulator.exe", "studio64.exe", "notepad.exe",
+        allowedApps: ["Code.exe", "emulator.exe", "studio64.exe", "notepad.exe", "CalculatorApp.exe",
           ...(pcAdvancedTerminal ? ["explorer.exe", "WindowsTerminal.exe", "powershell.exe", "cmd.exe"] : []),
           ...(pcBroadDesktop ? ["chrome.exe", "msedge.exe", "firefox.exe", "WINWORD.EXE", "EXCEL.EXE",
             "POWERPNT.EXE", "AcroRd32.exe", "SumatraPDF.exe"] : [])],
@@ -1828,11 +1828,13 @@ function SettingsSurface({
             ? pcControl.expiresAt
               ? `${language === "tr" ? "Erişim açık, bitiş" : "Access enabled until"}: ${new Date(pcControl.expiresAt).toLocaleString(language === "tr" ? "tr-TR" : "en-US")}`
               : language === "tr" ? "Süresiz yerel izin açık; Acil durdur ile kapatabilirsin." : "Persistent local approval enabled; use Emergency stop to revoke."
-            : language === "tr" ? "Kapalı. Bu bilgisayarda yerel onay gerekir." : "Disabled. Requires local approval on this computer."}
+            : pcControl.permanentApprovalSaved
+              ? (language === "tr" ? "Erişim durmuş; süresiz izin kayıtlı. DEV yeniden açıldığında etkinleşir. İstersen izni sil." : "Access suspended; persistent approval is saved. Restores when DEV restarts. Revoke to forget it.")
+              : (language === "tr" ? "Kapalı. Bu bilgisayarda yerel onay gerekir." : "Disabled. Requires local approval on this computer.")}
         >
           <StateDot state={pcControl.enabled ? "ready" : "busy"} />
         </SettingRow>
-        <div className="diagnostic-row">
+        <div className="diagnostic-row pc-project-row">
           <Icon name="logs" />
           <span>
             <strong>{language === "tr" ? "İzinli proje klasörü" : "Approved project folder"}</strong>
@@ -1842,25 +1844,26 @@ function SettingsSurface({
             {language === "tr" ? "Seç" : "Choose"}
           </button>
         </div>
-        <div className="diagnostic-row">
+        <div className="diagnostic-row pc-project-row">
           <Icon name="activity" />
           <span>
             <strong>{pcPersistent
               ? language === "tr" ? "Süresiz yerel DEV erişimi" : "Persistent local DEV access"
               : language === "tr" ? "60 dakikalık yerel erişim" : "60-minute local access"}</strong>
-            <small>{language === "tr" ? "Dosya, test/build, ekran ve Android emülatörü. Windows onayı gerekir." : "Files, tests/build, screen and Android emulator. Requires Windows confirmation."}</small>
+            <small>{language === "tr" ? "Dosya, test/build, ekran, Hesap Makinesi ve Android emülatörü. Windows onayı gerekir." : "Files, tests/build, screen, Calculator and Android emulator. Requires Windows confirmation."}</small>
           </span>
-          {pcControl.enabled ? (
-            <button disabled={pcBusy} onClick={() => void revokePc()} type="button">
-              {language === "tr" ? "Acil durdur" : "Revoke now"}
-            </button>
-          ) : (
+          <div className="pc-access-actions">
+          {!pcControl.enabled ? (
             <button disabled={pcBusy || !pcRoot || snapshot.platform !== "win32"} onClick={() => void approvePc()} type="button">
               {language === "tr" ? "İzin ver" : "Allow"}
             </button>
-          )}
+          ) : null}
+          <button disabled={pcBusy} onClick={() => void revokePc()} type="button">
+            {language === "tr" ? "Acil durdur / İzni sil" : "Revoke and forget"}
+          </button>
+          </div>
         </div>
-        <div className="diagnostic-row">
+        <div className="diagnostic-row pc-project-row">
           <Icon name="alert" />
           <span>
             <strong>{language === "tr" ? "Gelişmiş terminal (ayrı yerel onay)" : "Advanced terminal (separate local approval)"}</strong>
@@ -1872,7 +1875,7 @@ function SettingsSurface({
             checked={pcAdvancedTerminal} disabled={pcBusy || snapshot.platform !== "win32" || snapshot.profile !== "development"}
             onChange={event => { pcSelectionTouched.current = true; setPcAdvancedTerminal(event.target.checked); }} />
         </div>
-        <div className="diagnostic-row">
+        <div className="diagnostic-row pc-project-row">
           <Icon name="browser" />
           <span>
             <strong>{language === "tr" ? "Geniş masaüstü: tarayıcı ve Office" : "Expanded desktop: browsers and Office"}</strong>
@@ -1884,7 +1887,7 @@ function SettingsSurface({
             checked={pcBroadDesktop} disabled={pcBusy || snapshot.platform !== "win32" || snapshot.profile !== "development"}
             onChange={event => { pcSelectionTouched.current = true; setPcBroadDesktop(event.target.checked); }} />
         </div>
-        <div className="diagnostic-row">
+        <div className="diagnostic-row pc-project-row">
           <Icon name="info" />
           <span>
             <strong>{language === "tr" ? "DEV erişimi süresiz (ayrıca yerel onay)" : "Persistent DEV approval (separate local confirmation)"}</strong>
@@ -1898,8 +1901,9 @@ function SettingsSurface({
         </div>
         {pcControl.enabled && (pcAdvancedTerminal !== pcControl.permissions.includes("terminal.exec")
           || pcBroadDesktop !== pcControl.allowedApps.some(app => app.toLowerCase() === "chrome.exe")
-          || pcRoot !== (pcControl.roots[0] ?? "") || pcPersistent !== (pcControl.expiresAt === null)) ? (
-          <button className="diagnostic-row" disabled={pcBusy || !pcRoot || snapshot.platform !== "win32"}
+          || pcRoot !== (pcControl.roots[0] ?? "") || pcPersistent !== (pcControl.expiresAt === null)
+          || !pcControl.allowedApps.some(app => app.toLowerCase() === "calculatorapp.exe")) ? (
+          <button className="diagnostic-row pc-update-approval" disabled={pcBusy || !pcRoot || snapshot.platform !== "win32"}
             onClick={() => void approvePc()} type="button">
             {language === "tr" ? "Yetkiyi yerel onayla güncelle" : "Update permissions with local approval"}
           </button>

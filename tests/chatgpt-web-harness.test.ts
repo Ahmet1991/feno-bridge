@@ -2928,8 +2928,9 @@ describe("ChatGPT outer-native harness v4", () => {
       ]);
       expect(pcTools.map(tool => tool.name).sort()).toEqual([
         "pc_adb_devices", "pc_adb_input", "pc_adb_screencap", "pc_cancel_job", "pc_capture_screen",
-        "pc_desktop_input", "pc_job_logs", "pc_job_status", "pc_list_files", "pc_list_windows",
-        "pc_read_file", "pc_runner_status", "pc_start_job", "pc_status", "pc_write_patch",
+        "pc_create_directory", "pc_create_file", "pc_desktop_input", "pc_job_logs", "pc_job_status",
+        "pc_list_files", "pc_list_project_tasks", "pc_list_windows", "pc_read_file", "pc_runner_status",
+        "pc_start_job", "pc_start_project_task", "pc_start_terminal", "pc_status", "pc_write_patch",
       ]);
       // Keep the legacy Codex ABI byte-for-byte stable even though the Native2 connector
       // intentionally gains independent PC tools and needs a connector schema refresh.

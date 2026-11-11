@@ -29,8 +29,9 @@ test("signed launcher approval crosses into MCP, but revoke and stale heartbeat 
     expect(() => authorizer.assert("files.read")).toThrow("pc_access_denied");
     writer.heartbeat();
     sync.refresh();
-    // After heartbeat loss, fail closed until the user confirms a fresh local approval.
-    expect(authorizer.status()).toEqual({ enabled: false });
+    // The trusted launcher renews the transport ID, preserving the original approval.
+    expect(authorizer.status().enabled).toBe(true);
+    expect(authorizer.assert("files.read").id).not.toBe("local-signed-grant-1");
     writer.activate({ id: "local-signed-grant-1b", expiresAt: now + 60_000,
       roots: ["D:\\GitHub\\Fenotip"], permissions: ["files.read"], allowedApps: [] });
     sync.refresh();
@@ -38,7 +39,7 @@ test("signed launcher approval crosses into MCP, but revoke and stale heartbeat 
     writer.activate({ id: "local-signed-grant-1c", expiresAt: now + 60_000,
       roots: ["D:\\GitHub\\Fenotip"], permissions: ["files.read"], allowedApps: [] });
     sync.refresh();
-    expect(revocations).toBe(2);
+    expect(revocations).toBe(3);
     writer.revoke();
     sync.refresh();
     expect(authorizer.status()).toEqual({ enabled: false });

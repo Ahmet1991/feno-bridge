@@ -2,10 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { PcAccessDeniedError, PcAuthorizer } from "./authorization";
 import { applyPcPatch, createPcDirectory, createPcFile, listPcFiles, readPcFile } from "./files";
-import { createPcJobManager, inferPcCommandSpecs, type PcJobKind, type PcTerminalAudit } from "./jobs";
+import { createPcJobManager, createPcJobResources, inferPcCommandSpecs, type PcJobKind, type PcTerminalAudit } from "./jobs";
 import { inferPcDeveloperTasks } from "./developer-tasks";
 import { resolveAllowedPath } from "./paths";
-import { getRunnerStatus, type PcRunnerProbe } from "./runner";
+import { createConfiguredGithubRunnerProbe, getRunnerStatus, type PcRunnerProbe } from "./runner";
+import { getConfigDir } from "../config";
+import { PcOperationError } from "./errors";
 import { createPcWindowsController, type PcDesktopInput } from "./windows";
 import { createPcAdbController, resolveTrustedAdbPath, type PcAdbInput } from "./adb";
 
@@ -41,18 +43,24 @@ export function createLocalPcHost(authorizer: PcAuthorizer, options: {
   windowsController?: ReturnType<typeof createPcWindowsController>;
   adbController?: ReturnType<typeof createPcAdbController>;
 } = {}): PcHost {
-  const { runnerProbe } = options;
+  const runnerProbe = options.runnerProbe ?? createConfiguredGithubRunnerProbe(getConfigDir());
+  const resources = createPcJobResources();
   let activeGrantId: string | undefined;
   type JobManager = ReturnType<typeof createPcJobManager>;
   const projectManagers = new Map<string, { manager: JobManager; tasks: string[] }>();
   const jobOwners = new Map<string, JobManager>();
+  function detachManagers(): JobManager[] {
+    const retired = [...new Set([...projectManagers.values()].map(entry => entry.manager))];
+    projectManagers.clear();
+    jobOwners.clear();
+    activeGrantId = undefined;
+    return retired;
+  }
   function managerForProject(projectRoot: string, allowEmpty = false) {
     const grant = authorizer.assert("jobs");
     const resolvedRoot = resolveAllowedPath(projectRoot, grant.roots);
     if (activeGrantId !== grant.id) {
-      for (const { manager } of projectManagers.values()) void manager.revokeAll();
-      projectManagers.clear();
-      jobOwners.clear();
+      for (const manager of detachManagers()) void manager.revokeAll();
       activeGrantId = grant.id;
     }
     const existing = projectManagers.get(resolvedRoot);
@@ -62,7 +70,7 @@ export function createLocalPcHost(authorizer: PcAuthorizer, options: {
     const legacySpecs = inferPcCommandSpecs(resolvedRoot);
     if (!allowEmpty && !Object.keys(devSpecs).length && !Object.keys(legacySpecs).length) throw new PcAccessDeniedError();
     const manager = options.jobManager ?? createPcJobManager({ projectRoot: resolvedRoot,
-      commandSpecs: { ...legacySpecs, ...devSpecs }, auditCommand: options.auditCommand });
+      commandSpecs: { ...legacySpecs, ...devSpecs }, auditCommand: options.auditCommand, resources });
     const entry = { manager, tasks: Object.keys(devSpecs).sort() };
     projectManagers.set(resolvedRoot, entry);
     return entry;
@@ -74,18 +82,34 @@ export function createLocalPcHost(authorizer: PcAuthorizer, options: {
     if (!manager) throw new PcAccessDeniedError();
     return manager;
   }
+  function registerJob(result: { jobId: string }, manager: JobManager, issuedGrantId: string | undefined) {
+    if (!issuedGrantId || activeGrantId !== issuedGrantId || authorizer.assert("jobs").id !== issuedGrantId) {
+      throw new PcAccessDeniedError();
+    }
+    jobOwners.set(result.jobId, manager);
+    return result;
+  }
   function assertJobCapacity() {
-    const active = [...projectManagers.values()].reduce((sum, entry) => sum + entry.manager.activeJobCount(), 0);
-    if (active >= 4 || jobOwners.size >= 1_000) throw new PcAccessDeniedError();
+    const active = options.jobManager ? options.jobManager.activeJobCount() : resources.activeJobCount();
+    if (active >= 4) throw new PcOperationError("pc_job_busy");
+    if (jobOwners.size >= 1_000) throw new PcOperationError("pc_job_history_full");
   }
   const windowsController = options.windowsController ?? createPcWindowsController({ authorizer });
   const adbBinary = resolveTrustedAdbPath();
   const adbController = options.adbController ?? (adbBinary ? createPcAdbController({
     authorizer, adbPath: adbBinary,
-    isEmulatorReserved: () => [...projectManagers.values()].some(({ manager }) => manager.isEmulatorBusy()),
+    isEmulatorReserved: () => resources.isEmulatorBusy() || Boolean(options.jobManager?.isEmulatorBusy()),
   }) : undefined);
   return {
-    status: async () => ({ platform: process.platform }),
+    status: async () => {
+      const grant = authorizer.assert("status");
+      return { platform: process.platform,
+        ...(grant?.permissions.includes("jobs") ? {
+          terminalBusy: resources.hasActiveTerminal() || Boolean(options.jobManager?.hasActiveTerminal()),
+          activeJobs: options.jobManager ? options.jobManager.activeJobCount() : resources.activeJobCount(),
+        } : {}),
+      };
+    },
     listFiles: async requested => listPcFiles(requested, ".", authorizer),
     readFile: async requested => readPcFile(requested, authorizer),
     applyPatch: async (requested, sha256, patch) => applyPcPatch(requested, sha256, patch, authorizer),
@@ -94,27 +118,27 @@ export function createLocalPcHost(authorizer: PcAuthorizer, options: {
     startJob: async (kind, projectRoot) => {
       const { manager } = managerForProject(projectRoot);
       assertJobCapacity();
+      const issuedGrantId = activeGrantId;
       const result = await manager.startPcJob({ kind, projectRoot }, authorizer);
-      jobOwners.set(result.jobId, manager);
-      return result;
+      return registerJob(result, manager, issuedGrantId);
     },
     listProjectTasks: async projectRoot => managerForProject(projectRoot).tasks,
     startProjectTask: async (projectRoot, taskId) => {
       const { manager, tasks } = managerForProject(projectRoot);
       if (!tasks.includes(taskId)) throw new PcAccessDeniedError();
       assertJobCapacity();
+      const issuedGrantId = activeGrantId;
       const result = await manager.startDeveloperTask({ projectRoot, taskId }, authorizer);
-      jobOwners.set(result.jobId, manager);
-      return result;
+      return registerJob(result, manager, issuedGrantId);
     },
     startTerminal: async (projectRoot, command, purpose) => {
       authorizer.assert("terminal.exec");
       const { manager } = managerForProject(projectRoot, true);
       assertJobCapacity();
-      if ([...projectManagers.values()].some(entry => entry.manager.hasActiveTerminal())) throw new PcAccessDeniedError();
+      if ([...projectManagers.values()].some(entry => entry.manager.hasActiveTerminal())) throw new PcOperationError("pc_terminal_busy");
+      const issuedGrantId = activeGrantId;
       const result = await manager.startTerminalCommand({ projectRoot, command, purpose }, authorizer);
-      jobOwners.set(result.jobId, manager);
-      return result;
+      return registerJob(result, manager, issuedGrantId);
     },
     jobStatus: async jobId => {
       return ownerForJob(jobId).pcJobStatus(jobId, authorizer);
@@ -127,10 +151,9 @@ export function createLocalPcHost(authorizer: PcAuthorizer, options: {
       return { cancelled: true };
     },
     revokeActiveJobs: async () => {
-      await Promise.all([...projectManagers.values()].map(({ manager }) => manager.revokeAll()));
-      projectManagers.clear();
-      jobOwners.clear();
-      activeGrantId = undefined;
+      // Detach before the first await: old completion must never clear a newer grant's jobs.
+      const retired = detachManagers();
+      await Promise.all(retired.map(manager => manager.revokeAll()));
     },
     runnerStatus: async () => getRunnerStatus({ label: "fenotip-tv" }, runnerProbe),
     listWindows: windowsController.listPcWindows,
@@ -159,7 +182,8 @@ function success(data: unknown, topLevelStatus = false) {
 }
 
 function failure(error: unknown) {
-  const code = error instanceof PcAccessDeniedError ? "pc_access_denied" : "pc_operation_failed";
+  const code = error instanceof PcOperationError ? error.code
+    : error instanceof PcAccessDeniedError ? "pc_access_denied" : "pc_operation_failed";
   const value = { ok: false, code };
   return {
     isError: true,
@@ -201,7 +225,7 @@ export function registerPcTools(server: McpServer, deps: {
   });
   server.registerTool("pc_status", {
     title: "Akentek PC Bridge status",
-    description: "Read whether locally approved PC control is enabled. Works without a Codex task; this tool never enables access.",
+    description: "Read locally approved PC control status. With jobs permission, terminalBusy and activeJobs distinguish occupied execution slots from missing approval. This tool never enables access.",
     inputSchema: {},
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, () => execute(async () => ({ ...authorizer.status(), ...(await host.status() as object) }), true));
@@ -222,7 +246,7 @@ export function registerPcTools(server: McpServer, deps: {
 
   server.registerTool("pc_write_patch", {
     title: "Apply an approved project patch",
-    description: "Apply a bounded unified diff only when the local file matches the supplied SHA256, inside approved roots.",
+    description: "Apply a bounded unified diff only when the local file matches the supplied SHA256, inside approved roots. pc_sha_mismatch requires rereading the current file and rebuilding the patch; it does not mean approval is disabled.",
     inputSchema: {
       path: z.string().min(1).max(4096),
       sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
@@ -294,7 +318,7 @@ export function registerPcTools(server: McpServer, deps: {
 
   server.registerTool("pc_start_terminal", {
     title: "Start a locally approved advanced Windows terminal command",
-    description: "High-privilege local operation: requires separate Windows approval for terminal.exec as well as jobs. The working folder does not sandbox the Windows process.",
+    description: "High-privilege local operation: requires separate Windows approval for terminal.exec as well as jobs. One terminal per host; pc_terminal_busy means wait for the existing job to finish, not request new approval. The working folder does not sandbox the Windows process.",
     inputSchema: {
       projectRoot: z.string().min(1).max(4096),
       command: z.string().min(1).max(2048).refine(value => !value.includes("\0")),
@@ -320,6 +344,7 @@ export function registerPcTools(server: McpServer, deps: {
 
   server.registerTool("pc_job_logs", {
     title: "Read redacted PC build logs",
+    description: "Read up to 250 lines / 64 KiB. Continue with nextCursor until endCursor. Each job retains up to 20000 lines / 2 MiB; firstCursor and truncated explicitly identify expired earlier output.",
     inputSchema: { jobId: z.string().uuid(), cursor: z.number().int().min(0).default(0) },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, ({ jobId, cursor }) => execute(async () => {
