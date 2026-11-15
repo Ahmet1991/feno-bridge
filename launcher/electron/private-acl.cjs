@@ -6,6 +6,7 @@ const { spawnSync } = require('node:child_process');
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const deny = () => Object.assign(new Error('pc_private_storage'), {code:'pc_private_storage'});
+const transient=code=>Object.assign(new Error('pc_private_storage_transient'),{code:'pc_private_storage_transient',nativeCode:code});
 function native(request,options={}) {
   if(process.platform !== 'win32') throw deny();
   if(process.versions.bun)return require('./private-acl-native.cjs').handleRequest(request);
@@ -14,9 +15,17 @@ function native(request,options={}) {
   try{if(typeof executable!=='string'||!path.isAbsolute(executable)||!fs.statSync(executable).isFile())throw deny();}catch{throw deny();}
   const helper=path.join(__dirname,'private-acl-cli.cjs').replace(/app\.asar([\\/])/,'app.asar.unpacked$1');
   const result=spawnSync(executable,[helper],{
-    input:JSON.stringify(request),encoding:'utf8',windowsHide:true,shell:false,timeout:15000,maxBuffer:4*1024*1024,
+    input:JSON.stringify(request),encoding:'utf8',windowsHide:true,shell:false,timeout:3000,maxBuffer:4*1024*1024,
   });
-  if(result.error || result.status !== 0) throw deny();
+  if(result.error){
+    if(['ETIMEDOUT','EBUSY','EAGAIN'].includes(result.error.code))throw transient(result.error.code);
+    throw deny();
+  }
+  if(result.status!==0){
+    let failure;try{failure=JSON.parse(result.stdout);}catch{}
+    if(failure?.code==='pc_private_storage_transient'&&[32,33].includes(failure.nativeCode))throw transient(failure.nativeCode);
+    throw deny();
+  }
   let value; try { value=JSON.parse(result.stdout); } catch { throw deny(); }
   if(value?.ok !== true) throw deny();
   return value;

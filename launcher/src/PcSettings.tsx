@@ -45,13 +45,14 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     </div>:null}
     {platform!=='win32'||!status?.available?<p>PC güvenlik altyapısı hazır değil. Erişim kapalı tutuluyor.</p>:null}
     {status?.persistentRevocationPending?<p role="alert">Kalıcı iptal diske yazılamadı. Erişim kapalı. Depolama erişimini onarın.</p>:null}
+    {status?.lastAutoStop?<p role="alert">Son otomatik durdurma: {new Date(status.lastAutoStop.at).toLocaleString('tr-TR')} · {status.lastAutoStop.reason} ({status.lastAutoStop.code})</p>:null}
     {status?.enabled?<p>İzinli proje: {status.roots.join(', ')} · {status.expiresAt===null?'Açıkça iptal edilene kadar':status.expiresAt?new Date(status.expiresAt).toLocaleString():''}</p>:null}
     <button type="button" disabled={busy||!status?.available} onClick={()=>void action(async()=>{const picked=await api!.pcPickRoot();if(picked)setRoot(picked);})}>Proje seç</button>
     <p>{root||'Henüz proje seçilmedi'}</p>
     <fieldset disabled={busy||!status?.available}>
       <legend>Ayrı yerel izinler (varsayılan kapalı)</legend>
-      {permissions.map(permission=><label className="setting-row" key={permission}>
-        <input type="checkbox" checked={selected.includes(permission)} onChange={event=>setSelected(previous=>event.target.checked?[...previous,permission]:previous.filter(p=>p!==permission))}/>
+      {permissions.map(permission=><label className="pc-settings-option" key={permission}>
+        <input className="pc-settings-checkbox" type="checkbox" checked={selected.includes(permission)} onChange={event=>setSelected(previous=>event.target.checked?[...previous,permission]:previous.filter(p=>p!==permission))}/>
         <span><strong>{status?.permissionDetails?.[permission]?.title||labels[permission]}</strong>
           <small>{status?.permissionDetails?.[permission]?.description||'Bu yetkinin kapsamını yerel onay ekranında inceleyin.'}</small>
           {status?.permissionDetails?.[permission]?.risk==='high'?<small role="note">⚠ Yüksek riskli izin</small>:null}</span>
@@ -60,12 +61,12 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     <fieldset disabled={busy||!status?.available}>
       <legend>İzin verilen uygulama pencereleri</legend>
       <p>Yalnızca seçilen uygulamaların pencereleri okunabilir ve kontrol edilebilir. Uygulama başlatma ayrı izne tabidir.</p>
-      {(status?.applicationCatalog||[]).map(app=><label className="setting-row" key={app.id}>
-        <input type="checkbox" checked={selectedApps.includes(app.id)} onChange={event=>setSelectedApps(previous=>event.target.checked?[...previous,app.id]:previous.filter(id=>id!==app.id))}/>
+      {(status?.applicationCatalog||[]).map(app=><label className="pc-settings-option" key={app.id}>
+        <input className="pc-settings-checkbox" type="checkbox" checked={selectedApps.includes(app.id)} onChange={event=>setSelectedApps(previous=>event.target.checked?[...previous,app.id]:previous.filter(id=>id!==app.id))}/>
         <span>{app.title} <small>{app.launchable?'Açılabilir ve kontrol edilebilir':'Yalnızca mevcut penceresi kullanılabilir'}</small></span>
       </label>)}
     </fieldset>
-    <label><input type="checkbox" checked={perpetual} onChange={event=>setPerpetual(event.target.checked)}/> Açıkça iptal edene kadar sakla (DPAPI ve ayrı yerel onay gerekir)</label>
+    <label className="pc-settings-option"><input className="pc-settings-checkbox" type="checkbox" checked={perpetual} onChange={event=>setPerpetual(event.target.checked)}/> Açıkça iptal edene kadar sakla (DPAPI ve ayrı yerel onay gerekir)</label>
     {invalid?<p role="alert">Terminal için işler iznini, gelişmiş giriş için masaüstü girişini, pencere izinleri için en az bir uygulamayı ve uygulama açmak için açılabilir uygulamayı seçin.</p>:null}
     <button type="button" disabled={busy||!status?.available||!root||!selected.length||invalid||status?.persistentRevocationPending}
       onClick={()=>void action(async()=>{setStatus(await api!.pcApprove({durationMs:perpetual?null:3600000,roots:[root],permissions:selected,allowedApps:selectedApps}));})}>Seçili izinleri yerel olarak onayla</button>

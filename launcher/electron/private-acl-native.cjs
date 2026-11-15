@@ -2,6 +2,7 @@
 // Bun-only Windows backend. No shell, privilege elevation, or execution-policy changes.
 const path=require('node:path');
 const {randomUUID}=require('node:crypto');
+const {retrySharingViolation}=require('./private-atomic-retry.cjs');
 if(process.platform!=='win32' || !process.versions.bun) throw new Error('pc_private_storage');
 const {dlopen,ptr,toArrayBuffer}=require('bun:ffi');
 const root=process.env.SystemRoot || 'C:\\Windows';
@@ -142,7 +143,9 @@ function writePrivateAtomic(p,bytes,sid){
     const policy=descriptor(false);
     try{h=open(temp,0x40020080,0,1,policy.sa);created=true;}finally{policy.dispose();}
     assertAcl(h,false);writeHandle(h,bytes);k.CloseHandle(h);h=null;
-    checked(k.MoveFileExW(wide(temp),wide(p),9));created=false;
+    retrySharingViolation(()=>{
+      if(!k.MoveFileExW(wide(temp),wide(p),9))throw Object.assign(deny(),{nativeCode:k.GetLastError()});
+    });created=false;
     h=open(p,0x20080);assertAcl(h,false);
   }finally{if(h)k.CloseHandle(h);if(created)k.DeleteFileW(wide(temp));release();}
 }

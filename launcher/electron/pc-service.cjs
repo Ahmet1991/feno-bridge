@@ -6,19 +6,17 @@ const {createPcPersistentConsent}=require('./pc-persistent-consent.cjs');
 const {createPcConsentController}=require('./pc-consent.cjs');
 const {createPcConsentChannel}=require('./pc-consent-channel.cjs');
 const {createPcPeerRegistry}=require('./pc-resource-peers.cjs');
+const {createPcHeartbeatGuard}=require('./pc-heartbeat-guard.cjs');
 const {createPcDevRetirementStore}=require('./pc-dev-retirement.cjs');
 const {pcRuntimePaths}=require('./pc-runtime-paths.cjs');
 const deny=()=>new Error('pc_access_denied');
 function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now,confirmLocally,confirmRetirementLocally,audit=()=>{},testPeerEvidence}){
   const policy=pcPolicyForProfile(profile),layout=pcRuntimePaths({coreHome:profile.coreHome,profileId:policy.profileId,sharedDirectory});
-  let channel,controller,peers,retirementStore,scope,timer,started=false,initialized=false,stopped=false,retirementPending=false;
+  let channel,controller,peers,retirementStore,scope,timer,guard,lastAutoStop,started=false,initialized=false,stopped=false,retirementPending=false;
   const blank=()=>({roots:[],permissions:[],allowedApps:[]});
   function heartbeat(){
     if(!started)return;
-    try{
-      if(!controller.status().enabled){scope=undefined;channel.revoke();}else channel.heartbeat();
-      peers.heartbeat();
-    }catch{controller.suspend();scope=undefined;try{channel.revoke();}catch{}}
+    guard.heartbeat();
   }
   const service={
     start(){
@@ -32,7 +30,11 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       channel=createPcConsentChannel({directory:layout.directory,profileId:policy.profileId,files,clock});channel.start();
       const store=createPcPersistentConsent({filePath:policy.persistentStorePath,profileId:policy.profileId,files,
         encryption:createWindowsDpapiProtection(context.userSid,policy.profileId,{bunPath})});
-      controller=createPcConsentController({profileId:policy.profileId,clock,confirmLocally,audit,store});
+      controller=createPcConsentController({profileId:policy.profileId,clock,confirmLocally,
+        audit:event=>{
+          if(event.action==='expired'||event.action==='invalid_clock')lastAutoStop={at:event.at,reason:event.action,code:'pc_access_denied'};
+          audit(event);
+        },store});
       if(policy.profileId==='pc2-normal')retirementStore=createPcDevRetirementStore({directory:layout.sharedDirectory,files,
         encryption:createWindowsDpapiProtection(context.userSid,'pc2-normal',{bunPath})});
       peers=createPcPeerRegistry({directory:layout.sharedDirectory,files,legacyHomes:layout.legacyHomes,devInstallPaths:layout.devInstallPaths,retirementStore,clock,
@@ -40,6 +42,10 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
           legacyHomes:{...layout.legacyHomes,'pc2-dev':testPeerEvidence.devHome||layout.legacyHomes['pc2-dev']}}:{}),
       });
       peers.start(policy.profileId);
+      guard=createPcHeartbeatGuard({clock,controller,channel,peers,onInactive:()=>{scope=undefined;},audit:event=>{
+        if(event.action==='auto_suspended')lastAutoStop={at:event.at,reason:event.reason,code:event.code};
+        audit(event);
+      }});
       const saved=store.restore();
       if(saved){
         const appsValid=saved.allowedApps.every(app=>PC_ALLOWED_APPLICATIONS.some(item=>item.id===app));
@@ -50,9 +56,12 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
     },
     status(){
       const state=controller?.status()||{enabled:false};
-      const dev=started?peers.observe().peers.find(p=>p.profileId==='pc2-dev'):undefined;
+      const guardState=guard?.status();
+      let dev;
+      if(started&&guardState?.coordinationReady)try{dev=peers.observe().peers.find(p=>p.profileId==='pc2-dev');}catch{}
       const devMode=dev?.reason==='not-installed'?'not-installed':dev?.reason==='retired'?'retired':dev?.reason==='running'?'running':dev?.verified&&dev.protocol==='pc-host-control-v1'?'compatible':'unverified';
       return {...state,profileId:policy.profileId,permissionDetails:policy.permissionDetails,applicationCatalog:PC_ALLOWED_APPLICATIONS,
+        coordinationReady:guardState?.coordinationReady===true,lastAutoStop,
         devMode,devRetired:retirementStore?.read()===true,
         ...(state.enabled&&scope?{roots:[...scope.roots],permissions:[...scope.permissions],allowedApps:[...scope.allowedApps]}:blank()),
         available:started};

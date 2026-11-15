@@ -31,7 +31,8 @@ function createPcConsentController({profileId,clock=Date.now,confirmLocally,audi
     },
     status(){
       const now=clock();
-      if(!Number.isFinite(now)||(active&&active.expiresAt!==null&&active.expiresAt<=now))active=undefined;
+      if(active&&!Number.isFinite(now)){active=undefined;safeAudit('invalid_clock');}
+      else if(active&&active.expiresAt!==null&&active.expiresAt<=now){active=undefined;safeAudit('expired');}
       return {...(active?{enabled:true,expiresAt:active.expiresAt}:{enabled:false}),...(permanentApprovalSaved?{permanentApprovalSaved:true}:{}),...(persistentRevocationPending?{persistentRevocationPending:true}:{})};
     },
     isActiveGrant(id){return typeof id==='string'&&this.status().enabled===true&&active?.id===id;},

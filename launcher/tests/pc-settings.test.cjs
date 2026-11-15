@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path');
 const {spawnSync}=require('node:child_process');
+const fs=require('node:fs');
 
 test('PC settings renders all closed permission toggles, application catalog and high-risk warnings',()=>{
   const result=spawnSync('bun',[path.join(__dirname,'fixtures/pc-settings-render.tsx')],{encoding:'utf8',windowsHide:true});
@@ -15,4 +16,9 @@ test('PC settings renders all closed permission toggles, application catalog and
   }
   assert.match(result.stdout,/Tek profil: DEV kurulu değil/);
   assert.match(result.stdout,/DEV çalışıyor/);
+  assert.match(result.stdout,/Son otomatik durdurma/);
+  assert.match(result.stdout,/pc-settings-checkbox/);
+  const css=fs.readFileSync(path.join(__dirname,'../src/styles.css'),'utf8');
+  assert.match(css,/\.pc-settings-checkbox:checked/);
+  assert.match(css,/\.pc-settings-checkbox:focus-visible/);
 });

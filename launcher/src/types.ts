@@ -202,6 +202,7 @@ export type PcCorePermission='files.read'|'files.write'|'jobs'|'terminal.exec'|'
 export interface PcApprovalSelection {durationMs:number|null;roots:string[];permissions:PcCorePermission[];allowedApps:string[]}
 export interface PcControlStatus {
   enabled:boolean;available:boolean;profileId?:'pc2-normal'|'pc2-dev';expiresAt?:number|null;
+  coordinationReady?:boolean;lastAutoStop?:{at:number;reason:string;code:string};
   devMode?:'not-installed'|'retired'|'running'|'compatible'|'unverified';devRetired?:boolean;
   roots:string[];permissions:PcCorePermission[];allowedApps:string[];permanentApprovalSaved?:boolean;persistentRevocationPending?:boolean;
   permissionDetails?:Record<string,{title:string;description:string;risk:string}>;

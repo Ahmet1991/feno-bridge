@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "5.1.2",
+  "version": "5.1.3",
   "private": true,
   "description": "Feno Bridge desktop launcher",
   "author": "miuuyy",
@@ -52,7 +52,8 @@
     "asarUnpack": [
       "assets/linux-appimage-runner.sh",
       "electron/private-acl-cli.cjs",
-      "electron/private-acl-native.cjs"
+      "electron/private-acl-native.cjs",
+      "electron/private-atomic-retry.cjs"
     ],
     "directories": {
       "output": "release"

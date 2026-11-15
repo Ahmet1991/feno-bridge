@@ -1382,7 +1382,13 @@ async function start() {
           });
           return response.response === 0;
         },
-        audit: ({ action }) => logger.info("pc_control.local_consent", { action }),
+        audit: ({ action, reason, code, consecutiveFailures }) => {
+          if(action==='auto_suspended')logger.warn('pc_control.auto_suspended',{reason,code,consecutiveFailures});
+          else if(action==='expired')logger.info('pc_control.grant_expired',{reason:'expired'});
+          else if(action==='invalid_clock')logger.warn('pc_control.auto_suspended',{reason:'invalid_clock',code:'pc_access_denied',consecutiveFailures:0});
+          else if(action==='heartbeat_transient_error')logger.warn('pc_control.heartbeat_transient_error',{reason,code,consecutiveFailures});
+          else logger.info('pc_control.local_consent',{action});
+        },
       });
       pcService.start();
     } catch {
