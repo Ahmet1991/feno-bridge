@@ -51,7 +51,10 @@ function smokeEnvironment() {
     TMPDIR: scratch,
     CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(scratch, "launcher-data"),
     CODEX_CHATGPT_WEB_HOME: coreHome,
+    CODEX_WEB_GPT_DEV_HOME: path.join(scratch, "dev-home"),
     CODEX_HOME: path.join(scratch, "codex-home"),
+    FENO_PC_COORDINATION_DIR: path.join(scratch, "coordination"),
+    CODEX_WEB_GPT_DEFAULT_PORT: "18941",
     CODEX_WEB_GPT_SMOKE_FILE: markerPath,
   };
 }

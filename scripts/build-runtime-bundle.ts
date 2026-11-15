@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 import { VERSION } from "../src/version";
 import { stageWindowsCliTools } from "./windows-cli-tools";
 
@@ -94,6 +95,19 @@ if (install.exitCode !== 0) {
 const bunName = process.platform === "win32" ? "bun.exe" : "bun";
 cpSync(embeddedBunExecutable(), join(runtimeDir, bunName));
 if (process.platform !== "win32") chmodSync(join(runtimeDir, bunName), 0o755);
+if (process.platform === "win32") {
+  const helperBuild = spawnSync("node", [join(root, "scripts", "build-pc-windows-helper.cjs")], {
+    cwd: root, stdio: "inherit", windowsHide: true, shell: false,
+  });
+  if (helperBuild.error) throw helperBuild.error;
+  if (helperBuild.status !== 0) throw new Error(`Windows helper compilation failed: ${helperBuild.status}`);
+  const helperSource = join(root, ".cache", "pc-windows-helper.exe");
+  const manifestSource = join(root, "launcher", "electron", "pc-windows-helper.sha256");
+  const digest = createHash("sha256").update(readFileSync(helperSource)).digest("hex");
+  if (readFileSync(manifestSource, "utf8").trim() !== digest) throw new Error("Windows helper manifest mismatch");
+  copyFileSync(helperSource, join(runtimeDir, "pc-windows-helper.exe"));
+  copyFileSync(manifestSource, join(runtimeDir, "pc-windows-helper.sha256"));
+}
 
 const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web";
 const launcher = process.platform === "win32" ? `@echo off
