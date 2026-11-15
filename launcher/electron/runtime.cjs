@@ -711,7 +711,8 @@ class RuntimeHost {
             ? new Error(`${timedOut.message}; termination failed: ${error.message}`)
             : error);
         });
-        child.once("exit", (code, signal) => {
+        // "exit" can arrive before stdout/stderr have drained, especially on Windows.
+        child.once("close", (code, signal) => {
           if (this.activeChild === child) this.activeChild = null;
           if (settled) return;
           settled = true;
@@ -838,25 +839,42 @@ class RuntimeHost {
 
   async bridgeStatus(operationName = "bridge-status") {
     this.assertProductionProfile("Codex bridge status");
-    const result = await this.run(operationName, ["route", "status"], {
+    return this.runBridgeRouteCommand(operationName, ["route", "status"], {
       embedded: true,
       message: "Checking Codex bridge route",
       successMessage: "Codex bridge route checked",
       timeoutMs: 15_000,
-    });
-    return parseBridgeRouteResult(result.stdout, { requireInstalled: true });
+    }, { requireInstalled: true });
+  }
+
+  async runBridgeRouteCommand(operationName, args, options, parseOptions = {}) {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const result = await this.run(operationName, args, options);
+      try {
+        return parseBridgeRouteResult(result.stdout, parseOptions);
+      } catch (error) {
+        // Restarting the bundled Bun immediately after setup can yield an empty
+        // or incomplete stdout stream. Retry only malformed JSON, never a real
+        // route state mismatch or a failed CLI invocation.
+        if (error?.message !== "Codex bridge route command returned invalid JSON" || Date.now() >= deadline) {
+          throw error;
+        }
+        this.logger.warn("runtime.route_json_pending", { command: args.join(" ") });
+        await new Promise(resolve => setTimeout(resolve, Math.min(200, Math.max(1, deadline - Date.now()))));
+      }
+    }
   }
 
   async restoreBridgeRouteWithinOperation(operationName) {
     const current = await this.bridgeStatus(operationName);
     if (!current.installed || !current.active) return current;
-    const disconnected = await this.run(operationName, ["route", "disconnect"], {
+    const result = await this.runBridgeRouteCommand(operationName, ["route", "disconnect"], {
       embedded: true,
       message: "Restoring the previous Codex route",
       successMessage: "Previous Codex route restored",
       timeoutMs: 15_000,
-    });
-    const result = parseBridgeRouteResult(disconnected.stdout, { expectedActive: false });
+    }, { expectedActive: false });
     const verified = await this.bridgeStatus(operationName);
     if (!verified.installed || verified.active) {
       throw new Error("Codex bridge route restore did not persist in the active config");
@@ -892,13 +910,12 @@ class RuntimeHost {
       if (!current.installed) throw new Error("Install the Codex integration before connecting the bridge route");
       if (current.active) return current;
       try {
-        const connected = await this.run(name, ["route", "connect"], {
+        const result = await this.runBridgeRouteCommand(name, ["route", "connect"], {
           embedded: true,
           message: "Connecting Codex to the launcher",
           successMessage: "Codex bridge connected",
           timeoutMs: 15_000,
-        });
-        const result = parseBridgeRouteResult(connected.stdout, { expectedActive: true });
+        }, { expectedActive: true });
         const verified = await this.bridgeStatus(name);
         if (!verified.installed || !verified.active) {
           throw new Error("Codex bridge route connection did not persist in the active config");
@@ -1435,6 +1452,7 @@ class RuntimeHost {
       const failures = [];
       let rolledBack = false;
       let checkpointChanged = false;
+      let safeToRestore = true;
       if (!previousRuntime.configured && setupCommandStarted) {
         try {
           rolledBack = await this.rollbackFirstSetup(checkpoint);
@@ -1444,7 +1462,19 @@ class RuntimeHost {
           );
         }
       }
-      if (previousRuntime.configured && checkpoint && runtimeTransitionStarted) {
+      // A failed post-start route command must not restore the old config while
+      // the newly started daemon and tunnel still own the current installation.
+      if (previousRuntime.configured && runtimeTransitionStarted
+        && setupCommandStarted && previousRuntime.owner === "launcher") {
+        try {
+          await this.supervisor.stopForSetup();
+        } catch (caught) {
+          safeToRestore = false;
+          failures.push(`stopping the new launcher runtime failed: ${caught instanceof Error ? caught.message : String(caught)}`);
+          failures.push("current configuration retained because the new runtime could still be running");
+        }
+      }
+      if (safeToRestore && previousRuntime.configured && checkpoint && runtimeTransitionStarted) {
         try {
           checkpointChanged = this.setupCheckpointChanged(checkpoint);
         } catch (caught) {
@@ -1460,7 +1490,7 @@ class RuntimeHost {
         }
       }
       let recoveryError;
-      if (runtimeTransitionStarted) {
+      if (runtimeTransitionStarted && safeToRestore) {
         try {
           await this.restorePreviousRuntime(previousRuntime, name, {
             repairExternal: previousRuntime.owner === "external" && checkpointChanged,

@@ -87,6 +87,86 @@ test("upgrade rollback accepts needs-setup when the restored older runtime needs
   await host.restorePreviousRuntime(snapshot, "runtime-upgrade");
 });
 
+test("failed upgrade stops new-version processes before restoring old config", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-upgrade-rollback-order-"));
+  const configPath = path.join(root, "config.json");
+  const oldConfig = { mode: "browser-only", browserHost: "launcher", releaseVersion: "5.1.1" };
+  fs.writeFileSync(configPath, JSON.stringify(oldConfig));
+  const readConfig = () => JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const events = [];
+  let runningVersion = "5.1.1";
+  const supervisor = {
+    coreHome: root, configPath, readSetupConfig: readConfig, readConfig,
+    stopForSetup: async () => {
+      events.push(`stop:${runningVersion}`);
+      runningVersion = null;
+    },
+    startIfConfigured: async () => {
+      const version = readConfig().releaseVersion;
+      if (version === "5.1.1") return { status: "needs-setup" };
+      runningVersion = version;
+      events.push(`start:${version}`);
+      return { status: "ready" };
+    },
+  };
+  const host = new RuntimeHost({
+    app: { getPath: () => root, getVersion: () => "5.1.2" },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, browserDescriptorPath: path.join(root, "launcher.json"),
+    codexHome: path.join(root, "codex"), supervisor,
+  });
+  host.run = async (_name, args) => {
+    if (!args.includes("--preflight-only")) {
+      fs.writeFileSync(configPath, JSON.stringify({ ...oldConfig, releaseVersion: "5.1.2" }));
+    }
+    return { stdout: "", code: 0 };
+  };
+  try {
+    await assert.rejects(host.runSetup("runtime-upgrade", ["setup", "--browser-only"], {
+      afterRuntimeReady: async () => { throw new Error("synthetic post-start failure"); },
+    }), /synthetic post-start failure/);
+    assert.deepEqual(events, ["stop:5.1.1", "start:5.1.2", "stop:5.1.2"]);
+    assert.equal(readConfig().releaseVersion, "5.1.1");
+    assert.equal(runningVersion, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed new-version shutdown retains new config and records cleanup error", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-upgrade-unsafe-rollback-"));
+  const configPath = path.join(root, "config.json");
+  const oldConfig = { mode: "browser-only", browserHost: "launcher", releaseVersion: "5.1.1" };
+  fs.writeFileSync(configPath, JSON.stringify(oldConfig));
+  const readConfig = () => JSON.parse(fs.readFileSync(configPath, "utf8"));
+  let stops = 0;
+  const host = new RuntimeHost({
+    app: { getPath: () => root, getVersion: () => "5.1.2" },
+    logger: { info() {}, warn() {}, error() {} }, sourceRoot: root,
+    browserDescriptorPath: path.join(root, "launcher.json"), codexHome: path.join(root, "codex"),
+    supervisor: {
+      coreHome: root, configPath, readConfig, readSetupConfig: readConfig,
+      stopForSetup: async () => { if (++stops === 2) throw new Error("daemon did not stop"); },
+      startIfConfigured: async () => ({ status: "ready" }),
+    },
+  });
+  host.run = async (_name, args) => {
+    if (!args.includes("--preflight-only")) {
+      fs.writeFileSync(configPath, JSON.stringify({ ...oldConfig, releaseVersion: "5.1.2" }));
+    }
+    return { stdout: "", code: 0 };
+  };
+  try {
+    await assert.rejects(host.runSetup("runtime-upgrade", ["setup", "--browser-only"], {
+      afterRuntimeReady: async () => { throw new Error("route not ready"); },
+    }), /daemon did not stop/);
+    assert.equal(stops, 2);
+    assert.equal(readConfig().releaseVersion, "5.1.2");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("core setup replaces the known legacy connector identity with the direct-turn identity", async () => {
   const fixture = hostFor({ mode: "full", appName: "Codex Native" });
   await fixture.host.setupCore();
@@ -672,6 +752,109 @@ test("startup recovery can restore the Codex route without requiring a healthy l
   assert.deepEqual(fixture.calls, ["route status", "route disconnect", "route status"]);
 });
 
+test("first-start route opt-out retries empty and truncated JSON from status and disconnect", async () => {
+  const fixture = bridgeFixture({ active: true });
+  let statusAttempts = 0;
+  let disconnectAttempts = 0;
+  fixture.host.run = async (_name, args) => {
+    const action = args.join(" ");
+    fixture.calls.push(action);
+    if (action === "route status") {
+      statusAttempts++;
+      return { stdout: statusAttempts <= 2 ? (statusAttempts === 1 ? "" : "{")
+        : JSON.stringify({ installed: true, active: disconnectAttempts === 0, errors: [] }) };
+    }
+    if (action === "route disconnect") {
+      disconnectAttempts++;
+      return { stdout: disconnectAttempts === 1 ? "{\"active\":"
+        : JSON.stringify({ changed: true, active: false }) };
+    }
+    throw new Error(`Unexpected route operation: ${action}`);
+  };
+  const result = await fixture.host.restoreBridgeRoute("bridge-route-opt-out");
+  assert.equal(result.active, false);
+  assert.equal(statusAttempts, 4);
+  assert.equal(disconnectAttempts, 2);
+});
+
+test("startup fail-safe retries a transiently empty route status", async () => {
+  const fixture = bridgeFixture({ active: true });
+  const run = fixture.host.run.bind(fixture.host);
+  let attempts = 0;
+  fixture.host.run = async (name, args, options) => {
+    if (args.join(" ") === "route status" && ++attempts <= 3) return { stdout: "" };
+    return run(name, args, options);
+  };
+  const result = await fixture.host.restoreBridgeRoute("runtime-start-fail-safe");
+  assert.equal(result.active, false);
+  assert.equal(attempts, 5);
+});
+
+test("isolated 5.1.1 to 5.1.2 first start keeps PC2 identity and Bun after delayed health and route JSON", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-upgrade-route-first-start-"));
+  const configPath = path.join(root, "config.json");
+  const bundledBun = path.join(root, "versions", "5.1.2-win32-x64", "runtime", "bun.exe");
+  const original = {
+    mode: "full", browserHost: "launcher", releaseVersion: "5.1.1",
+    appName: "Codex Native2 PC2", automaticAppName: "Codex Native2 PC2",
+  };
+  fs.writeFileSync(configPath, JSON.stringify(original));
+  const readConfig = () => JSON.parse(fs.readFileSync(configPath, "utf8"));
+  let healthCalls = 0;
+  let statusCalls = 0;
+  let disconnectCalls = 0;
+  let active = true;
+  const supervisor = {
+    coreHome: root, configPath, readConfig, readSetupConfig: readConfig,
+    stopForSetup: async () => ({ status: "stopped" }),
+    startIfConfigured: async () => {
+      while (++healthCalls < 3) await new Promise(resolve => setTimeout(resolve, 10));
+      return { status: "ready" };
+    },
+  };
+  const host = new RuntimeHost({
+    app: { getPath: () => root, getVersion: () => "5.1.2" },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, browserDescriptorPath: path.join(root, "launcher.json"),
+    codexHome: path.join(root, "codex"), supervisor,
+    getCodexRouteEnabled: () => false,
+  });
+  host.run = async (_name, args) => {
+    const action = args.join(" ");
+    if (action === "route status") {
+      statusCalls++;
+      return { stdout: statusCalls <= 2 ? "" : JSON.stringify({ installed: true, active, errors: [] }) };
+    }
+    if (action === "route disconnect") {
+      disconnectCalls++;
+      if (disconnectCalls >= 2) active = false;
+      return { stdout: disconnectCalls === 1 ? "{" : JSON.stringify({ active: false, changed: true }) };
+    }
+    if (args[0] === "setup" && !args.includes("--preflight-only")) {
+      fs.writeFileSync(configPath, JSON.stringify({
+        ...original, releaseVersion: "5.1.2", runtimeCommand: [bundledBun],
+      }));
+    }
+    return { code: 0, stdout: "" };
+  };
+  try {
+    const upgrade = await host.upgradeManagedRuntime();
+    assert.equal(upgrade.updated, true);
+    assert.equal((await supervisor.startIfConfigured()).status, "ready");
+    assert.equal((await host.restoreBridgeRoute("bridge-route-opt-out")).active, false);
+    assert.equal(readConfig().releaseVersion, "5.1.2");
+    assert.equal(readConfig().appName, "Codex Native2 PC2");
+    assert.equal(readConfig().automaticAppName, "Codex Native2 PC2");
+    assert.deepEqual(readConfig().runtimeCommand, [bundledBun]);
+    assert.equal(active, false);
+    assert.equal(statusCalls, 5);
+    assert.equal(disconnectCalls, 2);
+    assert.ok(healthCalls >= 3);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("failed runtime cleanup during removal still restores the previous Codex route", async () => {
   const calls = [];
   const config = { mode: "full", browserHost: "launcher", releaseVersion: "1.1.2" };
@@ -997,7 +1180,7 @@ test("a browser-mode commit failure restores the previous runtime inside setup",
     }),
     /surface ownership failed/,
   );
-  assert.equal(stops, 1);
+  assert.equal(stops, 2);
   assert.equal(starts, 1);
   assert.equal(checkpointRestores, 1);
   assert.equal(runtimeRestores, 1);

@@ -1739,10 +1739,23 @@ class RuntimeSupervisor {
     if (tunnelOnly && processRunning(state.daemonPid)) {
       throw new Error("DEV launcher ownership unexpectedly contains a Responses daemon");
     }
-    const health = tunnelOnly ? null : await this.proxyHealthPayload(config);
-    const daemonRunning = health?.service === "codex-chatgpt-web"
-      && health?.mode === config.mode
-      && health?.version === config.releaseVersion;
+    let health = tunnelOnly ? null : await this.proxyHealthPayload(config);
+    const matchingDaemon = value => value?.service === "codex-chatgpt-web"
+      && value?.mode === config.mode
+      && value?.version === config.releaseVersion;
+    // The launcher may have just spawned the recorded daemon: its health
+    // endpoint can lag the PID becoming visible. Give our own child time.
+    if (!tunnelOnly && !matchingDaemon(health) && state.ownerPid === process.pid
+      && processRunning(state.daemonPid)) {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && !matchingDaemon(health)
+        && processRunning(state.daemonPid)
+        && (!health?.pid || health.pid === state.daemonPid)) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        health = await this.proxyHealthPayload(config);
+      }
+    }
+    const daemonRunning = matchingDaemon(health);
     if (daemonRunning && health.pid !== state.daemonPid) {
       throw new Error("The process on the Responses port does not match the stale launcher marker");
     }

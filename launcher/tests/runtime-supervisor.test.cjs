@@ -1107,6 +1107,47 @@ test("5.0.96 upgraded launcher reaches ready on the first start after transient 
   }
 });
 
+test("first-start stale owner waits for matching health from this launcher's daemon PID", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-delayed-daemon-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "5.1.2", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  const config = launcherConfig(path.join(root, "launcher.json"), { releaseVersion: "5.1.2" });
+  const events = [];
+  let healthCalls = 0;
+  supervisor.readConfig = () => config;
+  supervisor.readState = () => ({
+    version: 1, ownerPid: process.pid, daemonPid: process.pid, tunnelPid: null,
+    status: "starting", updatedAt: new Date().toISOString(),
+  });
+  supervisor.clearState = () => { events.push("clear"); };
+  supervisor.writeState = () => {};
+  supervisor.proxyHealth = async () => false;
+  supervisor.proxyHealthPayload = async () => {
+    healthCalls++;
+    return healthCalls <= 2 ? null : {
+      service: "codex-chatgpt-web", mode: config.mode,
+      version: config.releaseVersion, pid: process.pid,
+    };
+  };
+  supervisor.acquireDrain = async () => true;
+  supervisor.control = async () => ({ status: "ok" });
+  supervisor.waitForProcessExit = async () => { events.push("daemon-stopped"); };
+  supervisor.waitForPortRelease = async () => {};
+  supervisor.startTunnel = async () => {};
+  supervisor.startDaemon = async () => { events.push("daemon-started"); supervisor.daemon = { pid: process.pid }; };
+  try {
+    const result = await supervisor.startIfConfigured();
+    assert.equal(result.status, "ready");
+    assert.equal(healthCalls, 3);
+    assert.deepEqual(events, ["daemon-stopped", "clear", "daemon-started"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("tunnel diagnostics discovery rejects a non-loopback endpoint", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-tunnel-health-nonlocal-"));
   const supervisor = new RuntimeSupervisor({
