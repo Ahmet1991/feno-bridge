@@ -21,6 +21,7 @@ const {
 } = require("electron");
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
+const { createPcLauncherService, registerPcIpc } = require("./pc-service.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
   syncBundledGuidance,
@@ -66,6 +67,13 @@ const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browse
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
+// In the packaged launcher both helper files live in versioned application resources;
+// the separately installed Bun runtime is intentionally excluded from helper lookup.
+if (app.isPackaged) {
+  process.env.FENO_PC_HELPER_ROOT = path.join(process.resourcesPath, "runtime", "runtime");
+} else {
+  delete process.env.FENO_PC_HELPER_ROOT;
+}
 const GITHUB_URL = "https://github.com/Ahmet1991/feno-bridge";
 const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
@@ -123,6 +131,7 @@ let catalogVerificationInFlight = false;
 let updateController = null;
 let startupReadiness = null;
 let launcherLogger = null;
+let pcService = null;
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -609,6 +618,13 @@ function smokePassedForCurrentVersion(state) {
 }
 
 function registerIpc({ logger, stateStore }) {
+  registerPcIpc({
+    register: (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler),
+    getMainWindow: () => mainWindow,
+    rendererNavigationAllowed,
+    getService: () => pcService,
+    dialog,
+  });
   const runtimeChannels = new Set([
     "launcher:setup-core", "launcher:setup-mcp", "launcher:uninstall-integration",
     "launcher:bigger-context", "launcher:skill-attachments", "launcher:zero-risk-pro", "launcher:codex-route",
@@ -1127,6 +1143,8 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Feno Bridge`);
     }
+    pcService?.assertCanExit();
+    pcService?.suspend();
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
@@ -1333,6 +1351,46 @@ async function start() {
     publish: (state) => send("launcher:update-state", state),
     logger,
   });
+  if (process.platform === "win32") {
+    try {
+      const root = runtimeRootProvider();
+      const bunPath = app.isPackaged && root
+        ? runtimeBundlePaths(root).executable
+        : process.env.CODEX_CHATGPT_WEB_BUN || process.env.CODEX_WEB_GPT_BUN;
+      if (!bunPath || !path.isAbsolute(bunPath)) throw new Error("pc_trusted_runtime_required");
+      pcService = createPcLauncherService({
+        profile: { ...LAUNCHER_PROFILE, userData: launcherUserData }, bunPath,
+        confirmLocally: async selection => {
+          if (!mainWindow || mainWindow.isDestroyed()) return false;
+          const response = await dialog.showMessageBox(mainWindow, {
+            type: "warning", title: "Feno Bridge — Yerel PC onayı",
+            message: selection.durationMs === null ? "Bu profil için açıkça iptal edilene kadar PC erişimine izin verilsin mi?" : "Bu profil için bir saatlik PC erişimine izin verilsin mi?",
+            detail: `Profil: ${LAUNCHER_PROFILE.kind}\nProje: ${selection.roots.join(", ")}\nİzinler: ${selection.permissions.join(", ")}\n\nTerminal ve proje betikleri Windows hesabınızın yetkileriyle çalışır. Proje klasörü bir sandbox değildir; kişisel dosyalara ve ağa erişebilir, proje dışında değişiklik yapabilir. Mevcut DEV izni bu onaydan bağımsızdır.`,
+            buttons: ["İzin ver", "Vazgeç"], defaultId: 1, cancelId: 1, noLink: true,
+          });
+          return response.response === 0;
+        },
+        confirmRetirementLocally: async retired => {
+          if (!mainWindow || mainWindow.isDestroyed()) return false;
+          const response = await dialog.showMessageBox(mainWindow, {
+            type: "warning", title: "Feno Bridge — DEV kaynak koordinasyonu",
+            message: retired ? "DEV emekliye ayrılsın mı?" : "DEV emeklilik işareti kaldırılsın mı?",
+            detail: retired
+              ? "Yalnızca bu bilgisayardaki eski ve çalışmayan DEV kurulumu için geçerlidir. DEV yeniden başlatılırsa terminal ve işler güvenlik için durdurulur."
+              : "Bu işlem normal profilin tek başına iş ve terminal çalıştırmasını yeniden kısıtlayabilir.",
+            buttons: [retired ? "Emekliye ayır" : "Geri al", "Vazgeç"], defaultId: 1, cancelId: 1, noLink: true,
+          });
+          return response.response === 0;
+        },
+        audit: ({ action }) => logger.info("pc_control.local_consent", { action }),
+      });
+      pcService.start();
+    } catch {
+      try { pcService?.suspend(); } catch {}
+      pcService = null;
+      logger.warn("pc_control.unavailable", { code: "pc_security_initialization_failed" });
+    }
+  }
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
@@ -1580,6 +1638,7 @@ async function start() {
 
 void start().catch(async (error) => {
   startupFailed = true;
+  try { pcService?.suspend(); } catch {}
   const message = error instanceof Error ? error.message : String(error);
   try {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);

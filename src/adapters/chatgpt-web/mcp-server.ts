@@ -9,6 +9,8 @@ import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control"
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
 import { observeMcpToolCalls } from "./mcp-observation";
 import { searchCodexToolInventory } from "./tool-inventory-search";
+import { createDefaultPcRuntime } from "../../pc-control/runtime";
+import { registerPcTools } from "../../pc-control/mcp-tools";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -456,6 +458,14 @@ export async function runChatGptMcpServer(options: {
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
     contract === "safe" ? { instructions: ZERO_RISK_MCP_INSTRUCTIONS } : undefined,
   );
+
+  // Additive PC namespace. Identity and approval are local; the six Codex schemas stay unchanged.
+  if (contract === "native") {
+    const pc = createDefaultPcRuntime();
+    registerPcTools(server, { authorizer: pc.authorizer, host: pc.host, beforeRequest: pc.refresh });
+    const previousClose = server.server.onclose;
+    server.server.onclose = () => { previousClose?.(); void pc.close().catch(() => {}); };
+  }
 
   const claimTurn = async (
     toolName: string,

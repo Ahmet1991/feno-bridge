@@ -12,6 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
+import { PcSettings } from "./PcSettings";
 import type {
   BrowserInteractionMode,
   BrowserState,
@@ -1704,6 +1705,7 @@ function SettingsSurface({
 
   return (
     <ContentSurface narrow title={devProfile ? copy.devSettingsTitle : copy.settingsTitle}>
+      <PcSettings api={api} platform={snapshot.platform} />
       <SectionHeading label={copy.general} />
       <div className="settings-list">
         {!devProfile ? <SettingRow body={copy.launchAtLoginBody} flushAfter label={copy.launchAtLogin}>

@@ -2916,7 +2916,9 @@ describe("ChatGPT outer-native harness v4", () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      expect(listed.tools.map(tool => tool.name).sort()).toEqual([
+      const codexTools = listed.tools.filter(tool => tool.name.startsWith("codex_"));
+      const pcTools = listed.tools.filter(tool => tool.name.startsWith("pc_"));
+      expect(codexTools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
         "codex_tool_call",
@@ -2924,7 +2926,16 @@ describe("ChatGPT outer-native harness v4", () => {
         "codex_view_image",
         "codex_write_stdin",
       ]);
-      const publicConnectorAbi = listed.tools.map(tool => ({
+      expect(pcTools.map(tool => tool.name).sort()).toEqual([
+        "pc_adb_devices", "pc_adb_input", "pc_adb_screencap", "pc_cancel_job",
+        "pc_capture_full_screen", "pc_capture_screen", "pc_create_directory", "pc_create_file",
+        "pc_desktop_input", "pc_job_logs", "pc_job_status", "pc_launch_app",
+        "pc_list_files", "pc_list_project_tasks", "pc_list_windows", "pc_read_file",
+        "pc_runner_status", "pc_start_job", "pc_start_project_task", "pc_start_terminal",
+        "pc_status", "pc_write_patch",
+      ]);
+      expect(listed.tools).toHaveLength(codexTools.length + pcTools.length);
+      const publicConnectorAbi = codexTools.map(tool => ({
         name: tool.name,
         title: tool.title ?? null,
         description: tool.description ?? null,
@@ -2932,11 +2943,11 @@ describe("ChatGPT outer-native harness v4", () => {
         outputSchema: tool.outputSchema ?? null,
         annotations: tool.annotations ?? null,
       }));
-      // ChatGPT caches the complete tools/list contract under a connector identity.
-      // An intentional hash change therefore requires an explicit connector refresh or identity migration.
+      // Preserve the original six-tool ABI hash exactly. The additive PC namespace changes
+      // the full connector tool list and requires an explicit connector refresh at release.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
         .toBe("9bb14902149337b52ce8598889497b1aba5a3265f28291df950bb38b5700a421");
-      for (const tool of listed.tools) {
+      for (const tool of codexTools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
         expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
         expect(properties).not.toHaveProperty("binding_id");
