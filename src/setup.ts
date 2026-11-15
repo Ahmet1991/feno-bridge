@@ -250,7 +250,7 @@ async function waitForProxy(config: AppConfig, timeoutMs = 10_000): Promise<void
   throw new Error(`Responses proxy did not become ready: ${lastError}`);
 }
 
-function baseConfig(
+export function baseConfig(
   existing: AppConfig | undefined,
   options: SetupOptions,
   profile: "production" | "development" = "production",

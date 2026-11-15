@@ -138,15 +138,16 @@ export function createPcWindowsController(options: {
   async function windows(permission: "screen.read" | "desktop.input"): Promise<PcWindow[]> {
     await assertInteractive(permission);
     const id=guard(permission).id;
-    const allowed = authorizer.assert(permission).allowedApps.map(app => app.toLowerCase());
-    if (!allowed.length) return [];
+    const scope=authorizer.assert(permission);
+    const allowed = scope.allowedApps.map(app => app.toLowerCase());
+    if (!scope.fullAccess&&!allowed.length) return [];
     const raw = await helper("list", {}, options.signal);
     guard(permission,id);
     if (!Array.isArray(raw) || raw.length > 300) throw new PcAccessDeniedError();
     return raw.filter((window): window is PcWindow => window && typeof window === "object"
       && typeof window.id === "string" && /^[1-9][0-9]{0,15}$/.test(window.id)
       && typeof window.title === "string" && window.title.length <= 512
-      && typeof window.processName === "string" && allowed.includes(window.processName.toLowerCase()));
+      && typeof window.processName === "string" && (scope.fullAccess||allowed.includes(window.processName.toLowerCase())));
   }
 
   async function assertWindow(windowId: string, permission: "screen.read" | "desktop.input"): Promise<PcWindow> {

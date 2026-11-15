@@ -7,13 +7,20 @@ function createPcConsentController({profileId,clock=Date.now,confirmLocally,audi
   assertPcProfileId(profileId);if(typeof confirmLocally!=='function'||(store&&store.profileId!==profileId))throw deny();
   let active,pending=false,generation=0,permanentApprovalSaved=false,persistentRevocationPending=false;
   const safeAudit=action=>{try{audit({action,at:clock(),profileId});}catch{}};
-  const makeGrant=s=>({profileId,id:randomUUID(),expiresAt:s.durationMs===null?null:clock()+s.durationMs,roots:[...s.roots],permissions:[...s.permissions],allowedApps:[...s.allowedApps]});
+  const makeGrant=s=>({profileId,id:randomUUID(),expiresAt:s.durationMs===null?null:clock()+s.durationMs,...(s.fullAccess===true?{fullAccess:true}:{}),roots:[...s.roots],permissions:[...s.permissions],allowedApps:[...s.allowedApps]});
   const copy=g=>({...g,roots:[...g.roots],permissions:[...g.permissions],allowedApps:[...g.allowedApps]});
   const protection=()=>store&&store.isProtectionAvailable()===true;
   const clearPersisted=()=>{try{store?.clear();persistentRevocationPending=false;permanentApprovalSaved=false;}catch(error){persistentRevocationPending=true;throw error;}};
   return {
+    activateFullAccess(selection){
+      validatePcSelection(selection);
+      if(profileId!=='pc2-normal'||selection.fullAccess!==true||pending||persistentRevocationPending||!Number.isFinite(clock())||!protection())throw deny();
+      generation++;active=undefined;
+      store.save(selection);permanentApprovalSaved=true;
+      active=makeGrant(selection);safeAudit('full_access_enabled');return copy(active);
+    },
     async approve(selection){
-      validatePcSelection(selection);selection=copyPcSelection(selection);
+      validatePcSelection(selection);if(selection.fullAccess)throw deny();selection=copyPcSelection(selection);
       if(pending||persistentRevocationPending)throw deny();pending=true;const started=generation;
       try{
         if(selection.durationMs===null&&!protection())throw deny();

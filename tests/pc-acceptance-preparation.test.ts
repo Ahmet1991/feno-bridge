@@ -19,7 +19,8 @@ win('acceptance fixture builds only in empty isolated root and removes its own j
     expect(log).toBeGreaterThan(5_000_000);
     expect(log).toBeLessThan(5_500_000);
     expect(lstatSync(join(root,'kacis')).isSymbolicLink()).toBe(true);
-    expect(readdirSync(root).sort()).toEqual(['.env','buyuk.log','crlf.txt','kacis','notlar.md','sayfalar'].sort());
+    expect(readdirSync(root).sort()).toEqual(['.env','buyuk.log','crlf.txt','kacis','notlar.md','sayfalar','pc2-acceptance-expectations.json'].sort());
+    expect(JSON.parse(readFileSync(join(root,'pc2-acceptance-expectations.json'),'utf8')).outsideSelectedProject).toBe('deny');
     expect(()=>prepare(root)).toThrow('Kabul kökü boş değil');
     writeFileSync(join(root,'notlar.md'),'özel kayıt','utf8');
     expect(()=>prepare(root)).toThrow('Kabul kökü boş değil');

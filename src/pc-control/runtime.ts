@@ -8,6 +8,7 @@ import {acquirePcHostLease} from './resource-locks';
 import {assertCompatiblePcResourcePeers} from './resource-protocol';
 import {createPcPeerRegistry} from './resource-peers';
 import type {PcProfileId} from './types';
+type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string};
 export function createDefaultPcRuntime(){
   const coreHome=getConfigDir();let profileId:PcProfileId='pc2-normal',configured=false;
   try{profileId=loadConfig().purpose==='dev-harness'?'pc2-dev':'pc2-normal';configured=true;}catch{/* An unconfigured MCP remains usable for existing Codex tools only. */}
@@ -27,6 +28,13 @@ export function createDefaultPcRuntime(){
   }
   const registry=files?createPcPeerRegistry({directory:layout.sharedDirectory,files,legacyHomes:layout.legacyHomes,devInstallPaths:layout.devInstallPaths,retirementStore}):undefined;
   const coordinationReady=()=>{try{assertCompatiblePcResourcePeers(registry?.observe());return true;}catch{return false;}};
+  function writeAudit(name:string,record:object){
+    if(!files)throw new PcAccessDeniedError();
+    const target=join(layout.directory,name);let previous=Buffer.alloc(0);
+    if(existsSync(target))previous=files.readPrivateFile(target,1024*1024);
+    const next=Buffer.from(JSON.stringify({...record,profileId})+'\n');
+    files.writePrivateAtomic(target,Buffer.concat([previous.length+next.length>1024*1024?Buffer.alloc(0):previous,next]));
+  }
   const host=createLocalPcHost(authorizer,{
     coordinationReady,
     runnerDirectory:layout.directory,
@@ -34,18 +42,12 @@ export function createDefaultPcRuntime(){
       if(!files||!userSid||!registry)throw new PcAccessDeniedError();
       return acquirePcHostLease({directory:layout.sharedDirectory,userSid,profileId,authorizer,operation,operationId,observePeers:()=>registry.observe()});
     },
-    auditCommand:record=>{
-      if(!files)throw new PcAccessDeniedError();
-      const target=join(layout.directory,'pc-terminal-audit.jsonl');let previous=Buffer.alloc(0);
-      if(existsSync(target))previous=files.readPrivateFile(target,1024*1024);
-      const next=Buffer.from(JSON.stringify({...record,profileId})+'\n');
-      // The host resource lease serializes writers. Keep a bounded private audit journal.
-      files.writePrivateAtomic(target,Buffer.concat([previous.length+next.length>1024*1024?Buffer.alloc(0):previous,next]));
-    },
+    auditCommand:record=>writeAudit('pc-terminal-audit.jsonl',record),
   });
   const sync=files&&configured?createPcPolicySync({directory:layout.directory,files,authorizer,onRevoked:()=>host.revokeActiveJobs()}):undefined;
   let closed=false;
   function refresh(){if(closed)return;if(sync)sync.refresh();else authorizer.revoke();}
   refresh();const timer=setInterval(refresh,100);timer.unref();
-  return {authorizer,host,refresh,async close(){if(closed)return;closed=true;clearInterval(timer);authorizer.revoke();await host.revokeActiveJobs();}};
+  return {authorizer,host,refresh,auditTool:(record:ToolAudit)=>writeAudit('pc-tool-audit.jsonl',record),
+    async close(){if(closed)return;closed=true;clearInterval(timer);authorizer.revoke();await host.revokeActiveJobs();}};
 }

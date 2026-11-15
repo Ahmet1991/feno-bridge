@@ -27,16 +27,22 @@ const PC_ALLOWED_APPLICATIONS=Object.freeze([
   {id:'CalculatorApp.exe',title:'Hesap Makinesi',launchable:false},
 ]);
 const PC_PERMISSIONS=Object.freeze(['status',...Object.keys(PC_PERMISSION_DETAILS)]);
+const PC_FULL_PERMISSIONS=Object.freeze(PC_PERMISSIONS.filter(permission=>permission!=='status'));
 function validatePcSelection(s) {
+  const full=s?.fullAccess===true;
   const validRoot=r=>typeof r==='string'&&r.length>1&&r.length<=1024&&!r.includes('\0')&&!r.startsWith('\\\\')
-    &&(/^[a-z]:[\\/]/i.test(r)?!r.slice(2).includes(':')&&path.win32.normalize(r).toLowerCase()!==path.win32.parse(r).root.toLowerCase():process.platform!=='win32'&&path.posix.isAbsolute(r)&&path.posix.normalize(r)!=='/');
+    &&(/^[a-z]:[\\/]/i.test(r)?!r.slice(2).includes(':')&&(full||path.win32.normalize(r).toLowerCase()!==path.win32.parse(r).root.toLowerCase()):process.platform!=='win32'&&path.posix.isAbsolute(r)&&path.posix.normalize(r)!=='/');
   if(!s||typeof s!=='object'||(s.durationMs!==null&&(!Number.isSafeInteger(s.durationMs)||s.durationMs<=0||s.durationMs>7200000))
-    ||!Array.isArray(s.roots)||s.roots.length>16||!s.roots.every(validRoot)
+    ||!Array.isArray(s.roots)||s.roots.length>(full?26:16)||!s.roots.every(validRoot)
     ||!Array.isArray(s.permissions)||s.permissions.length<1||s.permissions.length>PC_PERMISSIONS.length
     ||new Set(s.permissions).size!==s.permissions.length||!s.permissions.every(p=>PC_PERMISSIONS.includes(p))
-    ||!Array.isArray(s.allowedApps)||s.allowedApps.length>32||!s.allowedApps.every(p=>typeof p==='string'&&/^[a-zA-Z0-9_. -]{1,100}$/.test(p)))throw deny();
+    ||!Array.isArray(s.allowedApps)||s.allowedApps.length>32||!s.allowedApps.every(p=>typeof p==='string'&&/^[a-zA-Z0-9_. -]{1,100}$/.test(p))
+    ||(s.fullAccess!==undefined&&typeof s.fullAccess!=='boolean')
+    ||(full&&(s.durationMs!==null||s.roots.length<1||!s.roots.every(r=>/^[a-z]:\\$/i.test(r))
+      ||s.allowedApps.length!==0||s.permissions.length!==PC_FULL_PERMISSIONS.length
+      ||!PC_FULL_PERMISSIONS.every(permission=>s.permissions.includes(permission)))))throw deny();
 }
-const copyPcSelection=s=>({durationMs:s.durationMs,roots:[...s.roots],permissions:[...s.permissions],allowedApps:[...s.allowedApps]});
+const copyPcSelection=s=>({durationMs:s.durationMs,...(s.fullAccess===true?{fullAccess:true}:{}),roots:[...s.roots],permissions:[...s.permissions],allowedApps:[...s.allowedApps]});
 function pcPolicyForProfile(profile) {
   if(!profile || !['production','development'].includes(profile.kind)
     || !path.isAbsolute(profile.coreHome || '') || !path.isAbsolute(profile.userData || '')) throw deny();
@@ -47,4 +53,4 @@ function pcPolicyForProfile(profile) {
     legacyPersistentStorePath:profileId==='pc2-dev'?path.join(profile.userData,'pc-permanent-consent.enc'):undefined,
     runtimeDirectory:path.join(profile.coreHome,'runtime',profileId),permissionDetails:PC_PERMISSION_DETAILS});
 }
-module.exports={assertPcProfileId,pcPolicyForProfile,PC_PERMISSION_DETAILS,PC_PERMISSIONS,PC_ALLOWED_APPLICATIONS,validatePcSelection,copyPcSelection};
+module.exports={assertPcProfileId,pcPolicyForProfile,PC_PERMISSION_DETAILS,PC_PERMISSIONS,PC_FULL_PERMISSIONS,PC_ALLOWED_APPLICATIONS,validatePcSelection,copyPcSelection};

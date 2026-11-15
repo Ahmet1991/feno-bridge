@@ -7,6 +7,8 @@ export interface PcGrant {
   profileId: PcProfileId;
   id: string;
   expiresAt: number | null;
+  /** Signed launcher-only scope; never accepted for the DEV profile. */
+  fullAccess?: boolean;
   roots: string[];
   permissions: PcPermission[];
   allowedApps: string[];

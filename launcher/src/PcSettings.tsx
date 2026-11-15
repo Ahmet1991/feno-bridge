@@ -46,7 +46,13 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     {platform!=='win32'||!status?.available?<p>PC güvenlik altyapısı hazır değil. Erişim kapalı tutuluyor.</p>:null}
     {status?.persistentRevocationPending?<p role="alert">Kalıcı iptal diske yazılamadı. Erişim kapalı. Depolama erişimini onarın.</p>:null}
     {status?.lastAutoStop?<p role="alert">Son otomatik durdurma: {new Date(status.lastAutoStop.at).toLocaleString('tr-TR')} · {status.lastAutoStop.reason} ({status.lastAutoStop.code})</p>:null}
+    {status?.fullAccess?<div aria-label="Tam yetki modu">
+      <p role="status"><strong>Tam yetki AÇIK</strong> · tüm yerel sabit sürücüler ve uygulamalar · süresiz</p>
+      <button type="button" disabled={busy||!status.available}
+        onClick={()=>void action(async()=>{setStatus(await api!.pcDisableFullAccess());})}>Tam yetkiyi kapat</button>
+    </div>:null}
     {status?.enabled?<p>İzinli proje: {status.roots.join(', ')} · {status.expiresAt===null?'Açıkça iptal edilene kadar':status.expiresAt?new Date(status.expiresAt).toLocaleString():''}</p>:null}
+    {!status?.fullAccess?<>
     <button type="button" disabled={busy||!status?.available} onClick={()=>void action(async()=>{const picked=await api!.pcPickRoot();if(picked)setRoot(picked);})}>Proje seç</button>
     <p>{root||'Henüz proje seçilmedi'}</p>
     <fieldset disabled={busy||!status?.available}>
@@ -71,6 +77,7 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     <button type="button" disabled={busy||!status?.available||!root||!selected.length||invalid||status?.persistentRevocationPending}
       onClick={()=>void action(async()=>{setStatus(await api!.pcApprove({durationMs:perpetual?null:3600000,roots:[root],permissions:selected,allowedApps:selectedApps}));})}>Seçili izinleri yerel olarak onayla</button>
     <button type="button" disabled={busy||!status?.available} onClick={()=>void action(async()=>{setStatus(await api!.pcRevoke());})}>İzni iptal et ve unut</button>
+    </>:null}
     {error?<p role="alert">{error}</p>:null}
   </section>;
 }

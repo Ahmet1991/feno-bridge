@@ -88,12 +88,12 @@ export class ProjectFileSession {
   private parent:Handle|undefined;
   private mutex:Handle|undefined;
   private closed=false;
-  constructor(requested:string,roots:string[],kind:'file'|'directory'|'parent',patch=false){
+  constructor(requested:string,roots:string[],kind:'file'|'directory'|'parent',patch=false,fullAccess=false){
     this.path=valid(requested);
     try{
       if(!Array.isArray(roots)||roots.length===0)throw deny();
       const approvedIds=new Set<string>();
-      for(const root of roots){if(!isValidPcRoot(root))throw deny();const h=this.chain(valid(root));this.roots.push(finalPath(h));approvedIds.add(info(h,true));}
+      for(const root of roots){if(!isValidPcRoot(root,fullAccess))throw deny();const h=this.chain(valid(root));this.roots.push(finalPath(h));approvedIds.add(info(h,true));}
       let approvedAncestor=false;
       const parent=path.win32.dirname(this.path),parentHandle=this.chain(kind==='directory'?this.path:parent,h=>{if(approvedIds.has(info(h,true)))approvedAncestor=true;});
       this.parent=parentHandle;

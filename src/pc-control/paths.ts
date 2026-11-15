@@ -9,11 +9,11 @@ function within(candidate:string,root:string){
   return relative===''||(relative!=='..'&&!relative.startsWith('..'+p.sep)&&!p.isAbsolute(relative));
 }
 /** A path boundary primitive, not a file read/write or MCP tool. */
-export function resolveAllowedPath(requested:string,roots:string[],options:{forCreate?:boolean}={}):string {
+export function resolveAllowedPath(requested:string,roots:string[],options:{forCreate?:boolean;fullAccess?:boolean}={}):string {
   if(typeof requested!=='string'||requested.length>4096||requested.includes('\0')||!p.isAbsolute(requested)
     ||(process.platform==='win32'&&(!/^[a-z]:[\\/]/i.test(requested)||requested.slice(2).includes(':')))
     ||!Array.isArray(roots)||!roots.length)throw new PcAccessDeniedError();
-  const accepted=roots.map(root=>{if(!isValidPcRoot(root)||!p.isAbsolute(root))throw new PcAccessDeniedError();const actual=canonical(root);if(!statSync(actual).isDirectory())throw new PcAccessDeniedError();return actual;});
+  const accepted=roots.map(root=>{if(!isValidPcRoot(root,options.fullAccess===true)||!p.isAbsolute(root))throw new PcAccessDeniedError();const actual=canonical(root);if(!statSync(actual).isDirectory())throw new PcAccessDeniedError();return actual;});
   const normalized=p.normalize(requested);
   let actual:string;
   if(options.forCreate){

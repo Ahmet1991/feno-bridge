@@ -10,3 +10,5 @@ for(const mode of ['not-installed','retired','running','unverified'] as const){
 }
 process.stdout.write('\n'+renderToStaticMarkup(<PcSettings api={undefined} platform="win32"
   initialStatus={{...base,lastAutoStop:{at:Date.UTC(2026,10,16),reason:'channel_unavailable',code:'ETIMEDOUT'}}}/>));
+process.stdout.write('\n'+renderToStaticMarkup(<PcSettings api={undefined} platform="win32"
+  initialStatus={{...base,enabled:true,fullAccess:true,expiresAt:null,roots:['C:\\','D:\\']}}/>));

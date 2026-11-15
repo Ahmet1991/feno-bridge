@@ -31,7 +31,7 @@ function createPcPersistentConsent({filePath,profileId,encryption,files,allowLeg
         if(value.schema===2&&value.revoked===true)return null;
         if(value.schema===1&&(!allowLegacyDevSelection||profileId!=='pc2-dev'))return null;
         if(value.schema!==2&&value.schema!==1)throw deny();
-        validatePcSelection(value.selection);if(value.selection.durationMs!==null)throw deny();
+        validatePcSelection(value.selection);if(value.selection.durationMs!==null||(value.selection.fullAccess&&profileId!=='pc2-normal'))throw deny();
         const selection=copyPcSelection(value.selection);Object.freeze(selection.roots);Object.freeze(selection.permissions);Object.freeze(selection.allowedApps);Object.freeze(selection);
         receipts.add(selection);return selection;
       }catch{try{files.quarantinePrivateFile(filePath);}catch{}return null;}

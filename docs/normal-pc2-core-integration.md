@@ -183,6 +183,12 @@ as success. There is no general file-delete tool in this task.
 
 ## Evidence and release gates
 
+5.1.3 also supports an explicit normal-profile-only `pcFullAccess` mode. The
+post-install opt-in, persistent receipt recovery, interface off-switch, per-tool
+audit and dual-mode acceptance expectations are documented in
+[`pc2-full-access.md`](pc2-full-access.md). DEV coordination remains a separate
+lease requirement.
+
 Tests use fresh temp profiles, native Windows child/grandchild fixtures and real
 MCP stdio sessions. The full delivery report records exact counts and initial
 failures. UI coverage includes real service/IPC behavior and initial React

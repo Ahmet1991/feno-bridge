@@ -18,6 +18,8 @@ test('PC settings renders all closed permission toggles, application catalog and
   assert.match(result.stdout,/DEV çalışıyor/);
   assert.match(result.stdout,/Son otomatik durdurma/);
   assert.match(result.stdout,/pc-settings-checkbox/);
+  assert.match(result.stdout,/Tam yetki AÇIK/);
+  assert.match(result.stdout,/Tam yetkiyi kapat/);
   const css=fs.readFileSync(path.join(__dirname,'../src/styles.css'),'utf8');
   assert.match(css,/\.pc-settings-checkbox:checked/);
   assert.match(css,/\.pc-settings-checkbox:focus-visible/);

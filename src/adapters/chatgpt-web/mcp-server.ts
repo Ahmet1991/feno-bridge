@@ -462,7 +462,7 @@ export async function runChatGptMcpServer(options: {
   // Additive PC namespace. Identity and approval are local; the six Codex schemas stay unchanged.
   if (contract === "native") {
     const pc = createDefaultPcRuntime();
-    registerPcTools(server, { authorizer: pc.authorizer, host: pc.host, beforeRequest: pc.refresh });
+    registerPcTools(server, { authorizer: pc.authorizer, host: pc.host, beforeRequest: pc.refresh, auditTool: pc.auditTool });
     const previousClose = server.server.onclose;
     server.server.onclose = () => { previousClose?.(); void pc.close().catch(() => {}); };
   }

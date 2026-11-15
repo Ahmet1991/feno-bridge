@@ -21,8 +21,9 @@ function createPcConsentChannel({directory,profileId,files,clock=Date.now}){
     start(){files.ensurePrivateDirectory(directory);key=randomBytes(32);grant=null;lastAt=undefined;lastId=undefined;files.writePrivateAtomic(path.join(directory,KEY_FILE),key.toString('hex'));publish();},
     activate(input){
       const now=clock();if(!key||!input||input.profileId!==profileId||typeof input.id!=='string'||!/^[a-zA-Z0-9_-]{8,128}$/.test(input.id))throw Error('pc_access_denied');
-      validatePcSelection({durationMs:input.expiresAt===null?null:input.expiresAt-now,roots:input.roots,permissions:input.permissions,allowedApps:input.allowedApps});
-      grant={profileId,id:input.id,expiresAt:input.expiresAt,roots:[...input.roots],permissions:[...input.permissions],allowedApps:[...input.allowedApps]};publish();
+      validatePcSelection({durationMs:input.expiresAt===null?null:input.expiresAt-now,...(input.fullAccess===true?{fullAccess:true}:{}),roots:input.roots,permissions:input.permissions,allowedApps:input.allowedApps});
+      if(input.fullAccess===true&&profileId!=='pc2-normal')throw Error('pc_access_denied');
+      grant={profileId,id:input.id,expiresAt:input.expiresAt,...(input.fullAccess===true?{fullAccess:true}:{}),roots:[...input.roots],permissions:[...input.permissions],allowedApps:[...input.allowedApps]};publish();
     },
     heartbeat:publish,
     revoke(){grant=null;publish();},

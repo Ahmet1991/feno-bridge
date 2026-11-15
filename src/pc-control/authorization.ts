@@ -5,23 +5,30 @@ export class PcAccessDeniedError extends Error {
   readonly code='pc_access_denied';
   constructor(){super('pc_access_denied');this.name='PcAccessDeniedError';}
 }
-export function isValidPcRoot(root:unknown):root is string {
+export function isValidPcRoot(root:unknown,allowDriveRoot=false):root is string {
   if(typeof root!=='string'||root.length<2||root.length>1024||root.includes('\0')||root.startsWith('\\\\'))return false;
   if(/^[a-z]:[\\/]/i.test(root))return !root.slice(2).includes(':')
-    && path.win32.normalize(root).toLowerCase()!==path.win32.parse(root).root.toLowerCase()
+    && (allowDriveRoot||path.win32.normalize(root).toLowerCase()!==path.win32.parse(root).root.toLowerCase())
     && !root.split(/[\\/]/).some(part=>/[ .]$/.test(part));
   return process.platform!=='win32'&&root.startsWith('/')&&!root.startsWith('//')&&path.posix.normalize(root)!=='/';
 }
 export function validatePcGrant(grant:PcGrant,now:number,profileId:PcProfileId):void {
+  const full=grant?.fullAccess===true;
+  if(grant?.fullAccess!==undefined&&typeof grant.fullAccess!=='boolean')throw new PcAccessDeniedError();
+  if(full&&(profileId!=='pc2-normal'||grant.profileId!=='pc2-normal'||grant.expiresAt!==null
+    ||!Array.isArray(grant.allowedApps)||grant.allowedApps.length!==0
+    ||!Array.isArray(grant.permissions)||grant.permissions.length!==PC_PERMISSIONS.length-1
+    ||!PC_PERMISSIONS.slice(1).every(p=>grant.permissions.includes(p))
+    ||!Array.isArray(grant.roots)||!grant.roots.length||!grant.roots.every(root=>/^[a-z]:\\$/i.test(root))))throw new PcAccessDeniedError();
   if(!grant||typeof grant!=='object'||grant.profileId!==profileId||!PC_PROFILE_IDS.includes(profileId)
     ||typeof grant.id!=='string'||!/^[a-zA-Z0-9_-]{8,128}$/.test(grant.id)||!Number.isFinite(now)
     ||(grant.expiresAt!==null&&(!Number.isSafeInteger(grant.expiresAt)||grant.expiresAt<=now||grant.expiresAt>now+MAX_PC_GRANT_MS))
     ||!Array.isArray(grant.permissions)||grant.permissions.length<1||grant.permissions.length>PC_PERMISSIONS.length
     ||new Set(grant.permissions).size!==grant.permissions.length||!grant.permissions.every(p=>PC_PERMISSIONS.includes(p))
-    ||!Array.isArray(grant.roots)||grant.roots.length>16||!grant.roots.every(isValidPcRoot)
+    ||!Array.isArray(grant.roots)||grant.roots.length>(full?26:16)||!grant.roots.every(root=>isValidPcRoot(root,full))
     ||!Array.isArray(grant.allowedApps)||grant.allowedApps.length>32||!grant.allowedApps.every(app=>typeof app==='string'&&/^[a-zA-Z0-9_. -]{1,100}$/.test(app)))throw new PcAccessDeniedError();
 }
-function copy(grant:PcGrant):PcGrant{return {profileId:grant.profileId,id:grant.id,expiresAt:grant.expiresAt,roots:[...grant.roots],permissions:[...grant.permissions],allowedApps:[...grant.allowedApps]};}
+function copy(grant:PcGrant):PcGrant{return {profileId:grant.profileId,id:grant.id,expiresAt:grant.expiresAt,...(grant.fullAccess===true?{fullAccess:true}:{}),roots:[...grant.roots],permissions:[...grant.permissions],allowedApps:[...grant.allowedApps]};}
 export class PcAuthorizer {
   readonly profileId:PcProfileId;
   private active:PcGrant|undefined;

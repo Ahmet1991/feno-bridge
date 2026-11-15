@@ -20,28 +20,28 @@ function encode(value:string):Buffer{
 }
 function sameGrant(authorizer:PcAuthorizer,permission:'files.read'|'files.write',id:string){if(authorizer.assert(permission).id!==id)throw new PcAccessDeniedError();}
 function operation<T>(run:()=>T):T{try{return run();}catch(e){if(e instanceof PcOperationError||e instanceof PcAccessDeniedError)throw e;throw new PcAccessDeniedError();}}
-function session(file:string,roots:string[],kind:'file'|'directory'|'parent',patch=false):ProjectFileSession{
-  safeName(file);try{const hold=new ProjectFileSession(file,roots,kind,patch);try{safeName(hold.path);return hold;}catch(e){hold.close();throw e;}}
+function session(file:string,roots:string[],kind:'file'|'directory'|'parent',patch=false,fullAccess=false):ProjectFileSession{
+  safeName(file);try{const hold=new ProjectFileSession(file,roots,kind,patch,fullAccess);try{safeName(hold.path);return hold;}catch(e){hold.close();throw e;}}
   catch(e){
     // Only disclose absent leaves after the existing parent has passed confinement.
     if(kind==='file'&&[2,3].includes((e as {nativeCode?:number}).nativeCode??0)){
-      const parent=new ProjectFileSession(file,roots,'parent');parent.close();throw new PcOperationError('pc_file_not_found');
+      const parent=new ProjectFileSession(file,roots,'parent',false,fullAccess);parent.close();throw new PcOperationError('pc_file_not_found');
     }throw e;
   }
 }
 export async function listPcFiles(root:string,relative:string,authorizer:PcAuthorizer):Promise<{name:string;kind:'file'|'directory'}[]>{
   const grant=authorizer.assert('files.read');
   if(typeof relative!=='string'||relative.length>2048||path.win32.isAbsolute(relative)||relative.split(/[\\/]/).includes('..'))throw new PcAccessDeniedError();
-  return operation(()=>{const hold=session(path.win32.join(root,relative),grant.roots,'directory');try{const entries=hold.list().filter(e=>!SENSITIVE_NAME.test(e.name)&&e.name.toLowerCase()!=='.git');sameGrant(authorizer,'files.read',grant.id);return entries;}finally{hold.close();}});
+  return operation(()=>{const hold=session(path.win32.join(root,relative),grant.roots,'directory',false,grant.fullAccess);try{const entries=hold.list().filter(e=>!SENSITIVE_NAME.test(e.name)&&e.name.toLowerCase()!=='.git');sameGrant(authorizer,'files.read',grant.id);return entries;}finally{hold.close();}});
 }
 export async function readPcFile(file:string,authorizer:PcAuthorizer):Promise<{path:string;content:string;sha256:string}>{
-  const grant=authorizer.assert('files.read');return operation(()=>{const hold=session(file,grant.roots,'file');try{const bytes=hold.read(),content=text(bytes);sameGrant(authorizer,'files.read',grant.id);return {path:hold.path,content,sha256:hash(bytes)};}finally{hold.close();}});
+  const grant=authorizer.assert('files.read');return operation(()=>{const hold=session(file,grant.roots,'file',false,grant.fullAccess);try{const bytes=hold.read(),content=text(bytes);sameGrant(authorizer,'files.read',grant.id);return {path:hold.path,content,sha256:hash(bytes)};}finally{hold.close();}});
 }
 export async function createPcFile(file:string,content:string,authorizer:PcAuthorizer):Promise<{path:string;sha256:string}>{
-  const grant=authorizer.assert('files.write');return operation(()=>{const bytes=encode(content),hold=session(file,grant.roots,'parent');try{const stage=hold.stage(bytes);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path,sha256:hash(bytes)};}finally{stage.close();}}finally{hold.close();}});
+  const grant=authorizer.assert('files.write');return operation(()=>{const bytes=encode(content),hold=session(file,grant.roots,'parent',false,grant.fullAccess);try{const stage=hold.stage(bytes);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path,sha256:hash(bytes)};}finally{stage.close();}}finally{hold.close();}});
 }
 export async function createPcDirectory(dir:string,authorizer:PcAuthorizer):Promise<{path:string}>{
-  const grant=authorizer.assert('files.write');return operation(()=>{const hold=session(dir,grant.roots,'parent');try{const stage=hold.stage(undefined);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path};}finally{stage.close();}}finally{hold.close();}});
+  const grant=authorizer.assert('files.write');return operation(()=>{const hold=session(dir,grant.roots,'parent',false,grant.fullAccess);try{const stage=hold.stage(undefined);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path};}finally{stage.close();}}finally{hold.close();}});
 }
 
 function patchText(original:string,patch:string):string{
@@ -71,7 +71,7 @@ function patchText(original:string,patch:string):string{
 export async function applyPcPatch(file:string,expectedSha256:string,patch:string,authorizer:PcAuthorizer):Promise<{path:string;newSha256:string}>{
   const grant=authorizer.assert('files.write');
   if(typeof expectedSha256!=='string'||!(/^[a-f\d]{64}$/i.test(expectedSha256))||typeof patch!=='string')throw new PcAccessDeniedError();
-  return operation(()=>{const hold=session(file,grant.roots,'file',true);try{
+  return operation(()=>{const hold=session(file,grant.roots,'file',true,grant.fullAccess);try{
     const original=hold.read(),previous=text(original);if(hash(original)!==expectedSha256.toLowerCase())throw new PcOperationError('pc_sha_mismatch');
     const bytes=encode(patchText(previous,patch)),stage=hold.stage(bytes);
     try{

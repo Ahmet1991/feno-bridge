@@ -1,6 +1,6 @@
 "use strict";
-const fs=require('node:fs'),path=require('node:path');
-const {pcPolicyForProfile,validatePcSelection,copyPcSelection,PC_ALLOWED_APPLICATIONS}=require('./pc-profile-policy.cjs');
+const fs=require('node:fs'),path=require('node:path'),{execFileSync}=require('node:child_process'),{randomUUID}=require('node:crypto');
+const {pcPolicyForProfile,validatePcSelection,copyPcSelection,PC_ALLOWED_APPLICATIONS,PC_FULL_PERMISSIONS}=require('./pc-profile-policy.cjs');
 const {getNativeSecurityContext,createPrivateFileAccess,createWindowsDpapiProtection}=require('./private-acl.cjs');
 const {createPcPersistentConsent}=require('./pc-persistent-consent.cjs');
 const {createPcConsentController}=require('./pc-consent.cjs');
@@ -10,12 +10,71 @@ const {createPcHeartbeatGuard}=require('./pc-heartbeat-guard.cjs');
 const {createPcDevRetirementStore}=require('./pc-dev-retirement.cjs');
 const {pcRuntimePaths}=require('./pc-runtime-paths.cjs');
 const deny=()=>new Error('pc_access_denied');
-function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now,confirmLocally,confirmRetirementLocally,audit=()=>{},testPeerEvidence}){
+function listWindowsFixedDrives(){
+  if(process.platform!=='win32')throw deny();
+  const output=execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+    '(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3").DeviceID'],{encoding:'utf8',timeout:8000,windowsHide:true});
+  return output.split(/\r?\n/).map(value=>value.trim()).filter(value=>/^[A-Z]:$/i.test(value)).map(value=>value.toUpperCase()+'\\');
+}
+function readFullFlag(configPath){
+  const raw=fs.readFileSync(configPath,'utf8');
+  if(Buffer.byteLength(raw)>256*1024)throw deny();
+  const json=JSON.parse(raw.replace(/^\uFEFF/,''));
+  if(!json||typeof json!=='object'||(json.pcFullAccess!==undefined&&typeof json.pcFullAccess!=='boolean'))throw deny();
+  return json.pcFullAccess===true;
+}
+function disableFullFlag(configPath){
+  const source=fs.readFileSync(configPath,'utf8'),bom=source.startsWith('\uFEFF')?'\uFEFF':'';
+  const config=JSON.parse(source.replace(/^\uFEFF/,''));
+  if(!config||config.pcFullAccess!==true)throw deny();
+  config.pcFullAccess=false;
+  const stage=path.join(path.dirname(configPath),'.pc-full-access-'+randomUUID()+'.tmp');
+  try{
+    fs.writeFileSync(stage,bom+JSON.stringify(config,null,2)+'\n',{encoding:'utf8',flag:'wx',mode:0o600});
+    fs.renameSync(stage,configPath);
+  }finally{try{fs.unlinkSync(stage);}catch{}}
+}
+function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now,confirmLocally,confirmRetirementLocally,audit=()=>{},testPeerEvidence,
+  fullAccessConfigPath=path.join(profile.coreHome,'config.json'),listFixedDriveRoots=listWindowsFixedDrives}){
   const policy=pcPolicyForProfile(profile),layout=pcRuntimePaths({coreHome:profile.coreHome,profileId:policy.profileId,sharedDirectory});
   let channel,controller,peers,retirementStore,scope,timer,guard,lastAutoStop,started=false,initialized=false,stopped=false,retirementPending=false;
+  let lastConfigErrorAt=-Infinity;
   const blank=()=>({roots:[],permissions:[],allowedApps:[]});
+  function enabledInConfig(){
+    if(policy.profileId!=='pc2-normal')return false;
+    try{return readFullFlag(fullAccessConfigPath);}catch(error){if(error?.code==='ENOENT')return false;throw error;}
+  }
+  function issueFullGrant(){
+    const roots=[...new Set(listFixedDriveRoots().map(root=>root.toUpperCase()))].sort();
+    if(!roots.length||!roots.every(root=>/^[A-Z]:\\$/.test(root)))throw deny();
+    const selection={durationMs:null,fullAccess:true,roots,permissions:[...PC_FULL_PERMISSIONS],allowedApps:[]};
+    validatePcSelection(selection);
+    const grant=controller.activateFullAccess(selection);
+    try{channel.activate(grant);scope=copyPcSelection(selection);}catch(error){controller.suspend();scope=undefined;throw error;}
+  }
+  function reconcileFullAccess(){
+    if(policy.profileId!=='pc2-normal')return;
+    let configured=false;
+    try{configured=enabledInConfig();}catch(error){
+      // A temporary sharing violation must not silently revoke an existing grant.
+      if(['EPERM','EBUSY','EAGAIN','ETIMEDOUT'].includes(error?.code)){
+        if(clock()-lastConfigErrorAt>=10000){lastConfigErrorAt=clock();audit({action:'full_access_config_retry',at:clock(),code:'pc_private_storage_transient'});}
+        return;
+      }
+      // Malformed configuration and other security errors never authorize access.
+    }
+    if(configured){
+      if(!controller.status().enabled||scope?.fullAccess!==true){
+        try{issueFullGrant();}catch(error){audit({action:'full_access_recovery_failed',at:clock(),code:'pc_access_denied'});}
+      }
+    }else if(scope?.fullAccess){
+      scope=undefined;try{controller.revoke();}finally{channel.revoke();}
+      audit({action:'full_access_disabled',at:clock()});
+    }
+  }
   function heartbeat(){
     if(!started)return;
+    reconcileFullAccess();
     guard.heartbeat();
   }
   const service={
@@ -47,12 +106,12 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
         audit(event);
       }});
       const saved=store.restore();
-      if(saved){
+      if(saved&&!saved.fullAccess&&!enabledInConfig()){
         const appsValid=saved.allowedApps.every(app=>PC_ALLOWED_APPLICATIONS.some(item=>item.id===app));
         const launchValid=!saved.permissions.includes('apps.launch')||saved.allowedApps.some(app=>PC_ALLOWED_APPLICATIONS.some(item=>item.id===app&&item.launchable));
         if(appsValid&&launchValid){const grant=controller.restoreTrustedPersistentSelection(saved);channel.activate(grant);scope=copyPcSelection(saved);}
       }
-      started=true;timer=setInterval(heartbeat,2000);timer.unref?.();
+      started=true;reconcileFullAccess();timer=setInterval(heartbeat,2000);timer.unref?.();
     },
     status(){
       const state=controller?.status()||{enabled:false};
@@ -61,6 +120,7 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       if(started&&guardState?.coordinationReady)try{dev=peers.observe().peers.find(p=>p.profileId==='pc2-dev');}catch{}
       const devMode=dev?.reason==='not-installed'?'not-installed':dev?.reason==='retired'?'retired':dev?.reason==='running'?'running':dev?.verified&&dev.protocol==='pc-host-control-v1'?'compatible':'unverified';
       return {...state,profileId:policy.profileId,permissionDetails:policy.permissionDetails,applicationCatalog:PC_ALLOWED_APPLICATIONS,
+        fullAccess:state.enabled===true&&scope?.fullAccess===true,
         coordinationReady:guardState?.coordinationReady===true,lastAutoStop,
         devMode,devRetired:retirementStore?.read()===true,
         ...(state.enabled&&scope?{roots:[...scope.roots],permissions:[...scope.permissions],allowedApps:[...scope.allowedApps]}:blank()),
@@ -79,7 +139,7 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       }finally{retirementPending=false;}
     },
     async approve(selection){
-      if(!started)throw deny();validatePcSelection(selection);selection=copyPcSelection(selection);
+      if(!started||scope?.fullAccess||enabledInConfig())throw deny();validatePcSelection(selection);selection=copyPcSelection(selection);
       if(selection.roots.length!==1||selection.allowedApps.some(app=>!PC_ALLOWED_APPLICATIONS.some(item=>item.id===app))
         ||(selection.allowedApps.length>0&&!selection.permissions.some(p=>['screen.read','desktop.input','apps.launch'].includes(p)))
         ||(selection.permissions.includes('desktop.advanced')&&!selection.permissions.includes('desktop.input'))
@@ -97,9 +157,16 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       catch{try{controller.revoke();}finally{scope=undefined;channel.revoke();}throw deny();}
     },
     revoke(){
-      if(!controller)throw deny();scope=undefined;
+      if(!controller||enabledInConfig())throw deny();scope=undefined;
       try{controller.revoke();}finally{channel.revoke();}
       return service.status();
+    },
+    disableFullAccess(){
+      if(!started||policy.profileId!=='pc2-normal'||!enabledInConfig())throw deny();
+      disableFullFlag(fullAccessConfigPath);
+      scope=undefined;
+      try{controller.revoke();}finally{channel.revoke();}
+      audit({action:'full_access_disabled',at:clock()});return service.status();
     },
     heartbeat,
     assertCanExit(){if(controller?.status().persistentRevocationPending)throw new Error('pc_persistent_revocation_pending');},
@@ -121,6 +188,7 @@ function registerPcIpc({register,getMainWindow,rendererNavigationAllowed,getServ
   register('launcher:pc-pick-root',async event=>{const win=trusted(event);if(process.platform!=='win32')throw deny();const r=await dialog.showOpenDialog(win,{title:'PC denetimi için proje seç',properties:['openDirectory']});return r.canceled?null:r.filePaths[0]||null;});
   register('launcher:pc-approve',async(event,selection)=>{trusted(event);const service=getService();if(!service)throw deny();return service.approve(selection);});
   register('launcher:pc-revoke',event=>{trusted(event);const service=getService();if(!service)throw deny();return service.revoke();});
+  register('launcher:pc-disable-full',event=>{trusted(event);const service=getService();if(!service)throw deny();return service.disableFullAccess();});
   register('launcher:pc-retire-dev',(event,retired)=>{trusted(event);const service=getService();if(!service)throw deny();return service.setDevRetired(retired);});
 }
 module.exports={createPcLauncherService,registerPcIpc};

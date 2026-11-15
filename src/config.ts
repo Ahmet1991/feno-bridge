@@ -110,6 +110,8 @@ export interface AppConfig {
   /** Optional adapter-silence budget for the Responses watchdog. */
   stallTimeoutSec?: number;
   autoApproveToolCalls: boolean;
+  /** Local PC2 normal launcher opt-in; off by default and never enabled by setup. */
+  pcFullAccess?: boolean;
   /**
    * Open Codex tasks in ChatGPT Temporary Chats instead of regular saved chats. Off by default
    * since 19.10, when ChatGPT stopped offering connectors in Temporary Chat.
@@ -242,6 +244,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     experimentalSkillAttachments: false,
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
+    pcFullAccess: false,
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
   };
@@ -428,6 +431,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (typeof parsed.headed !== "boolean") throw new Error(`Invalid headed in ${path}`);
   if (typeof parsed.autoApproveToolCalls !== "boolean") {
     throw new Error(`Invalid autoApproveToolCalls in ${path}`);
+  }
+  if (parsed.pcFullAccess !== undefined && typeof parsed.pcFullAccess !== 'boolean') {
+    throw new Error(`Invalid pcFullAccess in ${path}`);
   }
   if (parsed.temporaryChats !== undefined && typeof parsed.temporaryChats !== "boolean") {
     throw new Error(`Invalid temporaryChats in ${path}`);

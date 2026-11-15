@@ -1387,6 +1387,10 @@ async function start() {
           else if(action==='expired')logger.info('pc_control.grant_expired',{reason:'expired'});
           else if(action==='invalid_clock')logger.warn('pc_control.auto_suspended',{reason:'invalid_clock',code:'pc_access_denied',consecutiveFailures:0});
           else if(action==='heartbeat_transient_error')logger.warn('pc_control.heartbeat_transient_error',{reason,code,consecutiveFailures});
+          else if(action==='full_access_enabled')logger.info('pc_control.full_access_enabled',{});
+          else if(action==='full_access_disabled')logger.info('pc_control.full_access_disabled',{});
+          else if(action==='full_access_recovery_failed')logger.warn('pc_control.full_access_recovery_failed',{code});
+          else if(action==='full_access_config_retry')logger.warn('pc_control.full_access_config_retry',{code});
           else logger.info('pc_control.local_consent',{action});
         },
       });
