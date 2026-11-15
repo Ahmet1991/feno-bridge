@@ -77,6 +77,16 @@ test("core setup preserves an existing full-harness installation", async () => {
   ]);
 });
 
+test("upgrade rollback accepts needs-setup when the restored older runtime needs its former launcher", async () => {
+  const { host } = hostFor({ mode: "full", browserHost: "launcher", releaseVersion: "5.0.96" });
+  host.supervisor.startIfConfigured = async () => ({
+    status: "needs-setup", detail: "Config requires 5.0.96; launcher is 1.1.3",
+  });
+  const snapshot = host.runtimeConfigSnapshot();
+  assert.equal(snapshot.owner, "launcher");
+  await host.restorePreviousRuntime(snapshot, "runtime-upgrade");
+});
+
 test("core setup replaces the known legacy connector identity with the direct-turn identity", async () => {
   const fixture = hostFor({ mode: "full", appName: "Codex Native" });
   await fixture.host.setupCore();

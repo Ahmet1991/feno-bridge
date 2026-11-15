@@ -824,10 +824,21 @@ class RuntimeSupervisor {
   }
 
   async waitForTunnelMcpTransport(config, timeoutMs = 10_000) {
-    if (!this.tunnelHealthBaseUrl) await this.discoverTunnelHealthBaseUrl(config);
     const deadline = Date.now() + timeoutMs;
     let health;
+    let discoveryError;
     do {
+      if (!this.tunnelHealthBaseUrl) {
+        try {
+          await this.discoverTunnelHealthBaseUrl(config);
+          discoveryError = undefined;
+        } catch (error) {
+          discoveryError = errorMessage(error);
+          if (Date.now() >= deadline) break;
+          await sleep(Math.min(TUNNEL_HEALTH_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
+          continue;
+        }
+      }
       health = await this.probeTunnelMcpTransport();
       if (health.observed && health.ok) return health;
       if (health.fatal) {
@@ -838,7 +849,7 @@ class RuntimeSupervisor {
     } while (Date.now() < deadline);
     throw new Error(
       `Tunnel MCP transport could not be verified within ${timeoutMs}ms:`
-      + ` ${health?.detail || "no diagnostics returned"}`,
+      + ` ${health?.detail || discoveryError || "no diagnostics returned"}`,
     );
   }
 

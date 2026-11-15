@@ -280,6 +280,9 @@ export function installedBunExecutable({
     process.env.CODEX_CHATGPT_WEB_BUN,
     process.env.CODEX_WEB_GPT_BUN,
     ...candidates,
+    // The launcher invokes setup using its versioned Bun. Do not replace that durable
+    // executable with an unrelated Bun found earlier on the user's PATH.
+    ...(["bun", "bun.exe"].includes(basename(process.execPath).toLowerCase()) ? [process.execPath] : []),
     ...pathCandidates,
     typeof Bun !== "undefined" ? Bun.which("bun") : undefined,
     process.execPath,

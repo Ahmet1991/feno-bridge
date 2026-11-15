@@ -568,6 +568,11 @@ class RuntimeHost {
     }
     const runtime = await this.supervisor.startIfConfigured();
     const expected = snapshot.configured ? "ready" : "not-configured";
+    // After checkpoint restoration the new launcher cannot boot a runtime configured for
+    // the previous release. The checkpoint is restored; that former launcher can boot it.
+    if (runtime.status === "needs-setup"
+      && snapshot.configured
+      && snapshot.config?.releaseVersion !== this.app.getVersion()) return;
     if (runtime.status !== expected) {
       throw new Error(
         `Previous runtime recovery returned ${runtime.status}; expected ${expected}${runtime.detail ? `: ${runtime.detail}` : ""}`,
@@ -619,8 +624,12 @@ class RuntimeHost {
         ? embeddedRuntimeInvocation({ app: this.app, sourceRoot: this.sourceRoot, args })
         : this.command(args);
       const result = await new Promise((resolve, reject) => {
+        const bundledBun = path.isAbsolute(invocation.executable)
+          && ["bun", "bun.exe"].includes(path.basename(invocation.executable).toLowerCase())
+          ? invocation.executable : undefined;
         const environment = windowsTrustEnvironment({
           ...(options.environment ?? process.env),
+          ...(bundledBun ? { CODEX_CHATGPT_WEB_BUN: bundledBun } : {}),
           CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
           ...(options.env || {}),
         }, this.platform);
