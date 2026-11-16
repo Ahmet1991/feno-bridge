@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import path from 'node:path';
+import {existsSync} from 'node:fs';
 import {PcAccessDeniedError,PcAuthorizer} from './authorization';
 import {PcOperationError,invalidPcArgument} from './errors';
 import {ProjectFileSession} from './project-file-native';
@@ -8,11 +9,12 @@ const MAX_TEXT=2*1024*1024,MAX_PATCH=256*1024;
 const SENSITIVE_NAME=/^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|credentials(?:\.json)?|secrets?(?:\..*)?|.*\.(?:pem|p12|pfx|key))$/i;
 const SENSITIVE_CONTENT=/-----BEGIN (?:OPENSSH |RSA |EC |DSA |ENCRYPTED )?PRIVATE KEY-----|\b(?:authorization["']?\s*:\s*["']?bearer|(?:api[_-]?key|private[_-]?key|password|access[_-]?token|refresh[_-]?token|client[_-]?secret)["']?\s*[:=]\s*["']?\S+)/i;
 const hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
-function safeName(file:string){if(typeof file!=='string'||file.split(/[\\/]+/).some(s=>SENSITIVE_NAME.test(s)||s.toLowerCase()==='.git'))throw new PcAccessDeniedError();}
+function safeName(file:string){if(typeof file!=='string')throw new PcAccessDeniedError();
+  if(file.split(/[\\/]+/).some(s=>SENSITIVE_NAME.test(s)||s.toLowerCase()==='.git'))throw new PcOperationError('pc_sensitive_path');}
 function text(bytes:Buffer):string{
   if(bytes.length>MAX_TEXT||bytes.includes(0))throw new PcAccessDeniedError();let value:string;
   try{value=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw new PcAccessDeniedError();}
-  if(SENSITIVE_CONTENT.test(value))throw new PcAccessDeniedError();return value;
+  if(SENSITIVE_CONTENT.test(value))throw new PcOperationError('pc_sensitive_path');return value;
 }
 function encode(value:string):Buffer{
   if(typeof value!=='string'||Buffer.byteLength(value,'utf8')>MAX_TEXT)throw new PcAccessDeniedError();
@@ -37,7 +39,8 @@ export async function listPcFiles(root:string,relative:string,authorizer:PcAutho
   return operation(()=>{const hold=session(path.win32.join(root,relative),grant.roots,'directory',false,grant.fullAccess);try{
     const entries=hold.list().filter(e=>!SENSITIVE_NAME.test(e.name)&&e.name.toLowerCase()!=='.git').sort((a,b)=>a.name.localeCompare(b.name));
     sameGrant(authorizer,'files.read',grant.id);
-    return {entries:entries.slice(offset,offset+limit),pagination:{offset,limit,total:entries.length,nextOffset:offset+limit<entries.length?offset+limit:null}};
+    return {entries:entries.slice(offset,offset+limit),pagination:{offset,limit,total:entries.length,nextOffset:offset+limit<entries.length?offset+limit:null},
+      omitted:{sensitive:true,junctions:true}};
   }finally{hold.close();}});
 }
 export type PcReadOptions={offset?:number;length?:number;tailLines?:number};
@@ -64,7 +67,11 @@ export async function readPcFile(file:string,authorizer:PcAuthorizer,options:PcR
   }finally{hold.close();}});
 }
 export async function createPcFile(file:string,content:string,authorizer:PcAuthorizer):Promise<{path:string;sha256:string}>{
-  const grant=authorizer.assert('files.write');return operation(()=>{const bytes=encode(content),hold=session(file,grant.roots,'parent',false,grant.fullAccess);try{const stage=hold.stage(bytes);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path,sha256:hash(bytes)};}finally{stage.close();}}finally{hold.close();}});
+  const grant=authorizer.assert('files.write');return operation(()=>{const bytes=encode(content),hold=session(file,grant.roots,'parent',false,grant.fullAccess);try{
+    if(existsSync(hold.path))throw new PcOperationError('pc_file_exists');
+    const stage=hold.stage(bytes);try{sameGrant(authorizer,'files.write',grant.id);
+      try{stage.publish(false);}catch(error){if(existsSync(hold.path))throw new PcOperationError('pc_file_exists');throw error;}
+      return {path:hold.path,sha256:hash(bytes)};}finally{stage.close();}}finally{hold.close();}});
 }
 export async function createPcDirectory(dir:string,authorizer:PcAuthorizer):Promise<{path:string}>{
   const grant=authorizer.assert('files.write');return operation(()=>{const hold=session(dir,grant.roots,'parent',false,grant.fullAccess);try{const stage=hold.stage(undefined);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path};}finally{stage.close();}}finally{hold.close();}});

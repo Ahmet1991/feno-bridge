@@ -83,7 +83,7 @@ export function createPcApplicationLauncher(options: {
     });
   }));
   return {
-    async launchPcApp(app: string, rawUrl?: string, filePath?:string): Promise<{ launched: true; app: string }> {
+    async launchPcApp(app: string, rawUrl?: string, filePath?:string, userDataDir?:string): Promise<{ launched: true; app: string }> {
       if (options.signal?.aborted) throw new PcAccessDeniedError();
       const grant = options.authorizer.assert('apps.launch');
       if (!grant.fullAccess&&(!PC_LAUNCHABLE_APPS.includes(app as typeof PC_LAUNCHABLE_APPS[number]) || !grant.allowedApps.includes(app))) throw new PcAccessDeniedError();
@@ -92,12 +92,19 @@ export function createPcApplicationLauncher(options: {
       if(filePath!==undefined&&(!grant.fullAccess||win32.basename(app).toLowerCase()!=='notepad.exe'))
         throw invalidPcArgument('filePath','File arguments are supported only for Notepad in full access');
       if(rawUrl!==undefined&&win32.basename(app).toLowerCase()==='notepad.exe')throw invalidPcArgument('url','Notepad accepts filePath, not url');
+      if(userDataDir!==undefined&&(!grant.fullAccess||!['chrome.exe','msedge.exe'].includes(win32.basename(app).toLowerCase())))
+        throw invalidPcArgument('userDataDir','Only Chrome/Edge in full access support a test profile');
       let args:string[]=[];
+      if(userDataDir!==undefined){
+        if(typeof userDataDir!=='string'||userDataDir.length>1024||userDataDir.includes('\0'))throw invalidPcArgument('userDataDir','Invalid absolute profile path');
+        const dir=resolveAllowedPath(userDataDir,grant.roots,{forCreate:true,fullAccess:grant.fullAccess});
+        args.push('--user-data-dir='+dir);
+      }
       if(filePath!==undefined){
         const allowed=resolveAllowedPath(filePath,grant.roots,{fullAccess:grant.fullAccess});
         if(!statSync(allowed).isFile())throw invalidPcArgument('filePath','Expected an existing regular file');
-        args=[allowed];
-      }else if(rawUrl!==undefined)args=[validatePcLaunchUrl(rawUrl)];
+        args.push(allowed);
+      }else if(rawUrl!==undefined)args.push(validatePcLaunchUrl(rawUrl));
       const executable = options.resolve?resolve(app):grant.fullAccess?resolveFullPcApplication(app):resolve(app);
       if (!executable || !win32.isAbsolute(executable)) throw new PcAccessDeniedError();
       if (options.signal?.aborted || options.authorizer.assert('apps.launch').id !== grant.id) throw new PcAccessDeniedError();

@@ -32,7 +32,7 @@ windowsTest('create publishes complete bytes and readback returns the actual has
 });
 windowsTest('create never overwrites an existing file or directory',async()=>{
   const files=implementation(),{root,auth}=fixture(),file=join(root,'keep.txt');writeFileSync(file,'keep');
-  await expect(files.createPcFile(file,'replace',auth)).rejects.toThrow('pc_access_denied');
+  await expect(files.createPcFile(file,'replace',auth)).rejects.toThrow('pc_file_exists');
   expect(readFileSync(file,'utf8')).toBe('keep');
   const directory=join(root,'new');expect(await files.createPcDirectory(directory,auth)).toEqual({path:directory});
   await expect(files.createPcDirectory(directory,auth)).rejects.toThrow('pc_access_denied');
@@ -62,13 +62,13 @@ windowsTest('missing authorized leaf is classified without revealing outside pat
 windowsTest('sensitive names and content are rejected for reads, creates and patches',async()=>{
   const files=implementation(),{root,auth}=fixture();
   for(const name of ['.env','.env.local','.npmrc','id_rsa','credentials.json','secret.txt','private.pem','.git/config','CON','aux.txt','trailing.','stream.txt:secret']){
-    const file=join(root,name);await expect(files.createPcFile(file,'ordinary',auth)).rejects.toThrow('pc_access_denied');
+    const file=join(root,name);await expect(files.createPcFile(file,'ordinary',auth)).rejects.toThrow(/pc_sensitive_path|pc_access_denied/);
   }
   const file=join(root,'ordinary.txt');writeFileSync(file,'password = secret-value\n');
-  await expect(files.readPcFile(file,auth)).rejects.toThrow('pc_access_denied');
-  for(const value of ['api_key=example','-----BEGIN PRIVATE KEY-----','authorization: Bearer example','a\0b','\ud800'])await expect(files.createPcFile(join(root,'new.txt'),value,auth)).rejects.toThrow('pc_access_denied');
+  await expect(files.readPcFile(file,auth)).rejects.toThrow('pc_sensitive_path');
+  for(const value of ['api_key=example','-----BEGIN PRIVATE KEY-----','authorization: Bearer example','a\0b','\ud800'])await expect(files.createPcFile(join(root,'new.txt'),value,auth)).rejects.toThrow(/pc_sensitive_path|pc_access_denied/);
   writeFileSync(file,'ordinary\n');
-  await expect(files.applyPcPatch(file,sha('ordinary\n'),'@@ -1 +1 @@\n-ordinary\n+access_token=example\n',auth)).rejects.toThrow('pc_access_denied');
+  await expect(files.applyPcPatch(file,sha('ordinary\n'),'@@ -1 +1 @@\n-ordinary\n+access_token=example\n',auth)).rejects.toThrow('pc_sensitive_path');
   expect(readFileSync(file,'utf8')).toBe('ordinary\n');expect(existsSync(join(root,'new.txt'))).toBe(false);
 });
 windowsTest('bounded UTF8 rejects oversized, malformed and binary files without mutation',async()=>{
@@ -94,6 +94,7 @@ windowsTest('listing filters secrets and rejects traversal and oversized directo
   expect(listing.entries.find((e:any)=>e.name==='visible.txt')?.sizeBytes).toBe(2);
   expect(typeof listing.entries.find((e:any)=>e.name==='visible.txt')?.modifiedAt).toBe('string');
   expect(listing.pagination).toEqual({offset:0,limit:100,total:2,nextOffset:null});
+  expect(listing.omitted).toEqual({sensitive:true,junctions:true});
   for(const relative of ['..','src/../','D:\\outside','/outside'])await expect(files.listPcFiles(root,relative,auth)).rejects.toThrow('pc_invalid_argument');
   for(let i=0;i<501;i++)writeFileSync(join(root,`entry-${i}.txt`),'x');
   const page=await files.listPcFiles(root,'',auth,0,25);
@@ -159,7 +160,7 @@ windowsTest('malformed or context-mismatched hunks preserve the original without
 });
 windowsTest('quoted JSON credentials are sensitive',async()=>{
   const files=implementation(),{root,auth}=fixture();
-  for(const value of ['{"password":"example"}','{"access_token": "example"}','{"authorization":"Bearer example"}','{"client_secret":"example"}'])await expect(files.createPcFile(join(root,'data.json'),value,auth)).rejects.toThrow('pc_access_denied');
+  for(const value of ['{"password":"example"}','{"access_token": "example"}','{"authorization":"Bearer example"}','{"client_secret":"example"}'])await expect(files.createPcFile(join(root,'data.json'),value,auth)).rejects.toThrow('pc_sensitive_path');
 });
 windowsTest('UTF8 BOM bytes survive reads and patches',async()=>{
   const files=implementation(),{root,auth}=fixture(),file=join(root,'bom.txt');

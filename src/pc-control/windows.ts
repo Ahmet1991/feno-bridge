@@ -6,7 +6,7 @@ import { PcAccessDeniedError, PcAuthorizer } from "./authorization";
 import { PcOperationError, invalidPcArgument } from "./errors";
 
 type PcWindow = { id: string; title: string; processName: string };
-type PcHelperAction = "session" | "list" | "capture" | "full" | "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type";
+type PcHelperAction = "session" | "list" | "capture" | "full" | "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type" | "clipboard_read" | "clipboard_write";
 export type PcDesktopInput = { windowId: string; action: "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type";
   x?: number; y?: number; endX?: number; endY?: number; delta?: number; key?: string; text?: string };
 export type PcWindowsHelper = (action: PcHelperAction, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
@@ -16,12 +16,15 @@ export const PC_DESKTOP_KEYS = ["ENTER", "ESC", "TAB", "SPACE", "BACKSPACE", "DE
   "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
   "CTRL+A", "CTRL+C", "CTRL+F", "CTRL+L", "CTRL+N", "CTRL+P", "CTRL+S", "CTRL+T", "CTRL+V", "CTRL+W", "CTRL+X", "CTRL+Y", "CTRL+Z",
   "CTRL+END", "CTRL+HOME", "CTRL+SHIFT+P", "CTRL+SHIFT+S", "ALT+LEFT", "ALT+RIGHT", "ALT+F4", "SHIFT+TAB"] as const;
-const KEYS = new Set<string>(PC_DESKTOP_KEYS);
+// Browser tab navigation and numbered tabs are part of the published contract.
+// Keep the helper's KeyNames/VirtualKeys in sync with this list.
+export const PC_ADDITIONAL_KEYS = ["CTRL+SHIFT+TAB", ...Array.from({length:9},(_,i)=>`CTRL+${i+1}`)] as const;
+const KEYS = new Set<string>([...PC_DESKTOP_KEYS,...PC_ADDITIONAL_KEYS]);
 export function normalizePcDesktopKey(key:unknown):string {
   if(typeof key!=='string')throw invalidPcArgument('key','Expected a key name',PC_DESKTOP_KEYS);
   const value=key.replace(/\s+/g,'').toUpperCase().replace(/^CONTROL\+/,'CTRL+');
   const normalized=({ESCAPE:'ESC',RETURN:'ENTER',PGUP:'PAGEUP',PGDN:'PAGEDOWN'} as Record<string,string>)[value]??value;
-  if(!KEYS.has(normalized))throw invalidPcArgument('key','Unsupported key or shortcut',PC_DESKTOP_KEYS);
+  if(!KEYS.has(normalized))throw invalidPcArgument('key','Unsupported key or shortcut',[...KEYS]);
   return normalized;
 }
 
@@ -67,15 +70,18 @@ export function createVerifiedWindowsHelper(options: VerifiedHelperOptions): PcW
   const { executablePath, manifestPath, spawnHelper = spawn } = options;
   return async (action, args, signal) => {
   if (signal?.aborted) throw new PcAccessDeniedError();
-  const payload = Buffer.from(JSON.stringify({ action, args }), "utf8").toString("base64");
+  const inputBytes=Buffer.from(JSON.stringify({ action, args }), "utf8");
+  const usingStdin=action==='clipboard_write';
+  const payload=inputBytes.toString('base64');
   return new Promise((resolve, reject) => {
     // Synchronous verify immediately before spawn, once per invocation. No async gap.
     try { verifyHelper({ executablePath, manifestPath }); }
     catch (error) { reject(error); return; }
     if (signal?.aborted) { reject(new PcAccessDeniedError()); return; }
-    const child = spawnHelper(executablePath, ["--payload", payload], {
-      windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"],
+    const child = spawnHelper(executablePath, usingStdin?["--stdin"]:["--payload", payload], {
+      windowsHide: true, shell: false, stdio: [usingStdin?"pipe":"ignore", "pipe", "pipe"],
     });
+    if(usingStdin)child.stdin?.end(inputBytes);
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
@@ -90,7 +96,7 @@ export function createVerifiedWindowsHelper(options: VerifiedHelperOptions): PcW
       signal?.removeEventListener('abort', cancel);
       reject(new PcAccessDeniedError());
     }
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout!.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > 11 * 1024 * 1024) { cancel(); return; }
       chunks.push(chunk);
@@ -169,6 +175,23 @@ export function createPcWindowsController(options: {
 
   return {
     listPcWindows: async () => windows("screen.read"),
+    async clipboardRead():Promise<{text:string}> {
+      const grant=guard('desktop.input');if(!authorizer.assert('desktop.input').fullAccess)throw new PcAccessDeniedError();
+      if(!(await interactive()))throw new PcAccessDeniedError();guard('desktop.input',grant.id);
+      const raw=await helper('clipboard_read',{},options.signal);
+      if(!raw||typeof raw!=='object'||typeof (raw as {text?:unknown}).text!=='string'
+        ||Buffer.byteLength((raw as {text:string}).text,'utf8')>65536)throw new PcAccessDeniedError();
+      guard('desktop.input',grant.id);return {text:(raw as {text:string}).text};
+    },
+    async clipboardWrite(text:string):Promise<{ok:true}> {
+      if(typeof text!=='string'||Buffer.byteLength(text,'utf8')>65536||text.includes('\0'))
+        throw invalidPcArgument('text','Clipboard text must be at most 65536 UTF-8 bytes');
+      const grant=guard('desktop.input');if(!authorizer.assert('desktop.input').fullAccess)throw new PcAccessDeniedError();
+      if(!(await interactive()))throw new PcAccessDeniedError();guard('desktop.input',grant.id);
+      const result=await helper('clipboard_write',{text},options.signal);
+      if(!result||typeof result!=='object'||(result as {ok?:unknown}).ok!==true)throw new PcAccessDeniedError();
+      guard('desktop.input',grant.id);return {ok:true};
+    },
     async capturePcWindow(id: string): Promise<{ mimeType: "image/png"; data: Uint8Array }> {
       const selected = await assertWindow(id, "screen.read");
       const grantId=guard('screen.read').id;
@@ -234,7 +257,8 @@ export function createPcWindowsController(options: {
       }
       const selected = await assertWindow(input.windowId, "desktop.input");
       guard(permission,id);
-      const response = await helper(input.action, { ...args, processName: selected.processName, title: selected.title },options.signal);
+      const response = await helper(input.action, { ...args, processName: selected.processName, title: selected.title,
+        allowNonClient:authorizer.assert('desktop.input').fullAccess===true },options.signal);
       if (response && typeof response === "object" && (response as { ok?: unknown }).ok === false
         && (response as { reason?: unknown }).reason === "focus_required") throw new PcOperationError("pc_focus_required");
       if (!response || typeof response !== "object" || (response as { ok?: unknown }).ok !== true) throw new PcAccessDeniedError();

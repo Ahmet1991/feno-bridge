@@ -12,6 +12,12 @@ interface NativeApi {
   inspectProcess(pid:number):ProcessState;
 }
 type Operation='job'|'terminal'|'desktop-input'|'adb';
+// Long-running terminal builds must not monopolize the short-lived input planes.
+// Jobs and terminals still serialize against one another; input classes remain
+// exclusive within each class and use the same per-user private ACL and peer protocol.
+export function pcResourceLockFile(operation:Operation):string {
+  return PC_RESOURCE_PROTOCOL+(operation==='desktop-input'?'.desktop-input':operation==='adb'?'.adb':'')+'.lock';
+}
 export interface PcResourceOptions {
   directory:string;userSid:string;profileId:PcProfileId;authorizer:PcAuthorizer;
   operation:Operation;operationId:string;observePeers:()=>PcPeerEvidence;
@@ -66,7 +72,7 @@ export async function acquirePcHostLease(options:PcResourceOptions):Promise<PcHo
     checkCancelled(options);if(authorize(options)!==grantId)throw new PcAccessDeniedError();
     assertCompatiblePcResourcePeers(options.observePeers?.());
     let held:NativeLease;
-    try{held=api.acquireExclusivePrivateFile(join(options.directory,PC_RESOURCE_PROTOCOL+'.lock'),options.userSid);}
+    try{held=api.acquireExclusivePrivateFile(join(options.directory,pcResourceLockFile(options.operation)),options.userSid);}
     catch(error){
       if((error as {code?:string}).code!=='pc_resource_busy')throw error;
       if(timeout===0)throw new PcOperationError('pc_resource_busy');
@@ -103,7 +109,7 @@ export async function recoverPcHostResource(options:PcResourceOptions&{
   authorize(options);
   if(typeof options.confirmLocally!=='function'||!options.exitProof||typeof options.exitProof.then!=='function')throw new PcAccessDeniedError();
   const api=nativeApi();api.ensurePrivateDirectory(options.directory,options.userSid);
-  const held=api.acquireExclusivePrivateFile(join(options.directory,PC_RESOURCE_PROTOCOL+'.lock'),options.userSid);
+  const held=api.acquireExclusivePrivateFile(join(options.directory,pcResourceLockFile(options.operation)),options.userSid);
   try{
     const record=readRecord(held);
     if(!record||record.state!=='held'||record.generation!==options.expectedGeneration)throw new PcOperationError('pc_resource_recovery_required');

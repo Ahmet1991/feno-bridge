@@ -2928,7 +2928,8 @@ describe("ChatGPT outer-native harness v4", () => {
       ]);
       expect(pcTools.map(tool => tool.name).sort()).toEqual([
         "pc_adb_devices", "pc_adb_input", "pc_adb_screencap", "pc_cancel_job",
-        "pc_capture_full_screen", "pc_capture_screen", "pc_create_directory", "pc_create_file",
+        "pc_capture_full_screen", "pc_capture_screen", "pc_clipboard_read", "pc_clipboard_write",
+        "pc_create_directory", "pc_create_file",
         "pc_desktop_input", "pc_job_logs", "pc_job_status", "pc_launch_app",
         "pc_list_files", "pc_list_project_tasks", "pc_list_windows", "pc_read_file",
         "pc_runner_status", "pc_start_job", "pc_start_project_task", "pc_start_terminal",

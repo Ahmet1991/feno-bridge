@@ -19,13 +19,14 @@ internal static class PcWindowsHelper {
     private const int MaximumPngBytes = 6 * 1024 * 1024;
     private const int MaximumCoordinate = 8192;
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 11 * 1024 * 1024 };
-    private static readonly HashSet<string> KeyNames = new HashSet<string>(StringComparer.Ordinal) {
+    private static readonly HashSet<string> KeyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
         "ENTER", "ESC", "TAB", "SPACE", "BACKSPACE", "DELETE", "UP", "DOWN", "LEFT", "RIGHT",
         "HOME", "END", "PAGEUP", "PAGEDOWN", "F1", "F2", "F3", "F4", "F5", "F6",
         "F7", "F8", "F9", "F10", "F11", "F12", "CTRL+A", "CTRL+C", "CTRL+F", "CTRL+L",
         "CTRL+N", "CTRL+P", "CTRL+S", "CTRL+T", "CTRL+V", "CTRL+W", "CTRL+X",
         "CTRL+Y", "CTRL+Z", "CTRL+END", "CTRL+HOME", "CTRL+SHIFT+P", "CTRL+SHIFT+S",
-        "ALT+LEFT", "ALT+RIGHT", "ALT+F4", "SHIFT+TAB"
+        "ALT+LEFT", "ALT+RIGHT", "ALT+F4", "SHIFT+TAB", "CTRL+SHIFT+TAB",
+        "CTRL+1", "CTRL+2", "CTRL+3", "CTRL+4", "CTRL+5", "CTRL+6", "CTRL+7", "CTRL+8", "CTRL+9"
     };
     private static readonly Dictionary<string,ushort> VirtualKeys = new Dictionary<string,ushort>(StringComparer.Ordinal) {
         {"ENTER",0x0D},{"ESC",0x1B},{"TAB",0x09},{"SPACE",0x20},{"BACKSPACE",0x08},
@@ -70,6 +71,7 @@ internal static class PcWindowsHelper {
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern bool GetUserObjectInformation(
         IntPtr handle,int index,StringBuilder result,int length,out int required);
     [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr handle);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern IntPtr SendMessageW(IntPtr hwnd,uint msg,IntPtr wp,IntPtr lp);
 
     private static void Require(bool condition) { if (!condition) throw new InvalidOperationException(); }
     private static string GetString(IDictionary<string,object> data,string name) {
@@ -140,13 +142,19 @@ internal static class PcWindowsHelper {
         if(!Unlocked() || !Foreground(hwnd))throw new InvalidOperationException("focus_required");
         uint current;GetWindowThreadProcessId(hwnd,out current);
         Require(current==pid && Owner(hwnd)==appPid);
-        NotPassword(hwnd,null);
+        NotPassword(hwnd,null,false);
     }
-    private static void NotPassword(IntPtr hwnd,System.Drawing.Point? point) {
+    private static bool IsNonClientPoint(IntPtr hwnd,System.Drawing.Point point) {
+        long packed=((long)(ushort)point.Y<<16)|(ushort)point.X;
+        int hit=unchecked((int)SendMessageW(hwnd,0x0084,IntPtr.Zero,new IntPtr(packed)).ToInt64());
+        return hit==2 || hit==3 || hit==8 || hit==9 || hit==20 || hit==21;
+    }
+    private static void NotPassword(IntPtr hwnd,System.Drawing.Point? point,bool allowNonClient) {
         AutomationElement element=point.HasValue
             ? AutomationElement.FromPoint(new System.Windows.Point(point.Value.X,point.Value.Y))
             : AutomationElement.FocusedElement;
         AutomationElement root=AutomationElement.FromHandle(hwnd);
+        if(allowNonClient && point.HasValue && IsNonClientPoint(hwnd,point.Value))return;
         Require(element!=null && root!=null);
         bool inside=false;
         for(int i=0;i<32 && element!=null;i++) {
@@ -213,41 +221,50 @@ internal static class PcWindowsHelper {
     private static INPUT Keyboard(ushort key,bool release) {
         return new INPUT {Type=1,Value=new INPUTUNION {Keyboard=new KEYBDINPUT {Vk=key,Flags=release?2u:0u}}};
     }
-    private static bool EmitKey(string name) {
+    private static ushort[] KeySequence(string name) {
+        name=name.Trim().ToUpperInvariant();
+        if(name=="ESCAPE")name="ESC";
+        if(name=="RETURN")name="ENTER";
+        if(name.StartsWith("CONTROL+"))name="CTRL+"+name.Substring(8);
+        Require(KeyNames.Contains(name));
         string[] parts=name.Split('+');
         List<ushort> modifiers=new List<ushort>();
         for(int i=0;i<parts.Length-1;i++) {
             ushort modifier=parts[i]=="CTRL"?(ushort)0x11:parts[i]=="SHIFT"?(ushort)0x10:
                 parts[i]=="ALT"?(ushort)0x12:(ushort)0;
-            if(modifier==0 || modifiers.Contains(modifier))return false;
+            Require(modifier!=0 && !modifiers.Contains(modifier));
             modifiers.Add(modifier);
         }
         string nameKey=parts[parts.Length-1];ushort key;
         if(!VirtualKeys.TryGetValue(nameKey,out key)) {
-            if(nameKey.Length==1 && nameKey[0]>='A' && nameKey[0]<='Z')key=(ushort)nameKey[0];
+            if(nameKey.Length==1 && (nameKey[0]>='A' && nameKey[0]<='Z' || nameKey[0]>='0' && nameKey[0]<='9'))key=(ushort)nameKey[0];
             else if(nameKey.Length>=2 && nameKey[0]=='F') {
-                int function; if(!int.TryParse(nameKey.Substring(1),out function) || function<1 || function>12)return false;
+                int function; Require(int.TryParse(nameKey.Substring(1),out function) && function>=1 && function<=12);
                 key=(ushort)(0x6F+function);
-            }else return false;
+            }else throw new InvalidOperationException();
         }
+        modifiers.Add(key);return modifiers.ToArray();
+    }
+    private static bool EmitKey(string name) {
+        ushort[] sequence=KeySequence(name);
         List<INPUT> events=new List<INPUT>();
-        foreach(ushort modifier in modifiers)events.Add(Keyboard(modifier,false));
-        events.Add(Keyboard(key,false));events.Add(Keyboard(key,true));
-        for(int i=modifiers.Count-1;i>=0;i--)events.Add(Keyboard(modifiers[i],true));
+        foreach(ushort vk in sequence)events.Add(Keyboard(vk,false));
+        for(int i=sequence.Length-1;i>=0;i--)events.Add(Keyboard(sequence[i],true));
         INPUT[] batch=events.ToArray();
         return SendInput((uint)batch.Length,batch,Marshal.SizeOf(typeof(INPUT)))==(uint)batch.Length;
     }
     private static object InputAction(string action,IDictionary<string,object> args,IntPtr hwnd,RECT rect,uint pid,uint appPid) {
         SafeFocus(hwnd,pid,appPid);
+        bool allowNonClient=args.ContainsKey("allowNonClient") && args["allowNonClient"] is bool && (bool)args["allowNonClient"];
         if(action=="click" || action=="right_click" || action=="double_click" || action=="drag" || action=="scroll") {
             int x=GetNumber(args,"x",0,MaximumCoordinate),y=GetNumber(args,"y",0,MaximumCoordinate);
             Require(x<rect.Right-rect.Left && y<rect.Bottom-rect.Top);
             System.Drawing.Point start=new System.Drawing.Point(rect.Left+x,rect.Top+y);
-            NotPassword(hwnd,start);
+            NotPassword(hwnd,start,allowNonClient);
             if(action=="drag") {
                 int endX=GetNumber(args,"endX",0,MaximumCoordinate),endY=GetNumber(args,"endY",0,MaximumCoordinate);
                 Require(endX<rect.Right-rect.Left && endY<rect.Bottom-rect.Top);
-                NotPassword(hwnd,new System.Drawing.Point(rect.Left+endX,rect.Top+endY));
+                NotPassword(hwnd,new System.Drawing.Point(rect.Left+endX,rect.Top+endY),allowNonClient);
             }
             Require(SetCursorPos(start.X,start.Y));SafeFocus(hwnd,pid,appPid);
             if(action=="scroll") {
@@ -270,6 +287,16 @@ internal static class PcWindowsHelper {
     private static object Execute(string action,IDictionary<string,object> args) {
         if(action=="session")return new {unlocked=Unlocked()};
         Require(Unlocked());
+        if(action=="keymap")return new {keys=KeySequence(GetString(args,"key"))};
+        if(action=="clipboard_read") {
+            string value=Clipboard.ContainsText(TextDataFormat.UnicodeText)?Clipboard.GetText(TextDataFormat.UnicodeText):"";
+            Require(new UTF8Encoding(false,true).GetByteCount(value)<=65536);
+            return new {text=value};
+        }
+        if(action=="clipboard_write") {
+            string value=GetString(args,"text");Require(value.IndexOf('\0')<0 && new UTF8Encoding(false,true).GetByteCount(value)<=65536);
+            Clipboard.SetText(value);return new {ok=true};
+        }
         if(action=="list")return ListWindows();
         if(action=="full")return Full(args);
         string id=GetString(args,"windowId");Require(Regex.IsMatch(id,@"^[1-9][0-9]{0,15}$"));
@@ -283,8 +310,16 @@ internal static class PcWindowsHelper {
     }
     [STAThread] private static int Main(string[] argv) {
         try {
-            Require(argv.Length==2 && argv[0]=="--payload" && argv[1].Length<=16384);
-            byte[] bytes=Convert.FromBase64String(argv[1]);
+            Require((argv.Length==2 && argv[0]=="--payload" && argv[1].Length<=16384) || (argv.Length==1 && argv[0]=="--stdin"));
+            byte[] bytes;
+            if(argv.Length==2) bytes=Convert.FromBase64String(argv[1]);
+            else using(MemoryStream stream=new MemoryStream()){
+                byte[] buf=new byte[4096];int n;
+                using(Stream input=Console.OpenStandardInput())while((n=input.Read(buf,0,buf.Length))>0){
+                    Require(stream.Length+n<=90000);stream.Write(buf,0,n);
+                }
+                bytes=stream.ToArray();
+            }
             string json=new UTF8Encoding(false,true).GetString(bytes);
             IDictionary<string,object> payload=Json.DeserializeObject(json) as IDictionary<string,object>;
             Require(payload!=null);

@@ -47,7 +47,21 @@ windowsTest('all job kinds have a finite timeout and cancellation kills children
   await c.manager.cancelPcJob(jobId,c.authorizer);
   expect(children.some(alive)).toBe(false);expect(c.manager.activeJobCount()).toBe(0);expect(c.counts().releases).toBe(1);
   const t=await setup('hold',[],{jobTimeoutMs:80});const started=await t.manager.startPcJob({kind:'unit-tests',projectRoot:t.root},t.authorizer);
-  await until(()=>t.manager.activeJobCount()===0);expect(t.manager.pcJobStatus(started.jobId,t.authorizer).state).toBe('cancelled');
+  await until(()=>t.manager.activeJobCount()===0);expect(t.manager.pcJobStatus(started.jobId,t.authorizer).state).toBe('timed_out');
+});
+windowsTest('T15 per-request timeout overrides the default, marks timed_out and frees the lease',async()=>{
+  const c=await setup('hold',[],{jobTimeoutMs:100});
+  const {jobId}=await c.manager.startPcJob({kind:'unit-tests',projectRoot:c.root,timeoutSeconds:1},c.authorizer);
+  await Bun.sleep(250);
+  expect(c.manager.pcJobStatus(jobId,c.authorizer).state).toBe('running');
+  await until(()=>c.manager.activeJobCount()===0,4500);
+  expect(c.manager.pcJobStatus(jobId,c.authorizer).state).toBe('timed_out');
+  expect(c.counts()).toEqual({leases:1,releases:1});
+  const terminal=await c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 20',purpose:'T15 timeout',timeoutSeconds:1},c.authorizer);
+  await until(()=>c.manager.activeJobCount()===0,4500);
+  expect(c.manager.pcJobStatus(terminal.jobId,c.authorizer).state).toBe('timed_out');
+  expect(c.counts()).toEqual({leases:2,releases:2});
+  await expect(c.manager.startPcJob({kind:'unit-tests',projectRoot:c.root,timeoutSeconds:601},c.authorizer)).rejects.toThrow('pc_access_denied');
 });
 windowsTest('grant and profile ownership cannot transfer while acquiring or reading an existing job',async()=>{
   const c=await setup();const {jobId}=await c.manager.startPcJob({kind:'unit-tests',projectRoot:c.root},c.authorizer);
@@ -96,7 +110,7 @@ windowsTest('shared resources retain a retiring terminal and require jobs plus t
 windowsTest('developer tasks share containment, timeout, argument quoting and no uncontained launch fallback',async()=>{
   const c=await setup('hold',[],{jobTimeoutMs:70,commandSpecs:{'script:test':{command:process.execPath,args:[fixture,'hold'],usesEmulator:false}}});
   const {jobId}=await c.manager.startDeveloperTask({taskId:'script:test',projectRoot:c.root},c.authorizer);
-  await until(()=>c.manager.activeJobCount()===0);expect(c.manager.pcJobStatus(jobId,c.authorizer).state).toBe('cancelled');
+  await until(()=>c.manager.activeJobCount()===0);expect(c.manager.pcJobStatus(jobId,c.authorizer).state).toBe('timed_out');
   const args=['space value','embedded"quote','trailing\\','日本語',''];const a=await setup('arguments',args);
   const quoted=await a.manager.startPcJob({kind:'unit-tests',projectRoot:a.root},a.authorizer);
   await until(()=>a.manager.activeJobCount()===0);

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type {PcCommandSpec} from './jobs';
 
-/** Windows x64 ABI. No shell fallback: a process is born in its non-breakaway job. */
+/** Windows x64 ABI. Jobs stay contained; approved GUI-only terminal commands may let detached children escape. */
 function native() {
   if (process.platform !== 'win32' || process.arch !== 'x64' || !process.versions.bun) throw new Error('pc_job_containment_required');
   const {dlopen, ptr} = require('bun:ffi') as typeof import('bun:ffi');
@@ -67,7 +67,10 @@ export function spawnContainedWindowsProcess(spec:PcCommandSpec,cwd:string,
   try {
     checked(k.SetHandleInformation(job,1,0),'noninheritable job');
     // JOBOBJECT_EXTENDED_LIMIT_INFORMATION (144 bytes); BasicLimitInformation.Flags at 16.
-    const limits=Buffer.alloc(144);limits.writeUInt32LE(0x2000,16);
+    const limits=Buffer.alloc(144);
+    // SILENT_BREAKAWAY_OK is restricted to a single full-access GUI launch.
+    // The enclosing shell remains in this job; ordinary jobs retain kill-on-close.
+    limits.writeUInt32LE(0x2000 | (spec.allowGuiBreakaway===true?0x1000:0),16);
     checked(k.SetInformationJobObject(job,9,limits,limits.length),'SetInformationJobObject');
     const security=Buffer.alloc(24);security.writeUInt32LE(24);security.writeUInt32LE(1,16);
     function pipe():[Handle,Handle]{
