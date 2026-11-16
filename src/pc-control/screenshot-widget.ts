@@ -66,25 +66,80 @@ img{display:block;width:100%;height:auto;object-fit:contain}
 (()=>{
 const byId=id=>document.getElementById(id);
 const zoom=byId('zoom');
-function mode(value){const request=window.openai?.requestDisplayMode;if(typeof request==='function')Promise.resolve(request({mode:value})).catch(()=>{})}
+let connected=false,hostContext={},nextId=1;
+const parent=window.parent;
+function send(method,params){const id=nextId++;parent.postMessage({jsonrpc:'2.0',id,method,params},'*');return id}
+function notify(method,params){parent.postMessage({jsonrpc:'2.0',method,params},'*')}
+function size(){if(!connected)return;const root=document.documentElement,body=document.body;
+  const dims=hostContext.containerDimensions||{};
+  const width=Math.max(1,Math.ceil(body.scrollWidth||root.scrollWidth||window.innerWidth||1));
+  const height=Math.max(1,Math.ceil(body.scrollHeight||root.scrollHeight||100));
+  notify('ui/notifications/size-changed',{width:Number.isFinite(dims.maxWidth)?Math.min(width,dims.maxWidth):width,
+    height:Number.isFinite(dims.maxHeight)?Math.min(height,dims.maxHeight):height})}
+function context(update){hostContext={...hostContext,...update};const root=document.documentElement;
+  if(hostContext.theme==='dark'||hostContext.theme==='light'){
+    root.setAttribute('data-theme',hostContext.theme);
+    const dark=hostContext.theme==='dark';
+    root.style.setProperty('--bg',dark?'#20242b':'#fff');root.style.setProperty('--fg',dark?'#f5f7fc':'#17202d');
+    root.style.setProperty('--muted',dark?'#a7b5c9':'#64748b');root.style.setProperty('--line',dark?'#424b59':'#dce3ed');
+  }
+  const dims=hostContext.containerDimensions||{};
+  root.style.maxHeight=Number.isFinite(dims.maxHeight)?dims.maxHeight+'px':'';
+  root.style.maxWidth=Number.isFinite(dims.maxWidth)?dims.maxWidth+'px':'';
+  if(connected)size();
+}
+function mode(value){const request=window.openai?.requestDisplayMode;
+  if(typeof request==='function'){Promise.resolve(request({mode:value})).catch(()=>{});return}
+  if(connected&&hostContext.availableDisplayModes?.includes(value))send('ui/request-display-mode',{mode:value});
+}
 function close(){zoom.setAttribute('aria-hidden','true');mode('inline');byId('show').focus()}
 byId('close').addEventListener('click',close);
 zoom.addEventListener('click',e=>{if(e.target===zoom)close()});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&zoom.getAttribute('aria-hidden')==='false')close()});
 byId('show').addEventListener('click',()=>{zoom.setAttribute('aria-hidden','false');mode('fullscreen');byId('close').focus()});
+function paint(summary,data){
+  if(!data||typeof data.dataUrl!=='string'||!/^data:image\\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(data.dataUrl)){
+    byId('show').hidden=true;byId('empty').hidden=false;byId('empty').textContent='Görüntü verisi bulunamadı.';size();return;
+  }
+  byId('preview').src=data.dataUrl;byId('large').src=data.dataUrl;
+  byId('title').textContent=typeof summary.title==='string'?summary.title:'Ekran görüntüsü';
+  const when=Date.parse(summary.capturedAt||'');
+  byId('time').textContent=Number.isFinite(when)?new Intl.DateTimeFormat('tr-TR',{dateStyle:'short',timeStyle:'medium'}).format(when):'';
+  byId('empty').hidden=true;byId('show').hidden=false;size();
+}
 function render(){
   const host=window.openai||{};
   const envelope=host.toolResponseMetadata||{};
   const result=envelope.mcp_tool_result||envelope.call_tool_result||{};
   const data=(result._meta?.pcScreenshot||result.result?._meta?.pcScreenshot||envelope._meta?.pcScreenshot||envelope.pcScreenshot);
   const summary=host.toolOutput||result.structuredContent||{};
-  if(!data||typeof data.dataUrl!=='string'||!/^data:image\\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(data.dataUrl))return;
-  byId('preview').src=data.dataUrl;byId('large').src=data.dataUrl;
-  byId('title').textContent=typeof summary.title==='string'?summary.title:'Ekran görüntüsü';
-  const when=Date.parse(summary.capturedAt||'');
-  byId('time').textContent=Number.isFinite(when)?new Intl.DateTimeFormat('tr-TR',{dateStyle:'short',timeStyle:'medium'}).format(when):'';
-  byId('empty').hidden=true;byId('show').hidden=false;
+  if(data)paint(summary,data);
 }
+const initializeId=parent&&parent!==window?send('ui/initialize',{
+  protocolVersion:'2026-01-26',appInfo:{name:'feno-pc-screenshot',title:'Feno Bridge Ekran Görüntüsü',version:'5.1.9'},
+  appCapabilities:{availableDisplayModes:['inline','fullscreen']}}):null;
+window.addEventListener('message',event=>{
+  if(event.source!==parent||!event.data||event.data.jsonrpc!=='2.0')return;
+  const msg=event.data;
+  if(msg.id===initializeId&&initializeId!==null){
+    if(msg.error){byId('empty').textContent='Görüntü kartı bağlantısı açılamadı.';return}
+    if(!msg.result||typeof msg.result!=='object')return;
+    context(msg.result.hostContext||{});connected=true;
+    notify('ui/notifications/initialized',{});size();
+    if(typeof window.ResizeObserver==='function')new window.ResizeObserver(size).observe(document.body);
+    return;
+  }
+  if(msg.method==='ui/notifications/host-context-changed'){context(msg.params||{});return}
+  if(msg.method==='ui/notifications/tool-input'){byId('empty').textContent='Ekran görüntüsü alınıyor…';return}
+  if(msg.method==='ui/notifications/tool-result'){
+    const result=msg.params||{};paint(result.structuredContent||{},result._meta?.pcScreenshot);return;
+  }
+  if(msg.method==='ui/notifications/tool-cancelled'){
+    byId('show').hidden=true;byId('empty').hidden=false;byId('empty').textContent='Ekran görüntüsü iptal edildi.';size();return;
+  }
+  if(msg.method==='ui/resource-teardown'&&msg.id!==undefined){parent.postMessage({jsonrpc:'2.0',id:msg.id,result:{}},'*')}
+});
+byId('preview').addEventListener('load',size);
 window.addEventListener('openai:set_globals',render);
 render();
 })();

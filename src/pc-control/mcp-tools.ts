@@ -165,12 +165,12 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   const windowId=z.string().regex(/^[1-9][0-9]{0,15}$/),serial=z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/);
   server.registerTool('pc_runner_status',{title:'Read fenotip-tv runner state',inputSchema:z.object({label:z.literal('fenotip-tv')}).strict(),annotations:readOnly},()=>run(()=>{a.assert('runner');if(!h.runnerStatus)throw new PcAccessDeniedError();return h.runnerStatus();},false,'pc_runner_status'));
   server.registerTool('pc_list_windows',{title:'List approved Windows application windows',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('screen.read');if(!h.listWindows)throw new PcAccessDeniedError();return h.listWindows();},false,'pc_list_windows'));
-  server.registerTool('pc_capture_screen',{title:'Capture approved window PNG',inputSchema:z.object({windowId}).strict(),annotations:readOnly,_meta:imageToolMeta},({windowId:id})=>imageRun(async()=>{
+  server.registerTool('pc_capture_screen',{title:'Pencerenin ekran görüntüsünü göster',inputSchema:z.object({windowId}).strict(),annotations:readOnly,_meta:imageToolMeta},({windowId:id})=>imageRun(async()=>{
     a.assert('screen.read');if(!h.captureScreen)throw new PcAccessDeniedError();
     const windows=await h.listWindows?.();const title=Array.isArray(windows)?windows.find(w=>w?.id===id)?.title:undefined;
     const shot=await h.captureScreen(id);return {...shot,title:typeof title==='string'?title:`Pencere ${id}`};
   },'pc_capture_screen'));
-  server.registerTool('pc_capture_full_screen',{title:'Capture full desktop or one monitor PNG (high risk)',inputSchema:z.object({mode:z.enum(['all','monitor']),monitor:z.number().int().min(0).max(7).optional()}).strict(),annotations:readOnly,_meta:imageToolMeta},({mode,monitor})=>imageRun(async()=>{
+  server.registerTool('pc_capture_full_screen',{title:'Tüm ekranların veya monitörün görüntüsünü göster',inputSchema:z.object({mode:z.enum(['all','monitor']),monitor:z.number().int().min(0).max(7).optional()}).strict(),annotations:readOnly,_meta:imageToolMeta},({mode,monitor})=>imageRun(async()=>{
     a.assert('screen.full');if(!h.captureFullScreen)throw new PcAccessDeniedError();const shot=await h.captureFullScreen(mode,monitor);
     return {...shot,title:mode==='all'?'Tüm ekranlar':`Monitör ${(monitor??0)+1}`};
   },'pc_capture_full_screen'));
@@ -179,10 +179,10 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerTool('pc_clipboard_write',{title:'Write bounded Windows clipboard text (full access)',description:'Requires full-access desktop input; audit records tool name and outcome without text.',inputSchema:z.object({text:z.string().max(65536)}).strict(),annotations:write},({text})=>run(()=>{a.assert('desktop.input');if(!h.clipboardWrite)throw new PcAccessDeniedError();return h.clipboardWrite(text);},false,'pc_clipboard_write'));
   server.registerTool('pc_adb_devices',{title:'List connected ADB devices',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('adb');if(!h.adbDevices)throw new PcAccessDeniedError();return h.adbDevices();},false,'pc_adb_devices'));
   server.registerTool('pc_adb_input',{title:'Send emulator tap, key or text',inputSchema:z.object({serial,action:z.enum(['tap','key','text']),x:z.number().int().min(0).max(8192).optional(),y:z.number().int().min(0).max(8192).optional(),value:z.string().max(150).optional()}).strict(),annotations:write},({serial,...input})=>run(()=>{a.assert('adb');if(!h.adbInput)throw new PcAccessDeniedError();return h.adbInput(serial,input);},false,'pc_adb_input'));
-  server.registerTool('pc_adb_screencap',{title:'Capture emulator PNG',inputSchema:z.object({serial}).strict(),annotations:readOnly,_meta:imageToolMeta},({serial})=>imageRun(async()=>{
+  server.registerTool('pc_adb_screencap',{title:'Android ekran görüntüsünü göster',inputSchema:z.object({serial}).strict(),annotations:readOnly,_meta:imageToolMeta},({serial})=>imageRun(async()=>{
     a.assert('adb');if(!h.adbScreencap)throw new PcAccessDeniedError();return {data:await h.adbScreencap(serial),mimeType:'image/png',title:`Android ekranı (${serial})`};
   },'pc_adb_screencap'));
-  server.registerTool('pc_show_image',{title:'Show a saved PNG/JPEG/WebP image',description:'Read a bounded image within approved file roots and display it in ChatGPT.',
+  server.registerTool('pc_show_image',{title:'Kayıtlı görüntüyü göster',description:'İzinli köklerden sınırlı boyutta PNG/JPEG/WebP görüntüsü oku ve ChatGPT içinde göster.',
     inputSchema:z.object({path:p}).strict(),annotations:readOnly,_meta:imageToolMeta},({path})=>imageRun(async()=>{
       a.assert('files.read');if(!h.showImage)throw new PcAccessDeniedError();return {...await h.showImage(path),title:path.split(/[\\/]/).pop()||'Kayıtlı görüntü'};
     },'pc_show_image'));
