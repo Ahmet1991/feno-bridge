@@ -44,6 +44,30 @@ export async function listPcFiles(root:string,relative:string,authorizer:PcAutho
   }finally{hold.close();}});
 }
 export type PcReadOptions={offset?:number;length?:number;tailLines?:number};
+/** Read image bytes through the same native path/junction checks as pc_read_file. */
+export async function readPcImage(file:string,authorizer:PcAuthorizer):Promise<{
+  mimeType:'image/png'|'image/jpeg'|'image/webp';data:Uint8Array
+}>{
+  const grant=authorizer.assert('files.read');
+  const extension=path.extname(file).toLowerCase();
+  const expected=extension==='.png'?'image/png':extension==='.jpg'||extension==='.jpeg'?'image/jpeg'
+    :extension==='.webp'?'image/webp':undefined;
+  if(!expected)throw invalidPcArgument('path','Only PNG, JPEG and WebP files are supported');
+  return operation(()=>{
+    const hold=session(file,grant.roots,'file',false,grant.fullAccess);
+    try{
+      const size=hold.size();if(size<12||size>8*1024*1024)throw new PcOperationError('pc_file_too_large',{limitBytes:8*1024*1024,sizeBytes:size});
+      const bytes=hold.read();
+      const png=bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
+      const jpeg=bytes[0]===255&&bytes[1]===216&&bytes[2]===255;
+      const webp=bytes.toString('ascii',0,4)==='RIFF'&&bytes.toString('ascii',8,12)==='WEBP';
+      if(!(expected==='image/png'&&png||expected==='image/jpeg'&&jpeg||expected==='image/webp'&&webp))
+        throw invalidPcArgument('path','Image extension and signature do not match');
+      sameGrant(authorizer,'files.read',grant.id);
+      return {mimeType:expected,data:bytes};
+    }finally{hold.close();}
+  });
+}
 export async function readPcFile(file:string,authorizer:PcAuthorizer,options:PcReadOptions={}):Promise<{path:string;content:string;sha256:string;sizeBytes?:number;offset?:number;nextOffset?:number;partial?:boolean}>{
   const grant=authorizer.assert('files.read');
   const {offset,length,tailLines}=options;

@@ -10,6 +10,8 @@ import {randomUUID} from 'node:crypto';
 import {createPcWindowsController,pcWindowsHelperStatus,PC_DESKTOP_KEYS,type PcDesktopInput,type PcWindowsHelper} from './windows';
 import {createPcAdbController,resolveTrustedAdbPath,type PcAdbInput,type PcAdbRun} from './adb';
 import {createPcApplicationLauncher,type PcLaunchableApp} from './launch';
+import {readPcImage} from './files';
+import {makePcScreenshotResult,PC_SCREENSHOT_HTML,PC_SCREENSHOT_MIME,PC_SCREENSHOT_URI,type PcScreenshotSource} from './screenshot-widget';
 import {createConfiguredGithubRunnerProbe,getRunnerStatus,type PcRunnerProbe} from './runner';
 import type {PcHostLease} from './resource-locks';
 import {version as pcVersion} from '../../package.json';
@@ -26,6 +28,7 @@ export interface PcHost {
   clipboardRead?():Promise<{text:string}>;clipboardWrite?(text:string):Promise<{ok:true}>;
   adbDevices?():Promise<unknown>;adbInput?(serial:string,input:PcAdbInput):Promise<unknown>;
   adbScreencap?(serial:string):Promise<Uint8Array>;runnerStatus?():Promise<unknown>;
+  showImage?(path:string):Promise<{mimeType:'image/png'|'image/jpeg'|'image/webp';data:Uint8Array}>;
   launchApp?(app:string,url?:string,filePath?:string,userDataDir?:string):Promise<unknown>;
 }
 export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobManagerOptions,'auditCommand'>&{
@@ -114,6 +117,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     adbDevices:()=>runGuarded('adb',signal=>adbController(signal).adbDevices()),
     adbInput:(serial,input)=>runGuarded('adb',signal=>adbController(signal).adbInput(serial,input),'adb'),
     adbScreencap:serial=>runGuarded('adb',signal=>adbController(signal).adbScreenshot(serial),'adb'),
+    showImage:path=>readPcImage(path,authorizer),
     runnerStatus:async()=>{
       const id=authorizer.assert('runner').id;
       const state=await getRunnerStatus({label:'fenotip-tv'},options.runnerProbe??(options.runnerDirectory?createConfiguredGithubRunnerProbe(options.runnerDirectory):undefined));
@@ -134,13 +138,17 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
     try{await deps.beforeRequest?.();const data=await action();const value=status?{ok:true,...data as object}:{ok:true,data};await audit(tool,'ok');return {content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
     catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
-  const imageRun=async(action:()=>Promise<Uint8Array>,tool='unknown')=>{
-    try{await deps.beforeRequest?.();const data=await action();const value={ok:true};
-      await audit(tool,'ok');
-      return {content:[{type:'image' as const,mimeType:'image/png',data:Buffer.from(data).toString('base64')}],structuredContent:value};
+  const imageRun=async(action:()=>Promise<PcScreenshotSource>,tool='unknown')=>{
+    try{await deps.beforeRequest?.();const source=await action();const result=await makePcScreenshotResult(source);
+      await audit(tool,'ok');return result;
     }catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';
       const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
+  server.registerResource('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
+    async()=>({contents:[{uri:PC_SCREENSHOT_URI,mimeType:PC_SCREENSHOT_MIME,text:PC_SCREENSHOT_HTML,
+      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/ui':{availableDisplayModes:['inline','fullscreen']},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
+  const imageToolMeta={ui:{resourceUri:PC_SCREENSHOT_URI},'openai/outputTemplate':PC_SCREENSHOT_URI,
+    'openai/toolInvocation/invoking':'Ekran görüntüsü alınıyor…','openai/toolInvocation/invoked':'Ekran görüntüsü hazır.'};
   server.registerTool('pc_status',{title:'Feno PC status',description:'Read local approval and coordination status; never grants access.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(async()=>({...a.status(),...await h.status()}),true,'pc_status'));
   server.registerTool('pc_list_files',{title:'List approved project files',description:'Returns sizeBytes, modifiedAt and pagination; default 100, max 200 entries.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(200).optional()}).strict(),annotations:readOnly},({path,offset,limit})=>run(()=>{a.assert('files.read');return h.listFiles(path,offset,limit);},false,'pc_list_files'));
   server.registerTool('pc_read_file',{title:'Read approved UTF-8 file',description:'Default limit 2 MiB; for larger files pass byte offset/length (max 2097152) or tailLines (max 2000). Sensitive files are denied.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),length:z.number().int().min(1).max(2097152).optional(),tailLines:z.number().int().min(1).max(2000).optional()}).strict(),annotations:readOnly},({path,offset,length,tailLines})=>run(()=>{a.assert('files.read');return h.readFile(path,{offset,length,tailLines});},false,'pc_read_file'));
@@ -157,13 +165,26 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   const windowId=z.string().regex(/^[1-9][0-9]{0,15}$/),serial=z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/);
   server.registerTool('pc_runner_status',{title:'Read fenotip-tv runner state',inputSchema:z.object({label:z.literal('fenotip-tv')}).strict(),annotations:readOnly},()=>run(()=>{a.assert('runner');if(!h.runnerStatus)throw new PcAccessDeniedError();return h.runnerStatus();},false,'pc_runner_status'));
   server.registerTool('pc_list_windows',{title:'List approved Windows application windows',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('screen.read');if(!h.listWindows)throw new PcAccessDeniedError();return h.listWindows();},false,'pc_list_windows'));
-  server.registerTool('pc_capture_screen',{title:'Capture approved window PNG',inputSchema:z.object({windowId}).strict(),annotations:readOnly},({windowId:id})=>imageRun(async()=>{a.assert('screen.read');if(!h.captureScreen)throw new PcAccessDeniedError();return (await h.captureScreen(id)).data;},'pc_capture_screen'));
-  server.registerTool('pc_capture_full_screen',{title:'Capture full desktop or one monitor PNG (high risk)',inputSchema:z.object({mode:z.enum(['all','monitor']),monitor:z.number().int().min(0).max(7).optional()}).strict(),annotations:readOnly},({mode,monitor})=>imageRun(async()=>{a.assert('screen.full');if(!h.captureFullScreen)throw new PcAccessDeniedError();return (await h.captureFullScreen(mode,monitor)).data;},'pc_capture_full_screen'));
+  server.registerTool('pc_capture_screen',{title:'Capture approved window PNG',inputSchema:z.object({windowId}).strict(),annotations:readOnly,_meta:imageToolMeta},({windowId:id})=>imageRun(async()=>{
+    a.assert('screen.read');if(!h.captureScreen)throw new PcAccessDeniedError();
+    const windows=await h.listWindows?.();const title=Array.isArray(windows)?windows.find(w=>w?.id===id)?.title:undefined;
+    const shot=await h.captureScreen(id);return {...shot,title:typeof title==='string'?title:`Pencere ${id}`};
+  },'pc_capture_screen'));
+  server.registerTool('pc_capture_full_screen',{title:'Capture full desktop or one monitor PNG (high risk)',inputSchema:z.object({mode:z.enum(['all','monitor']),monitor:z.number().int().min(0).max(7).optional()}).strict(),annotations:readOnly,_meta:imageToolMeta},({mode,monitor})=>imageRun(async()=>{
+    a.assert('screen.full');if(!h.captureFullScreen)throw new PcAccessDeniedError();const shot=await h.captureFullScreen(mode,monitor);
+    return {...shot,title:mode==='all'?'Tüm ekranlar':`Monitör ${(monitor??0)+1}`};
+  },'pc_capture_full_screen'));
   server.registerTool('pc_desktop_input',{title:'Control approved focused window',description:`Actions: click, right_click, double_click, drag (x/y to endX/endY), scroll, key, type. Keys (case-insensitive; Esc/Escape accepted): ${PC_DESKTOP_KEYS.join(', ')}, Ctrl+Shift+Tab, Ctrl+1..9. Double-click/drag require desktop.advanced.`,inputSchema:z.object({windowId,action:z.enum(['click','right_click','double_click','drag','scroll','key','type']),x:z.number().int().min(0).max(8192).optional(),y:z.number().int().min(0).max(8192).optional(),endX:z.number().int().min(0).max(8192).optional(),endY:z.number().int().min(0).max(8192).optional(),delta:z.number().int().min(-1080).max(1080).optional(),key:z.string().max(24).optional(),text:z.string().max(300).optional()}).strict(),annotations:write},input=>run(()=>{a.assert('desktop.input');if(!h.desktopInput)throw new PcAccessDeniedError();return h.desktopInput(input);},false,'pc_desktop_input'));
   server.registerTool('pc_clipboard_read',{title:'Read bounded Windows clipboard text (full access)',description:'Requires full-access desktop input, returns at most 65536 UTF-8 bytes; audit records tool name and outcome without text.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('desktop.input');if(!h.clipboardRead)throw new PcAccessDeniedError();return h.clipboardRead();},false,'pc_clipboard_read'));
   server.registerTool('pc_clipboard_write',{title:'Write bounded Windows clipboard text (full access)',description:'Requires full-access desktop input; audit records tool name and outcome without text.',inputSchema:z.object({text:z.string().max(65536)}).strict(),annotations:write},({text})=>run(()=>{a.assert('desktop.input');if(!h.clipboardWrite)throw new PcAccessDeniedError();return h.clipboardWrite(text);},false,'pc_clipboard_write'));
   server.registerTool('pc_adb_devices',{title:'List connected ADB devices',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('adb');if(!h.adbDevices)throw new PcAccessDeniedError();return h.adbDevices();},false,'pc_adb_devices'));
   server.registerTool('pc_adb_input',{title:'Send emulator tap, key or text',inputSchema:z.object({serial,action:z.enum(['tap','key','text']),x:z.number().int().min(0).max(8192).optional(),y:z.number().int().min(0).max(8192).optional(),value:z.string().max(150).optional()}).strict(),annotations:write},({serial,...input})=>run(()=>{a.assert('adb');if(!h.adbInput)throw new PcAccessDeniedError();return h.adbInput(serial,input);},false,'pc_adb_input'));
-  server.registerTool('pc_adb_screencap',{title:'Capture emulator PNG',inputSchema:z.object({serial}).strict(),annotations:readOnly},({serial})=>imageRun(async()=>{a.assert('adb');if(!h.adbScreencap)throw new PcAccessDeniedError();return h.adbScreencap(serial);},'pc_adb_screencap'));
+  server.registerTool('pc_adb_screencap',{title:'Capture emulator PNG',inputSchema:z.object({serial}).strict(),annotations:readOnly,_meta:imageToolMeta},({serial})=>imageRun(async()=>{
+    a.assert('adb');if(!h.adbScreencap)throw new PcAccessDeniedError();return {data:await h.adbScreencap(serial),mimeType:'image/png',title:`Android ekranı (${serial})`};
+  },'pc_adb_screencap'));
+  server.registerTool('pc_show_image',{title:'Show a saved PNG/JPEG/WebP image',description:'Read a bounded image within approved file roots and display it in ChatGPT.',
+    inputSchema:z.object({path:p}).strict(),annotations:readOnly,_meta:imageToolMeta},({path})=>imageRun(async()=>{
+      a.assert('files.read');if(!h.showImage)throw new PcAccessDeniedError();return {...await h.showImage(path),title:path.split(/[\\/]/).pop()||'Kayıtlı görüntü'};
+    },'pc_show_image'));
   server.registerTool('pc_launch_app',{title:'Open locally approved application',description:'Use filePath for Notepad and url plus optional userDataDir test profile for Chrome/Edge.',inputSchema:z.object({app:z.string().min(1).max(4096),url:z.string().max(2048).optional(),filePath:p.optional(),userDataDir:p.optional()}).strict(),annotations:write},({app,url,filePath,userDataDir})=>run(()=>{a.assert('apps.launch');if(!h.launchApp)throw new PcAccessDeniedError();return h.launchApp(app,url,filePath,userDataDir);},false,'pc_launch_app'));
 }

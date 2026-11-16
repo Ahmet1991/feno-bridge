@@ -4,7 +4,7 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {randomUUID} from 'node:crypto';
 import {defaultConfig} from '../src/config';
 const pcNames=['pc_status','pc_list_files','pc_read_file','pc_write_patch','pc_create_file','pc_create_directory','pc_start_job','pc_list_project_tasks','pc_start_project_task','pc_start_terminal','pc_job_status','pc_job_logs','pc_cancel_job',
-  'pc_list_windows','pc_capture_screen','pc_desktop_input','pc_clipboard_read','pc_clipboard_write','pc_adb_devices','pc_adb_screencap','pc_adb_input','pc_runner_status','pc_launch_app','pc_capture_full_screen'].sort();
+  'pc_list_windows','pc_capture_screen','pc_desktop_input','pc_clipboard_read','pc_clipboard_write','pc_adb_devices','pc_adb_screencap','pc_adb_input','pc_runner_status','pc_launch_app','pc_capture_full_screen','pc_show_image'].sort();
 test('native MCP advertises all desktop tools and denies unauthenticated use without changing six Codex schemas',async()=>{
   const home=mkdtempSync(join(tmpdir(),'pc-core-mcp-'));
   const transport=new StdioClientTransport({command:process.execPath,args:[join(import.meta.dir,'../src/cli.ts'),'mcp','--contract','native','--broker-socket',process.platform==='win32'?'\\\\.\\pipe\\pc-core-'+randomUUID():join(home,'broker.sock')],env:{...process.env as Record<string,string>,CODEX_CHATGPT_WEB_HOME:home,FENO_PC_COORDINATION_DIR:join(home,'coord')},stderr:'pipe'});
@@ -12,6 +12,11 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
   try{
     await client.connect(transport);const {tools}=await client.listTools();
     expect(tools.filter(t=>t.name.startsWith('pc_')).map(t=>t.name).sort()).toEqual(pcNames);
+    const resources=await client.listResources();
+    expect(resources.resources.some(r=>r.uri==='ui://widget/pc-screenshot.html')).toBe(true);
+    for(const name of ['pc_capture_screen','pc_capture_full_screen','pc_adb_screencap','pc_show_image']){
+      expect(tools.find(t=>t.name===name)?._meta?.['openai/outputTemplate']).toBe('ui://widget/pc-screenshot.html');
+    }
     const schema=(name:string)=>tools.find(t=>t.name===name)!.inputSchema;
     expect(Object.keys(schema('pc_launch_app').properties??{})).toContain('filePath');
     expect(Object.keys(schema('pc_launch_app').properties??{})).toContain('userDataDir');
@@ -21,7 +26,7 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
     const status=await client.callTool({name:'pc_status',arguments:{}});
     expect(status.structuredContent).toMatchObject({ok:true,enabled:false});
     for(const [name,args] of [['pc_list_files',{path:home}],['pc_read_file',{path:join(home,'x')}],['pc_create_file',{path:join(home,'x'),content:'fixture'}],['pc_start_terminal',{projectRoot:home,command:'echo fixture',purpose:'test command'}],
-      ['pc_list_windows',{}],['pc_capture_screen',{windowId:'123'}],['pc_capture_full_screen',{mode:'all'}],['pc_desktop_input',{windowId:'123',action:'click',x:1,y:1}],['pc_clipboard_read',{}],['pc_clipboard_write',{text:'fixture'}],
+      ['pc_list_windows',{}],['pc_capture_screen',{windowId:'123'}],['pc_capture_full_screen',{mode:'all'}],['pc_show_image',{path:join(home,'x.png')}],['pc_desktop_input',{windowId:'123',action:'click',x:1,y:1}],['pc_clipboard_read',{}],['pc_clipboard_write',{text:'fixture'}],
       ['pc_adb_devices',{}],['pc_adb_screencap',{serial:'emulator-5554'}],['pc_adb_input',{serial:'emulator-5554',action:'tap',x:1,y:2}],['pc_runner_status',{label:'fenotip-tv'}],['pc_launch_app',{app:'chrome.exe'}]] as const){
       const denied=await client.callTool({name,arguments:args});expect(denied.isError).toBe(true);expect(denied.structuredContent).toMatchObject({ok:false,code:'pc_access_denied'});
     }
