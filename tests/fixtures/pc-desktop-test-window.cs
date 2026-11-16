@@ -15,8 +15,16 @@ internal static class OwnDesktopFixture {
             TextBox box=new TextBox {Multiline=true,Dock=DockStyle.Fill,AccessibleName="Feno PC2 E2E own test editor"};
             form.Controls.Add(box);
             box.TextChanged+=delegate {File.WriteAllText(args[3],box.Text,new UTF8Encoding(false));};
+            // A real owned context menu lets the E2E exercise right-click -> Esc.
+            ContextMenuStrip menu=new ContextMenuStrip();
+            menu.Items.Add("Close with Esc");
+            box.ContextMenuStrip=menu;
+            string menuLog=args[3]+".menu";
+            menu.Opened+=delegate {File.AppendAllText(menuLog,"open\n",new UTF8Encoding(false));};
+            menu.Closed+=delegate {File.AppendAllText(menuLog,"close\n",new UTF8Encoding(false));};
             form.Shown+=delegate {box.Focus();};
             Application.Run(form);
+            menu.Dispose();
         }
         return 0;
     }

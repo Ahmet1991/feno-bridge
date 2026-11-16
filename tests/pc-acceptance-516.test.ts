@@ -42,7 +42,7 @@ windowsOnly('T23-25: launcher returns and activates the verified Notepad window 
       if(action==='activate'){expect(args).toMatchObject({windowId:'123',processName:'notepad.exe'});return {ok:true};}
       throw Error('unexpected helper action');
     }});
-  expect(await launch.launchPcApp('notepad')).toEqual({launched:true,app:'notepad.exe',windowId:'123'});
+  expect(await launch.launchPcApp('notepad')).toEqual({launched:true,app:'notepad.exe',windowId:'123',focused:true});
   expect(actions).toContain('activate');
 });
 
@@ -114,6 +114,6 @@ windowsOnly('launcher never substitutes an unrelated existing Chrome window for 
     resolve:()=> 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',spawnApp:()=>{},
     windowHelper:async(action)=>action==='list'
       ?[{id:'987',title:'Existing browser tab',processName:'chrome.exe'}]:{ok:true}});
-  await expect(launch.launchPcApp('chrome','https://example.com/'))
-    .rejects.toMatchObject({code:'pc_focus_required'});
+  expect(await launch.launchPcApp('chrome','https://example.com/'))
+    .toMatchObject({launched:true,focused:false});
 });

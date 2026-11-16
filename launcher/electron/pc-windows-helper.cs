@@ -125,7 +125,7 @@ internal static class PcWindowsHelper {
             string title=Title(handle);if(title.Length==0)return true;
             try {
                 string name=ProcessName(Owner(handle));
-                found.Add(new {id=handle.ToInt64().ToString(),title=title,processName=name});
+                found.Add(new {id=handle.ToInt64().ToString(),title=title,processName=name,processId=(int)Owner(handle)});
             }catch{}
             return found.Count<300;
         };
@@ -327,7 +327,9 @@ internal static class PcWindowsHelper {
             Require(EmitKey(key));
         }else if(action=="type") {
             string value=GetString(args,"text");
-            Require(value.Length>0 && value.Length<=300 && Regex.IsMatch(value,@"^[\p{L}\p{N} .,_@:/!?()\-—]+$"));
+            Require(value.Length>0 && value.Length<=300 && (allowNonClient
+                ? Regex.IsMatch(value,@"^[^\x00-\x1f\x7f]+$")
+                : Regex.IsMatch(value,@"^[\p{L}\p{N} .,_@:/!?()\-—]+$")));
             foreach(char character in value) { SafeFocus(hwnd,pid,appPid,allowFocus);Require(UnicodeChar(character)); }
         }else throw new InvalidOperationException();
         return new {ok=true};

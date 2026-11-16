@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
-import { join, win32 } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PcAccessDeniedError, PcAuthorizer } from './authorization';
 import { PcOperationError, invalidPcArgument } from './errors';
@@ -91,12 +91,12 @@ export function validatePcLaunchUrl(raw: unknown,roots:string[]=[],fullAccess=fa
 export function createPcApplicationLauncher(options: {
   authorizer: PcAuthorizer;
   resolve?: (app: PcLaunchableApp) => string | undefined;
-  spawnApp?: (executable: string, args: string[]) => void | Promise<void>;
+  spawnApp?: (executable: string, args: string[]) => void | number | Promise<void | number>;
   windowHelper?: PcWindowsHelper;
   signal?: AbortSignal;
 }) {
   const resolve = options.resolve ?? resolveTrustedPcApplication;
-  const spawnApp = options.spawnApp ?? ((executable: string, args: string[]) => new Promise<void>((resolve, reject) => {
+  const spawnApp = options.spawnApp ?? ((executable: string, args: string[]) => new Promise<number | undefined>((resolve, reject) => {
     if (options.signal?.aborted) { reject(new PcAccessDeniedError()); return; }
     const child = spawn(executable, args, { shell: false, windowsHide: false, detached: true, stdio: 'ignore' });
     let settled = false;
@@ -112,11 +112,11 @@ export function createPcApplicationLauncher(options: {
       if (options.signal?.aborted) { abort(); return; }
       settled = true;
       child.unref();
-      resolve();
+      resolve(child.pid);
     });
   }));
   const windowHelper=options.windowHelper??(pcWindowsHelperStatus().available?invokePackagedWindowsHelper:undefined);
-  type LaunchWindow={id:string;title:string;processName:string};
+  type LaunchWindow={id:string;title:string;processName:string;processId?:number};
   async function listed(app:string):Promise<LaunchWindow[]>{
     if(!windowHelper)return [];
     try{
@@ -129,7 +129,7 @@ export function createPcApplicationLauncher(options: {
     }catch{return [];}
   }
   return {
-    async launchPcApp(app: string, rawUrl?: string, filePath?:string, userDataDir?:string): Promise<{ launched: true; app: string;windowId?:string }> {
+    async launchPcApp(app: string, rawUrl?: string, filePath?:string, userDataDir?:string): Promise<{ launched: true; app: string;windowId?:string;focused?:boolean }> {
       if (options.signal?.aborted) throw new PcAccessDeniedError();
       const grant = options.authorizer.assert('apps.launch');
       app=normalizePcLaunchApp(app);
@@ -145,8 +145,15 @@ export function createPcApplicationLauncher(options: {
         if(typeof userDataDir!=='string'||userDataDir.length>1024||userDataDir.includes('\0'))throw invalidPcArgument('userDataDir','Invalid absolute profile path');
         const dir=resolveAllowedPath(userDataDir,grant.roots,{forCreate:true,fullAccess:grant.fullAccess});
         args.push('--user-data-dir='+dir);
+        if(rawUrl!==undefined)args.push('--new-window');
       }
       if(filePath!==undefined){
+        // A nonexistent document is a file error, not a failed security grant.
+        // Check its canonical parent against the approved roots before revealing it.
+        if(!existsSync(filePath)){
+          resolveAllowedPath(dirname(filePath),grant.roots,{fullAccess:grant.fullAccess});
+          throw new PcOperationError('pc_file_not_found');
+        }
         const allowed=resolveAllowedPath(filePath,grant.roots,{fullAccess:grant.fullAccess});
         if(!statSync(allowed).isFile())throw invalidPcArgument('filePath','Expected an existing regular file');
         args.push(allowed);
@@ -155,34 +162,40 @@ export function createPcApplicationLauncher(options: {
       if (!executable || !win32.isAbsolute(executable)) throw invalidPcArgument('app','Application executable was not found');
       if (options.signal?.aborted || options.authorizer.assert('apps.launch').id !== grant.id) throw new PcAccessDeniedError();
       const before=grant.fullAccess?await listed(app):[];
-      await spawnApp(executable, args);
+      const spawnedPid=await spawnApp(executable, args);
       if (options.signal?.aborted || options.authorizer.assert('apps.launch').id !== grant.id) throw new PcAccessDeniedError();
       if(grant.fullAccess&&windowHelper){
         let selected:LaunchWindow|undefined;
         let fallback:LaunchWindow|undefined;
         const known=new Set(before.map(item=>item.id));
-        for(let attempt=0;attempt<16;attempt++){
+        // Browsers may hand their initial process off to a profile-specific child.
+        // The before/after window IDs avoid claiming an unrelated existing tab.
+        for(let attempt=0;attempt<41;attempt++){
           const current=await listed(app);
-          selected=current.find(item=>!known.has(item.id));
+          const added=current.filter(item=>!known.has(item.id));
+          // Prefer a direct process match. Chrome may delegate to another process,
+          // in which case the newly observed browser window is still the candidate.
+          selected=added.find(item=>item.processId===spawnedPid)
+            ??(rawUrl!==undefined?added.find(item=>item.title.toLowerCase().includes(new URL(rawUrl).hostname.toLowerCase())):undefined)
+            ??added[0];
           if(selected)break;
           // Only a plain app activation may legitimately reuse a pre-existing window.
           // A URL, document, or isolated browser profile must not target an unrelated tab.
           fallback=rawUrl===undefined&&filePath===undefined&&userDataDir===undefined&&current.length===1
             ?current[0]:undefined;
-          if(attempt<15)await new Promise(resolve=>setTimeout(resolve,75));
+          if(attempt<40)await new Promise(resolve=>setTimeout(resolve,100));
         }
         selected??=fallback;
         if(selected){
           if(options.signal?.aborted||options.authorizer.assert('apps.launch').id!==grant.id)throw new PcAccessDeniedError();
           const activation=await windowHelper('activate',{windowId:selected.id,title:selected.title,
             processName:selected.processName},options.signal);
-          if(activation&&typeof activation==='object'&&(activation as {reason?:unknown}).reason==='focus_required')
-            throw new PcOperationError('pc_focus_required');
-          if(!activation||typeof activation!=='object'||(activation as {ok?:unknown}).ok!==true)
+          const focused=!!activation&&typeof activation==='object'&&(activation as {ok?:unknown}).ok===true;
+          if(!focused&&(activation as {reason?:unknown}|null)?.reason!=='focus_required')
             throw new PcAccessDeniedError();
-          return {launched:true,app,windowId:selected.id};
+          return {launched:true,app,windowId:selected.id,focused};
         }
-        throw new PcOperationError('pc_focus_required');
+        return {launched:true,app,focused:false};
       }
       return { launched: true, app };
     },

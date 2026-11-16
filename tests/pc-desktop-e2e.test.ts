@@ -7,11 +7,12 @@ import {randomUUID} from 'node:crypto';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController,type PcWindowsHelper} from '../src/pc-control/windows';
 import {PcOperationError} from '../src/pc-control/errors';
+import {PC_PERMISSIONS} from '../src/pc-control/types';
 
 const e2e=process.platform==='win32'&&process.env.FENO_PC_DESKTOP_E2E==='1'?test:test.skip;
 e2e('real desktop E2E touches only the test-owned window; image bytes never hit disk',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'feno-pc2-desktop-e2e-'));
-  const title='Feno-PC2-E2E-'+randomUUID(),log=join(directory,'typed.txt');
+  const title='Feno-PC2-E2E-'+randomUUID(),log=join(directory,'typed.txt'),menuLog=log+'.menu';
   const fixture=join(import.meta.dir,'..','.cache','pc-desktop-test-window.exe');
   const helper=process.env.FENO_PC_DESKTOP_HELPER_EXE||join(import.meta.dir,'..','.cache','pc-windows-helper.exe');
   if(!existsSync(fixture)||!existsSync(helper))throw Error('compiled desktop E2E helpers missing');
@@ -43,7 +44,7 @@ e2e('real desktop E2E touches only the test-owned window; image bytes never hit 
   };
   const authorizer=new PcAuthorizer({profileId:'pc2-normal'});
   authorizer.setGrantFromLocalApproval({profileId:'pc2-normal',id:'desktop-e2e-'+randomUUID(),
-    expiresAt:Date.now()+60000,roots:[],permissions:['screen.read','desktop.input','screen.full'],allowedApps:['pc-desktop-test-window.exe']});
+    expiresAt:null,fullAccess:true,roots:['C:\\','D:\\'],permissions:[...PC_PERMISSIONS.slice(1)],allowedApps:[]});
   const w=createPcWindowsController({authorizer,runHelper:call});
   try{
     let owned:{id:string;title:string;processName:string}|undefined;
@@ -60,7 +61,7 @@ e2e('real desktop E2E touches only the test-owned window; image bytes never hit 
     expect(Buffer.from(full.data).subarray(0,8)).toEqual(Buffer.from([137,80,78,71,13,10,26,10]));
     // A second, fake window cannot be an input target, regardless of focus.
     await expect(w.pcDesktopInput({windowId:'999999',action:'type',text:'MUST_NOT_TYPE'})).rejects.toThrow('pc_access_denied');
-    const marker='Çağrı, ılık süt içti — ŞĞÜÖİ';
+    const marker='Çağrı, ılık süt içti — ŞĞÜÖİ D:\\PC2-Test\\a1\\notdefteri3.txt https://example.com/a?q=1&x=2';
     try{await w.pcDesktopInput({windowId:owned.id,action:'type',text:marker});}
     catch(e){
       if(e instanceof PcOperationError&&e.code==='pc_focus_required'){
@@ -72,6 +73,12 @@ e2e('real desktop E2E touches only the test-owned window; image bytes never hit 
     }
     for(let i=0;i<20&&!existsSync(log);i++)await Bun.sleep(50);
     expect(readFileSync(log,'utf8').replace(/^\uFEFF/,'')).toBe(marker);
+    await w.pcDesktopInput({windowId:owned.id,action:'right_click',x:40,y:90});
+    for(let i=0;i<20&&!existsSync(menuLog);i++)await Bun.sleep(50);
+    expect(readFileSync(menuLog,'utf8')).toContain('open\n');
+    await w.pcDesktopInput({windowId:owned.id,action:'key',key:'ESC'});
+    for(let i=0;i<20&&!readFileSync(menuLog,'utf8').includes('close\n');i++)await Bun.sleep(50);
+    expect(readFileSync(menuLog,'utf8')).toMatch(/open\nclose\n/);
     process.stdout.write('E2E own window input and in-memory captures succeeded.\n');
   }finally{
     authorizer.revoke();child.kill();

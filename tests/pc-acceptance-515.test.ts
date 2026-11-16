@@ -45,7 +45,7 @@ test('T39: launch browser URL with isolated approved test profile',async()=>{
   const auth=full('D:\\');const calls:string[][]=[];
   const launch=createPcApplicationLauncher({authorizer:auth,resolve:()=> 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',spawnApp:(_exe,args)=>{calls.push(args);}});
   expect(await launch.launchPcApp('chrome.exe','https://example.com/',undefined,'D:\\PC2-Browser-Test-Profile')).toMatchObject({launched:true});
-  expect(calls[0]).toEqual(['--user-data-dir=D:\\PC2-Browser-Test-Profile','https://example.com/']);
+  expect(calls[0]).toEqual(['--user-data-dir=D:\\PC2-Browser-Test-Profile','--new-window','https://example.com/']);
   await expect(launch.launchPcApp('notepad.exe',undefined,undefined,'D:\\PC2-Browser-Test-Profile')).rejects.toThrow('pc_invalid_argument');
 });
 

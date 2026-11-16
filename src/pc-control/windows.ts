@@ -250,7 +250,11 @@ export function createPcWindowsController(options: {
           args = { windowId: input.windowId, key: normalizePcDesktopKey(input.key) };
           break;
         case "type":
-          if (!input.text || input.text.length > 300 || !/^[\p{L}\p{N} .,_@:/!?()\-—]+$/u.test(input.text)) throw invalidPcArgument('text','Expected 1-300 safe characters');
+          if (typeof input.text!=='string' || input.text.length<1 || input.text.length>300 ||
+            !(authorizer.assert('desktop.input').fullAccess
+              ? !/[\x00-\x1f\x7f]/u.test(input.text)
+              : /^[\p{L}\p{N} .,_@:/!?()\-—]+$/u.test(input.text)))
+            throw invalidPcArgument('text','Expected 1-300 safe characters');
           args = { windowId: input.windowId, text: input.text };
           break;
         default:
