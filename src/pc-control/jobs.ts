@@ -71,7 +71,8 @@ export function createPcJobManager(options:PcJobManagerOptions){
     const id=authorizer.assert('jobs').id;if(terminal&&authorizer.assert('terminal.exec').id!==id)throw new PcAccessDeniedError();return id;
   }
   function validateRoot(requested:string,authorizer:PcAuthorizer,grantId:string,terminal:boolean){
-    if(owner(authorizer,terminal)!==grantId||resolveAllowedPath(requested,authorizer.assert('jobs').roots)!==root)throw new PcAccessDeniedError();
+    const grant=authorizer.assert('jobs');
+    if(owner(authorizer,terminal)!==grantId||resolveAllowedPath(requested,grant.roots,{fullAccess:grant.fullAccess})!==root)throw new PcAccessDeniedError();
   }
   function get(id:string,authorizer:PcAuthorizer):Job{
     const grantId=owner(authorizer);const job=typeof id==='string'?jobs.get(id):undefined;

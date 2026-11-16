@@ -74,16 +74,30 @@ windowsTest('sensitive names and content are rejected for reads, creates and pat
 windowsTest('bounded UTF8 rejects oversized, malformed and binary files without mutation',async()=>{
   const files=implementation(),{root,auth}=fixture(),file=join(root,'data.txt');
   for(const bytes of [Buffer.from([0xc3,0x28]),Buffer.from([65,0,66]),Buffer.alloc(2*1024*1024+1,65)]){
-    writeFileSync(file,bytes);await expect(files.readPcFile(file,auth)).rejects.toThrow('pc_access_denied');expect(readFileSync(file)).toEqual(bytes);
+    writeFileSync(file,bytes);await expect(files.readPcFile(file,auth)).rejects.toThrow(bytes.length>2*1024*1024?'pc_file_too_large':'pc_access_denied');expect(readFileSync(file)).toEqual(bytes);
   }
   await expect(files.createPcFile(join(root,'large.txt'),'a'.repeat(2*1024*1024+1),auth)).rejects.toThrow('pc_access_denied');
 });
+windowsTest('five megabyte log supports bounded offset and tail reads with explicit limits',async()=>{
+  const files=implementation(),{root,auth}=fixture(),file=join(root,'big.log');
+  writeFileSync(file,'row one\n'+('x'.repeat(5*1024*1024))+'\nlast row\n');
+  await expect(files.readPcFile(file,auth)).rejects.toMatchObject({code:'pc_file_too_large',details:{limitBytes:2*1024*1024}});
+  const chunk=await files.readPcFile(file,auth,{offset:0,length:8});
+  expect(chunk).toMatchObject({content:'row one\n',partial:true,sizeBytes:5*1024*1024+18,nextOffset:8});
+  const tail=await files.readPcFile(file,auth,{tailLines:1});
+  expect(tail.content).toBe('last row\n');
+});
 windowsTest('listing filters secrets and rejects traversal and oversized directories',async()=>{
   const files=implementation(),{root,auth}=fixture();mkdirSync(join(root,'src'));writeFileSync(join(root,'visible.txt'),'ok');writeFileSync(join(root,'.env'),'hidden');mkdirSync(join(root,'.git'));
-  expect((await files.listPcFiles(root,'',auth)).sort((a:any,b:any)=>a.name.localeCompare(b.name))).toEqual([{name:'src',kind:'directory'},{name:'visible.txt',kind:'file'}]);
-  for(const relative of ['..','src/../','D:\\outside','/outside'])await expect(files.listPcFiles(root,relative,auth)).rejects.toThrow('pc_access_denied');
+  const listing=await files.listPcFiles(root,'',auth);
+  expect(listing.entries.map((e:any)=>[e.name,e.kind])).toEqual([['src','directory'],['visible.txt','file']]);
+  expect(listing.entries.find((e:any)=>e.name==='visible.txt')?.sizeBytes).toBe(2);
+  expect(typeof listing.entries.find((e:any)=>e.name==='visible.txt')?.modifiedAt).toBe('string');
+  expect(listing.pagination).toEqual({offset:0,limit:100,total:2,nextOffset:null});
+  for(const relative of ['..','src/../','D:\\outside','/outside'])await expect(files.listPcFiles(root,relative,auth)).rejects.toThrow('pc_invalid_argument');
   for(let i=0;i<501;i++)writeFileSync(join(root,`entry-${i}.txt`),'x');
-  await expect(files.listPcFiles(root,'',auth)).rejects.toThrow('pc_access_denied');
+  const page=await files.listPcFiles(root,'',auth,0,25);
+  expect(page.entries).toHaveLength(25);expect(page.pagination).toMatchObject({limit:25,total:503,nextOffset:25});
 });
 windowsTest('junction and hardlink aliases cannot cross or disguise approved boundaries',async()=>{
   const files=implementation(),{root,base,auth}=fixture(),outside=join(base,'outside');mkdirSync(outside);writeFileSync(join(outside,'value.txt'),'outside\n');
@@ -93,7 +107,7 @@ windowsTest('junction and hardlink aliases cannot cross or disguise approved bou
   }
   await expect(files.createPcFile(join(root,'escape','new.txt'),'x',auth)).rejects.toThrow('pc_access_denied');
   await expect(files.createPcDirectory(join(root,'inside-alias','new'),auth)).rejects.toThrow('pc_access_denied');
-  expect(await files.listPcFiles(root,'',auth)).toEqual([]);expect(readFileSync(join(outside,'value.txt'),'utf8')).toBe('outside\n');
+  expect((await files.listPcFiles(root,'',auth)).entries).toEqual([]);expect(readFileSync(join(outside,'value.txt'),'utf8')).toBe('outside\n');
 });
 windowsTest('concurrent stale patches publish one complete winner',async()=>{
   const files=implementation(),{root,auth}=fixture(),file=join(root,'race.txt');writeFileSync(file,'one\n');

@@ -1,5 +1,6 @@
 "use strict";
-const fs=require('node:fs'),path=require('node:path'),{execFileSync}=require('node:child_process'),{randomUUID}=require('node:crypto');
+const fs=require('node:fs'),path=require('node:path'),{execFile}=require('node:child_process'),{promisify}=require('node:util'),{randomUUID}=require('node:crypto');
+const execFileAsync=promisify(execFile);
 const {pcPolicyForProfile,validatePcSelection,copyPcSelection,PC_ALLOWED_APPLICATIONS,PC_FULL_PERMISSIONS}=require('./pc-profile-policy.cjs');
 const {getNativeSecurityContext,createPrivateFileAccess,createWindowsDpapiProtection}=require('./private-acl.cjs');
 const {createPcPersistentConsent}=require('./pc-persistent-consent.cjs');
@@ -10,9 +11,9 @@ const {createPcHeartbeatGuard}=require('./pc-heartbeat-guard.cjs');
 const {createPcDevRetirementStore}=require('./pc-dev-retirement.cjs');
 const {pcRuntimePaths}=require('./pc-runtime-paths.cjs');
 const deny=()=>new Error('pc_access_denied');
-function listWindowsFixedDrives(){
+async function listWindowsFixedDrives(){
   if(process.platform!=='win32')throw deny();
-  const output=execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+  const {stdout:output}=await execFileAsync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
     '(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3").DeviceID'],{encoding:'utf8',timeout:8000,windowsHide:true});
   return output.split(/\r?\n/).map(value=>value.trim()).filter(value=>/^[A-Z]:$/i.test(value)).map(value=>value.toUpperCase()+'\\');
 }
@@ -38,26 +39,30 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
   fullAccessConfigPath=path.join(profile.coreHome,'config.json'),listFixedDriveRoots=listWindowsFixedDrives}){
   const policy=pcPolicyForProfile(profile),layout=pcRuntimePaths({coreHome:profile.coreHome,profileId:policy.profileId,sharedDirectory});
   let channel,controller,peers,retirementStore,scope,timer,guard,lastAutoStop,started=false,initialized=false,stopped=false,retirementPending=false;
+  let heartbeatPending;
   let lastConfigErrorAt=-Infinity;
   const blank=()=>({roots:[],permissions:[],allowedApps:[]});
   function enabledInConfig(){
     if(policy.profileId!=='pc2-normal')return false;
     try{return readFullFlag(fullAccessConfigPath);}catch(error){if(error?.code==='ENOENT')return false;throw error;}
   }
-  function issueFullGrant(){
-    const roots=[...new Set(listFixedDriveRoots().map(root=>root.toUpperCase()))].sort();
+  async function issueFullGrant(){
+    const roots=[...new Set((await listFixedDriveRoots()).map(root=>root.toUpperCase()))].sort();
     if(!roots.length||!roots.every(root=>/^[A-Z]:\\$/.test(root)))throw deny();
     const selection={durationMs:null,fullAccess:true,roots,permissions:[...PC_FULL_PERMISSIONS],allowedApps:[]};
     validatePcSelection(selection);
-    const grant=controller.activateFullAccess(selection);
-    try{channel.activate(grant);scope=copyPcSelection(selection);}catch(error){controller.suspend();scope=undefined;throw error;}
+    const grant=await controller.activateFullAccessAsync(selection);
+    if(!started||stopped){controller.suspend();throw deny();}
+    try{await channel.activateAsync(grant);scope=copyPcSelection(selection);}catch(error){controller.suspend();scope=undefined;throw error;}
   }
-  function reconcileFullAccess(){
+  async function reconcileFullAccess(){
     if(policy.profileId!=='pc2-normal')return;
+    // A previous suspended channel write must finish before a new grant is published.
+    await guard.flushSuspension();
     let configured=false;
     try{configured=enabledInConfig();}catch(error){
       // A temporary sharing violation must not silently revoke an existing grant.
-      if(['EPERM','EBUSY','EAGAIN','ETIMEDOUT'].includes(error?.code)){
+      if(['EACCES','EPERM','EBUSY','EAGAIN','ETIMEDOUT'].includes(error?.code)){
         if(clock()-lastConfigErrorAt>=10000){lastConfigErrorAt=clock();audit({action:'full_access_config_retry',at:clock(),code:'pc_private_storage_transient'});}
         return;
       }
@@ -65,17 +70,23 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
     }
     if(configured){
       if(!controller.status().enabled||scope?.fullAccess!==true){
-        try{issueFullGrant();}catch(error){audit({action:'full_access_recovery_failed',at:clock(),code:'pc_access_denied'});}
+        try{await issueFullGrant();}catch(error){audit({action:'full_access_recovery_failed',at:clock(),code:error?.code||'pc_access_denied'});}
       }
     }else if(scope?.fullAccess){
-      scope=undefined;try{controller.revoke();}finally{channel.revoke();}
+      scope=undefined;try{await controller.revokeAsync();}finally{await channel.revokeAsync();}
       audit({action:'full_access_disabled',at:clock()});
     }
   }
   function heartbeat(){
-    if(!started)return;
-    reconcileFullAccess();
-    guard.heartbeat();
+    if(!started)return Promise.resolve();
+    if(heartbeatPending)return heartbeatPending;
+    const pulse=(async()=>{
+      await reconcileFullAccess();
+      if(started&&!stopped)await guard.heartbeatAsync();
+    })();
+    heartbeatPending=pulse;
+    void pulse.finally(()=>{if(heartbeatPending===pulse)heartbeatPending=undefined;}).catch(()=>{});
+    return pulse;
   }
   const service={
     start(){
@@ -111,7 +122,8 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
         const launchValid=!saved.permissions.includes('apps.launch')||saved.allowedApps.some(app=>PC_ALLOWED_APPLICATIONS.some(item=>item.id===app&&item.launchable));
         if(appsValid&&launchValid){const grant=controller.restoreTrustedPersistentSelection(saved);channel.activate(grant);scope=copyPcSelection(saved);}
       }
-      started=true;reconcileFullAccess();timer=setInterval(heartbeat,2000);timer.unref?.();
+      started=true;void heartbeat().catch(error=>audit({action:'heartbeat_error',at:clock(),code:error?.code||'pc_access_denied'}));
+      timer=setInterval(()=>{void heartbeat().catch(error=>audit({action:'heartbeat_error',at:clock(),code:error?.code||'pc_access_denied'}));},2000);timer.unref?.();
     },
     status(){
       const state=controller?.status()||{enabled:false};

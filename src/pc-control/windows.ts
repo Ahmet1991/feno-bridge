@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { PcAccessDeniedError, PcAuthorizer } from "./authorization";
-import { PcOperationError } from "./errors";
+import { PcOperationError, invalidPcArgument } from "./errors";
 
 type PcWindow = { id: string; title: string; processName: string };
 type PcHelperAction = "session" | "list" | "capture" | "full" | "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type";
@@ -12,10 +12,18 @@ export type PcDesktopInput = { windowId: string; action: "click" | "right_click"
 export type PcWindowsHelper = (action: PcHelperAction, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
 const PNG_MAGIC = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MAX_SCREEN_BYTES = 6 * 1024 * 1024;
-const KEYS = new Set(["ENTER", "ESC", "TAB", "SPACE", "BACKSPACE", "DELETE", "UP", "DOWN", "LEFT", "RIGHT", "HOME", "END", "PAGEUP", "PAGEDOWN",
+export const PC_DESKTOP_KEYS = ["ENTER", "ESC", "TAB", "SPACE", "BACKSPACE", "DELETE", "UP", "DOWN", "LEFT", "RIGHT", "HOME", "END", "PAGEUP", "PAGEDOWN",
   "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
   "CTRL+A", "CTRL+C", "CTRL+F", "CTRL+L", "CTRL+N", "CTRL+P", "CTRL+S", "CTRL+T", "CTRL+V", "CTRL+W", "CTRL+X", "CTRL+Y", "CTRL+Z",
-  "CTRL+SHIFT+P", "ALT+LEFT", "ALT+RIGHT"]);
+  "CTRL+END", "CTRL+HOME", "CTRL+SHIFT+P", "CTRL+SHIFT+S", "ALT+LEFT", "ALT+RIGHT", "ALT+F4", "SHIFT+TAB"] as const;
+const KEYS = new Set<string>(PC_DESKTOP_KEYS);
+export function normalizePcDesktopKey(key:unknown):string {
+  if(typeof key!=='string')throw invalidPcArgument('key','Expected a key name',PC_DESKTOP_KEYS);
+  const value=key.replace(/\s+/g,'').toUpperCase().replace(/^CONTROL\+/,'CTRL+');
+  const normalized=({ESCAPE:'ESC',RETURN:'ENTER',PGUP:'PAGEUP',PGDN:'PAGEDOWN'} as Record<string,string>)[value]??value;
+  if(!KEYS.has(normalized))throw invalidPcArgument('key','Unsupported key or shortcut',PC_DESKTOP_KEYS);
+  return normalized;
+}
 
 type VerifiedHelperPaths = { executablePath: string; manifestPath: string };
 type VerifiedHelperOptions = VerifiedHelperPaths & { spawnHelper?: typeof spawn };
@@ -188,7 +196,7 @@ export function createPcWindowsController(options: {
       guard('screen.full',id);return {mimeType:'image/png',data:bytes};
     },
     async pcDesktopInput(input: PcDesktopInput): Promise<{ ok: true }> {
-      if (!input || typeof input !== "object") throw new PcAccessDeniedError();
+      if (!input || typeof input !== "object") throw invalidPcArgument('input','Expected desktop input object');
       const permission=input.action==='double_click'||input.action==='drag'?'desktop.advanced':'desktop.input';
       const id=guard(permission).id;
       // Advanced actions require both the base input permission and a separate local opt-in.
@@ -200,30 +208,29 @@ export function createPcWindowsController(options: {
         case "double_click":
         case "drag":
           if (!Number.isSafeInteger(input.x) || !Number.isSafeInteger(input.y)
-            || input.x! < 0 || input.y! < 0 || input.x! > 8192 || input.y! > 8192) throw new PcAccessDeniedError();
+            || input.x! < 0 || input.y! < 0 || input.x! > 8192 || input.y! > 8192) throw invalidPcArgument('x/y','Coordinates must be between 0 and 8192');
           args = { windowId: input.windowId, x: input.x, y: input.y };
           if(input.action==='drag'){
             if(!Number.isSafeInteger(input.endX)||!Number.isSafeInteger(input.endY)||input.endX!<0||input.endY!<0
-              ||input.endX!>8192||input.endY!>8192)throw new PcAccessDeniedError();
+              ||input.endX!>8192||input.endY!>8192)throw invalidPcArgument('endX/endY','Drag destination must be between 0 and 8192');
             args.endX=input.endX;args.endY=input.endY;
           }
           break;
         case "scroll":
           if (!Number.isSafeInteger(input.x) || !Number.isSafeInteger(input.y)
             || input.x! < 0 || input.y! < 0 || input.x! > 8192 || input.y! > 8192
-            || !Number.isSafeInteger(input.delta) || !input.delta || Math.abs(input.delta) > 1_080) throw new PcAccessDeniedError();
+            || !Number.isSafeInteger(input.delta) || !input.delta || Math.abs(input.delta) > 1_080) throw invalidPcArgument('delta/x/y','Scroll requires coordinates and nonzero delta (max 1080)');
           args = { windowId: input.windowId, x: input.x, y: input.y, delta: input.delta };
           break;
         case "key":
-          if (!input.key || !KEYS.has(input.key)) throw new PcAccessDeniedError();
-          args = { windowId: input.windowId, key: input.key };
+          args = { windowId: input.windowId, key: normalizePcDesktopKey(input.key) };
           break;
         case "type":
-          if (!input.text || input.text.length > 300 || !/^[\p{L}\p{N} .,_@:/!?()\-—]+$/u.test(input.text)) throw new PcAccessDeniedError();
+          if (!input.text || input.text.length > 300 || !/^[\p{L}\p{N} .,_@:/!?()\-—]+$/u.test(input.text)) throw invalidPcArgument('text','Expected 1-300 safe characters');
           args = { windowId: input.windowId, text: input.text };
           break;
         default:
-          throw new PcAccessDeniedError();
+          throw invalidPcArgument('action','Unsupported desktop action',['click','right_click','double_click','drag','scroll','key','type']);
       }
       const selected = await assertWindow(input.windowId, "desktop.input");
       guard(permission,id);

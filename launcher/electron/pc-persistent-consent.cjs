@@ -14,6 +14,19 @@ function createPcPersistentConsent({filePath,profileId,encryption,files,allowLeg
     if(!Buffer.isBuffer(bytes)||bytes.length<1||bytes.length>MAX_BYTES)throw deny();
     files.ensurePrivateDirectory(path.dirname(filePath));files.writePrivateAtomic(filePath,bytes);
   };
+  const persistAsync=async value=>{
+    if(!await availableAsync())throw deny();
+    if(typeof encryption.encryptStringAsync!=='function'||typeof files.writePrivateAtomicAsync!=='function')return persist(value);
+    const bytes=await encryption.encryptStringAsync(JSON.stringify(value));
+    if(!Buffer.isBuffer(bytes)||bytes.length<1||bytes.length>MAX_BYTES)throw deny();
+    if(typeof files.ensurePrivateDirectoryAsync==='function')await files.ensurePrivateDirectoryAsync(path.dirname(filePath));
+    else files.ensurePrivateDirectory(path.dirname(filePath));
+    await files.writePrivateAtomicAsync(filePath,bytes);
+  };
+  const availableAsync=async()=>{
+    try{return process.platform==='win32'&&(typeof encryption.isEncryptionAvailableAsync==='function'
+      ?await encryption.isEncryptionAvailableAsync():encryption.isEncryptionAvailable()===true);}catch{return false;}
+  };
   return Object.freeze({profileId,isProtectionAvailable:available,
     save(selection){
       receipts=new WeakSet();suppressRestore=true;
@@ -21,6 +34,14 @@ function createPcPersistentConsent({filePath,profileId,encryption,files,allowLeg
       const text=JSON.stringify({schema:2,profileId,selection:copyPcSelection(selection)});if(Buffer.byteLength(text)>MAX_BYTES)throw deny();
       persist(JSON.parse(text));suppressRestore=false;
     },
+    async saveAsync(selection){
+      receipts=new WeakSet();suppressRestore=true;
+      if(!await availableAsync())throw deny();validatePcSelection(selection);if(selection.durationMs!==null)throw deny();
+      const text=JSON.stringify({schema:2,profileId,selection:copyPcSelection(selection)});
+      if(Buffer.byteLength(text)>MAX_BYTES)throw deny();
+      await persistAsync(JSON.parse(text));suppressRestore=false;
+    },
+    isProtectionAvailableAsync:availableAsync,
     restore(){
       if(suppressRestore||!available())return null;
       let bytes;try{bytes=files.readPrivateFile(filePath,MAX_BYTES);}catch{return null;}
@@ -39,6 +60,7 @@ function createPcPersistentConsent({filePath,profileId,encryption,files,allowLeg
     isTrustedSelection(selection){return !!selection&&receipts.has(selection);},
     // Keep a durable encrypted denial rather than depending on deletion succeeding.
     clear(){receipts=new WeakSet();suppressRestore=true;persist({schema:2,profileId,revoked:true});},
+    async clearAsync(){receipts=new WeakSet();suppressRestore=true;await persistAsync({schema:2,profileId,revoked:true});},
   });
 }
 module.exports={createPcPersistentConsent};

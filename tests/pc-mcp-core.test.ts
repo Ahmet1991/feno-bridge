@@ -40,7 +40,12 @@ windowsTest('signed local approval drives real MCP files, project tasks, termina
       LOCALAPPDATA:join(root,'appdata'),ProgramFiles:join(root,'programs'),'ProgramFiles(x86)':join(root,'programs-x86')},stderr:'pipe'});
   const client=new Client({name:'isolated-pc-flow',version:'1'});
   const data=async(name:string,args:Record<string,unknown>={})=>{
-    const r=await client.callTool({name,arguments:args});if(r.isError)throw Error(JSON.stringify(r.structuredContent));return r.structuredContent as any;
+    const r=await client.callTool({name,arguments:args});
+    if(r.isError){
+      const current=await client.callTool({name:'pc_status',arguments:{}});
+      throw Error(JSON.stringify({tool:name,error:r.structuredContent,status:current.structuredContent}));
+    }
+    return r.structuredContent as any;
   };
   async function finished(jobId:string){const until=Date.now()+12000;for(;;){const s=(await data('pc_job_status',{jobId})).data;if(s.state!=='running')return s;if(Date.now()>until)throw Error('fixture job did not finish');await Bun.sleep(30);}}
   try{

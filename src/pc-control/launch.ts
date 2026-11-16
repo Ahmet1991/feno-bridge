@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { join, win32 } from 'node:path';
 import { PcAccessDeniedError, PcAuthorizer } from './authorization';
+import { invalidPcArgument } from './errors';
+import {resolveAllowedPath} from './paths';
 
 export const PC_LAUNCHABLE_APPS = ['notepad.exe', 'chrome.exe', 'msedge.exe'] as const;
 export type PcLaunchableApp = string;
@@ -46,11 +48,11 @@ function resolveFullPcApplication(app:string, environment:NodeJS.ProcessEnv=proc
 }
 
 export function validatePcLaunchUrl(raw: unknown): string {
-  if (typeof raw !== 'string' || raw.length < 8 || raw.length > 2048 || /[\s\x00-\x1f\x7f]/.test(raw)) throw new PcAccessDeniedError();
+  if (typeof raw !== 'string' || raw.length < 8 || raw.length > 2048 || /[\s\x00-\x1f\x7f]/.test(raw)) throw invalidPcArgument('url','Expected a valid HTTP(S) URL');
   let url: URL;
-  try { url = new URL(raw); } catch { throw new PcAccessDeniedError(); }
+  try { url = new URL(raw); } catch { throw invalidPcArgument('url','Invalid URL'); }
   if (!['https:', 'http:'].includes(url.protocol) || !url.hostname || url.username || url.password
-    || url.href !== raw || raw.includes('\\')) throw new PcAccessDeniedError();
+    || url.href !== raw || raw.includes('\\')) throw invalidPcArgument('url','Only canonical HTTP(S) URLs without credentials are accepted');
   return url.href;
 }
 
@@ -81,12 +83,21 @@ export function createPcApplicationLauncher(options: {
     });
   }));
   return {
-    async launchPcApp(app: string, rawUrl?: string): Promise<{ launched: true; app: string }> {
+    async launchPcApp(app: string, rawUrl?: string, filePath?:string): Promise<{ launched: true; app: string }> {
       if (options.signal?.aborted) throw new PcAccessDeniedError();
       const grant = options.authorizer.assert('apps.launch');
       if (!grant.fullAccess&&(!PC_LAUNCHABLE_APPS.includes(app as typeof PC_LAUNCHABLE_APPS[number]) || !grant.allowedApps.includes(app))) throw new PcAccessDeniedError();
       if(grant.fullAccess&&(typeof app!=='string'||!(/^[a-zA-Z0-9_ .()-]+\.exe$/i.test(app)||/^[a-z]:\\[^\x00-\x1f"<>|?*]+\.exe$/i.test(app))))throw new PcAccessDeniedError();
-      const args = rawUrl === undefined ? [] : app === 'notepad.exe' ? (() => { throw new PcAccessDeniedError(); })() : [validatePcLaunchUrl(rawUrl)];
+      if(rawUrl!==undefined&&filePath!==undefined)throw invalidPcArgument('filePath','Cannot specify both url and filePath');
+      if(filePath!==undefined&&(!grant.fullAccess||win32.basename(app).toLowerCase()!=='notepad.exe'))
+        throw invalidPcArgument('filePath','File arguments are supported only for Notepad in full access');
+      if(rawUrl!==undefined&&win32.basename(app).toLowerCase()==='notepad.exe')throw invalidPcArgument('url','Notepad accepts filePath, not url');
+      let args:string[]=[];
+      if(filePath!==undefined){
+        const allowed=resolveAllowedPath(filePath,grant.roots,{fullAccess:grant.fullAccess});
+        if(!statSync(allowed).isFile())throw invalidPcArgument('filePath','Expected an existing regular file');
+        args=[allowed];
+      }else if(rawUrl!==undefined)args=[validatePcLaunchUrl(rawUrl)];
       const executable = options.resolve?resolve(app):grant.fullAccess?resolveFullPcApplication(app):resolve(app);
       if (!executable || !win32.isAbsolute(executable)) throw new PcAccessDeniedError();
       if (options.signal?.aborted || options.authorizer.assert('apps.launch').id !== grant.id) throw new PcAccessDeniedError();

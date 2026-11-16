@@ -1,4 +1,7 @@
 import {expect,test} from 'bun:test';
+import {mkdtempSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {PcAuthorizer,validatePcGrant,isValidPcRoot} from '../src/pc-control/authorization';
 import {createPcApplicationLauncher} from '../src/pc-control/launch';
 import {createPcWindowsController} from '../src/pc-control/windows';
@@ -6,7 +9,7 @@ import {resolveAllowedPath} from '../src/pc-control/paths';
 import type {PcGrant} from '../src/pc-control/types';
 import {defaultConfig} from '../src/config';
 import {baseConfig} from '../src/setup';
-import {registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
+import {createLocalPcHost,registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const grant:PcGrant={profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,
@@ -71,4 +74,41 @@ test('PC tools audit every outcome without logging caller paths, content or inpu
   expect(serialized).not.toContain('private-sensitive-path');
   expect(serialized).not.toContain('test-secret-content');
   expect(serialized).not.toContain('secret-data');
+});
+test('full access identity rotation permits a new terminal and desktop shortcut',async()=>{
+  if(process.platform!=='win32')return;
+  const root=mkdtempSync(join(tmpdir(),'pc-grant-rotate-'));
+  const auth=new PcAuthorizer({profileId:'pc2-normal'});
+  auth.setGrantFromLocalApproval({...grant,roots:[root.slice(0,3)]});
+  const host=createLocalPcHost(auth,{
+    acquireLease:async()=>({generation:'rotation-test',releaseAfterExit:async done=>{await done;}}),
+    auditCommand:()=>{},isInteractive:async()=>true,
+    windowsHelper:async action=>action==='list'?[{id:'123',title:'Test Notepad',processName:'notepad.exe'}]:{ok:true},
+  });
+  try{
+    const first=await host.startTerminal(root,'cmd.exe /d /c exit 23','first terminal') as {jobId:string};
+    for(let i=0;i<200;i++){
+      const state=await host.jobStatus(first.jobId) as {state:string;exitCode?:number};
+      if(state.state!=='running'){expect(state.exitCode).toBe(23);break;}
+      await Bun.sleep(25);
+      if(i===199)throw Error('terminal did not exit');
+    }
+    auth.suspend();auth.setGrantFromLocalApproval({...grant,id:'full-access-rotated',roots:[root.slice(0,3)]});
+    const next=await host.startTerminal(root,'cmd.exe /d /c exit 0','rotated terminal') as {jobId:string};
+    expect(next.jobId).toBeTruthy();
+    expect(await host.desktopInput!({windowId:'123',action:'key',key:'Ctrl+S'})).toEqual({ok:true});
+    expect((await host.status() as {fullAccess:boolean}).fullAccess).toBe(true);
+  }finally{await host.revokeActiveJobs();}
+});
+test('full access Notepad accepts an approved existing file argument',async()=>{
+  if(process.platform!=='win32')return;
+  const root=mkdtempSync(join(tmpdir(),'pc-notepad-file-'));
+  const file=join(root,'large.log');writeFileSync(file,'some local text\n');
+  const auth=new PcAuthorizer({profileId:'pc2-normal'});
+  auth.setGrantFromLocalApproval({...grant,id:'full-access-notepad',roots:[root.slice(0,3)]});
+  const launched:string[][]=[];
+  const app=createPcApplicationLauncher({authorizer:auth,
+    resolve:()=> 'C:\\Windows\\System32\\notepad.exe',spawnApp:async(_exe,args)=>{launched.push(args);}});
+  expect(await app.launchPcApp('notepad.exe',undefined,file)).toMatchObject({launched:true});
+  expect(launched).toEqual([[file]]);
 });

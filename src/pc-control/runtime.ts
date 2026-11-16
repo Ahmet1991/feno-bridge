@@ -19,7 +19,7 @@ export function createDefaultPcRuntime(){
     const storage=require('../../launcher/electron/private-acl.cjs'),context=storage.getNativeSecurityContext();
     userSid=context.userSid;files=storage.createPrivateFileAccess(userSid);
   }catch{/* Native security unavailable: keep all operations denied; do not use insecure fallbacks. */}
-  let retirementStore;
+  let retirementStore:{read():boolean}|undefined;
   if(files&&userSid&&profileId==='pc2-normal'){
     try{retirementStore=require('../../launcher/electron/pc-dev-retirement.cjs').createPcDevRetirementStore({
       directory:layout.sharedDirectory,files,
@@ -37,6 +37,7 @@ export function createDefaultPcRuntime(){
   }
   const host=createLocalPcHost(authorizer,{
     coordinationReady,
+    devMode:()=>profileId==='pc2-dev'?'active':retirementStore?.read()===true?'retired':'unknown',
     runnerDirectory:layout.directory,
     acquireLease:async(operation,operationId)=>{
       if(!files||!userSid||!registry)throw new PcAccessDeniedError();
@@ -47,7 +48,9 @@ export function createDefaultPcRuntime(){
   const sync=files&&configured?createPcPolicySync({directory:layout.directory,files,authorizer,onRevoked:()=>host.revokeActiveJobs()}):undefined;
   let closed=false;
   function refresh(){if(closed)return;if(sync)sync.refresh();else authorizer.revoke();}
-  refresh();const timer=setInterval(refresh,100);timer.unref();
+  // 500 ms is well below the 15 s signed heartbeat limit and avoids
+  // continuously contending with the launcher's atomic snapshot replacement.
+  refresh();const timer=setInterval(refresh,500);timer.unref();
   return {authorizer,host,refresh,auditTool:(record:ToolAudit)=>writeAudit('pc-tool-audit.jsonl',record),
     async close(){if(closed)return;closed=true;clearInterval(timer);authorizer.revoke();await host.revokeActiveJobs();}};
 }

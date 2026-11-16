@@ -1,6 +1,7 @@
 import path from 'node:path';
 import {randomUUID, createHash} from 'node:crypto';
 import {PcAccessDeniedError, isValidPcRoot} from './authorization';
+import {PcOperationError} from './errors';
 import type {Pointer} from 'bun:ffi';
 
 type Handle=bigint;
@@ -125,21 +126,29 @@ export class ProjectFileSession {
     for(const item of parts){last=last?child(last,path.win32.basename(item),0x20081,3,false,true):open(item,0x20081);this.handles.push(last);info(last,true);visit?.(last);}
     return last!;
   }
-  read(h=this.leaf):Buffer{
+  size(h=this.leaf):number{
     if(!h||this.closed)throw deny();info(h,false);
     const {k}=native(),size=Buffer.alloc(8);checked(k.GetFileSizeEx(h,size));const n=Number(size.readBigInt64LE());
-    if(!Number.isSafeInteger(n)||n<0||n>MAX)throw deny();checked(k.SetFilePointerEx(h,0,null,0));
-    const bytes=Buffer.alloc(n);let offset=0;
-    while(offset<n){const count=Buffer.alloc(4);checked(k.ReadFile(h,bytes.subarray(offset),n-offset,count,null));const got=count.readUInt32LE();if(!got)throw deny();offset+=got;}
-    info(h,false);return bytes;
+    if(!Number.isSafeInteger(n)||n<0)throw deny();return n;
+  }
+  read(h=this.leaf,offset=0,length?:number):Buffer{
+    const size=this.size(h),n=length===undefined?size:size>=offset?Math.min(length,size-offset):0;
+    if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(n)||n<0||n>MAX){
+      if(length===undefined&&size>MAX)throw new PcOperationError('pc_file_too_large',{limitBytes:MAX,sizeBytes:size});
+      throw deny();
+    }
+    const {k}=native();checked(k.SetFilePointerEx(h!,BigInt(offset),null,0));
+    const bytes=Buffer.alloc(n);let read=0;
+    while(read<n){const count=Buffer.alloc(4);checked(k.ReadFile(h!,bytes.subarray(read),n-read,count,null));const got=count.readUInt32LE();if(!got)throw deny();read+=got;}
+    info(h!,false);return bytes;
   }
   verifyLeaf():void{
     if(!this.leaf)throw deny();
     const expected=info(this.leaf,false),current=child(this.parent!,path.win32.basename(this.path),0x20080,5,false,false);
     try{if(info(current,false)!==expected||finalPath(this.leaf).toLowerCase()!==this.path.toLowerCase())throw deny();}finally{native().k.CloseHandle(current);}
   }
-  list():{name:string;kind:'file'|'directory'}[]{
-    if(!this.leaf)throw deny();const {k}=native(),buffer=Buffer.alloc(65536),result:{name:string;kind:'file'|'directory'}[]=[];
+  list():{name:string;kind:'file'|'directory';sizeBytes:number|null;modifiedAt:string}[]{
+    if(!this.leaf)throw deny();const {k}=native(),buffer=Buffer.alloc(65536),result:{name:string;kind:'file'|'directory';sizeBytes:number|null;modifiedAt:string}[]=[];
     let first=true,count=0;
     for(;;){
       if(!k.GetFileInformationByHandleEx(this.leaf,first?11:10,buffer,buffer.length)){if(k.GetLastError()===18)break;throw deny();}first=false;
@@ -148,10 +157,16 @@ export class ProjectFileSession {
         if(offset+104>buffer.length)throw deny();const next=buffer.readUInt32LE(offset),attrs=buffer.readUInt32LE(offset+56),length=buffer.readUInt32LE(offset+60);
         if(length%2||offset+104+length>buffer.length)throw deny();const name=buffer.toString('utf16le',offset+104,offset+104+length);
         if(name!=='.'&&name!=='..'){
-          if(++count>500)throw deny();
+          if(++count>5000)throw deny();
           if(!(attrs&0x400)){
             let child:Handle|undefined;
-            try{child=this.openEntry(name,!!(attrs&0x10));info(child,!!(attrs&0x10));result.push({name,kind:attrs&0x10?'directory':'file'});}catch{/* uninspectable aliases are not disclosed */}finally{if(child)k.CloseHandle(child);}
+            try{
+              child=this.openEntry(name,!!(attrs&0x10));info(child,!!(attrs&0x10));
+              const rawSize=buffer.readBigInt64LE(offset+40),rawTime=buffer.readBigUInt64LE(offset+24);
+              const millis=Number((rawTime-116444736000000000n)/10000n);
+              if(rawSize<0n||rawSize>BigInt(Number.MAX_SAFE_INTEGER)||!Number.isFinite(millis)||millis<0||millis>8640000000000000)continue;
+              result.push({name,kind:attrs&0x10?'directory':'file',sizeBytes:attrs&0x10?null:Number(rawSize),modifiedAt:new Date(millis).toISOString()});
+            }catch{/* uninspectable aliases are not disclosed */}finally{if(child)k.CloseHandle(child);}
           }
         }
         if(!next)break;if(next<104||offset+next<=offset)throw deny();offset+=next;

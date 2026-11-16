@@ -86,6 +86,12 @@ function createPcPeerRegistry({directory,files,inspectProcess=files.inspectProce
     if(!own)throw Error('pc_access_denied');
     files.writePrivateAtomic(target(own.profileId),JSON.stringify({...own,state,heartbeatAt:clock()}));
   }
+  async function publishAsync(state){
+    if(!own)throw Error('pc_access_denied');
+    const targetPath=target(own.profileId),value=JSON.stringify({...own,state,heartbeatAt:clock()});
+    if(typeof files.writePrivateAtomicAsync==='function')await files.writePrivateAtomicAsync(targetPath,value);
+    else files.writePrivateAtomic(targetPath,value);
+  }
   return {
     canRetireDev,
     start(profileId){
@@ -95,6 +101,7 @@ function createPcPeerRegistry({directory,files,inspectProcess=files.inspectProce
       own={schema:1,protocol:PROTOCOL,profileId,pid:process.pid,startTime:self.startTime};publish('active');
     },
     heartbeat(){if(own)publish('active');},
+    async heartbeatAsync(){if(own)await publishAsync('active');},
     close(){if(own){try{publish('inactive');}finally{own=undefined;}}},
     observe(){
       const now=clock(),devProcesses=devProcessEvidence();

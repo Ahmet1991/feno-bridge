@@ -24,7 +24,8 @@ internal static class PcWindowsHelper {
         "HOME", "END", "PAGEUP", "PAGEDOWN", "F1", "F2", "F3", "F4", "F5", "F6",
         "F7", "F8", "F9", "F10", "F11", "F12", "CTRL+A", "CTRL+C", "CTRL+F", "CTRL+L",
         "CTRL+N", "CTRL+P", "CTRL+S", "CTRL+T", "CTRL+V", "CTRL+W", "CTRL+X",
-        "CTRL+Y", "CTRL+Z", "CTRL+SHIFT+P", "ALT+LEFT", "ALT+RIGHT"
+        "CTRL+Y", "CTRL+Z", "CTRL+END", "CTRL+HOME", "CTRL+SHIFT+P", "CTRL+SHIFT+S",
+        "ALT+LEFT", "ALT+RIGHT", "ALT+F4", "SHIFT+TAB"
     };
     private static readonly Dictionary<string,ushort> VirtualKeys = new Dictionary<string,ushort>(StringComparer.Ordinal) {
         {"ENTER",0x0D},{"ESC",0x1B},{"TAB",0x09},{"SPACE",0x20},{"BACKSPACE",0x08},

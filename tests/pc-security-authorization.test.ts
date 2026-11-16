@@ -31,6 +31,13 @@ test('caller mutation and returned grant mutation cannot add authority',()=>{
   normal.assert('files.read').permissions.push('files.write');
   expect(()=>normal.assert('terminal.exec')).toThrow();expect(()=>normal.assert('files.write')).toThrow();
 });
+test('temporary suspension accepts the identical grant, never a changed or explicitly revoked one',()=>{
+  const auth=new PcAuthorizer({profileId:'pc2-normal',clock:()=>1000});
+  auth.setGrantFromLocalApproval(grant());auth.suspend();
+  expect(()=>auth.setGrantFromLocalApproval(grant({...{permissions:['files.read','jobs']}}))).toThrow('pc_access_denied');
+  auth.setGrantFromLocalApproval(grant());expect(auth.status().enabled).toBe(true);
+  auth.revoke();expect(()=>auth.setGrantFromLocalApproval(grant())).toThrow('pc_access_denied');
+});
 test('canonical root policy rejects sibling prefixes, junction escape and out-of-root creation',()=>{
   const root=mkdtempSync(join(tmpdir(),'pc-path-security-'));const project=join(root,'project');const sibling=join(root,'project-other');
   mkdirSync(project);mkdirSync(sibling);writeFileSync(join(project,'inside.txt'),'inside');writeFileSync(join(sibling,'outside.txt'),'outside');

@@ -132,7 +132,9 @@ function writeHandle(h,bytes){
 }
 function readPrivateFile(p,sid,maxBytes=MAX){
   assertUser(sid);p=validPath(p);const release=privateParent(p);let h;
-  try{h=open(p,0x80020080,1);assertAcl(h,false);const bytes=readHandle(h,maxBytes);assertAcl(h,false);return bytes;}
+  // Permit an atomic publisher to replace the signed snapshot while a reader
+  // holds its prior handle. Reads still verify the owner's private ACL.
+  try{h=open(p,0x80020080,7);assertAcl(h,false);const bytes=readHandle(h,maxBytes);assertAcl(h,false);return bytes;}
   finally{if(h)k.CloseHandle(h);release();}
 }
 function writePrivateAtomic(p,bytes,sid){

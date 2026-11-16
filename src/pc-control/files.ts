@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {PcAccessDeniedError,PcAuthorizer} from './authorization';
-import {PcOperationError} from './errors';
+import {PcOperationError,invalidPcArgument} from './errors';
 import {ProjectFileSession} from './project-file-native';
 
 const MAX_TEXT=2*1024*1024,MAX_PATCH=256*1024;
@@ -29,13 +29,39 @@ function session(file:string,roots:string[],kind:'file'|'directory'|'parent',pat
     }throw e;
   }
 }
-export async function listPcFiles(root:string,relative:string,authorizer:PcAuthorizer):Promise<{name:string;kind:'file'|'directory'}[]>{
+export async function listPcFiles(root:string,relative:string,authorizer:PcAuthorizer,offset=0,limit=100){
   const grant=authorizer.assert('files.read');
-  if(typeof relative!=='string'||relative.length>2048||path.win32.isAbsolute(relative)||relative.split(/[\\/]/).includes('..'))throw new PcAccessDeniedError();
-  return operation(()=>{const hold=session(path.win32.join(root,relative),grant.roots,'directory',false,grant.fullAccess);try{const entries=hold.list().filter(e=>!SENSITIVE_NAME.test(e.name)&&e.name.toLowerCase()!=='.git');sameGrant(authorizer,'files.read',grant.id);return entries;}finally{hold.close();}});
+  if(typeof relative!=='string'||relative.length>2048||path.win32.isAbsolute(relative)||relative.split(/[\\/]/).includes('..'))throw invalidPcArgument('path','Invalid relative directory');
+  if(!Number.isSafeInteger(offset)||offset<0)throw invalidPcArgument('offset','Must be a nonnegative integer');
+  if(!Number.isSafeInteger(limit)||limit<1||limit>200)throw invalidPcArgument('limit','Must be between 1 and 200');
+  return operation(()=>{const hold=session(path.win32.join(root,relative),grant.roots,'directory',false,grant.fullAccess);try{
+    const entries=hold.list().filter(e=>!SENSITIVE_NAME.test(e.name)&&e.name.toLowerCase()!=='.git').sort((a,b)=>a.name.localeCompare(b.name));
+    sameGrant(authorizer,'files.read',grant.id);
+    return {entries:entries.slice(offset,offset+limit),pagination:{offset,limit,total:entries.length,nextOffset:offset+limit<entries.length?offset+limit:null}};
+  }finally{hold.close();}});
 }
-export async function readPcFile(file:string,authorizer:PcAuthorizer):Promise<{path:string;content:string;sha256:string}>{
-  const grant=authorizer.assert('files.read');return operation(()=>{const hold=session(file,grant.roots,'file',false,grant.fullAccess);try{const bytes=hold.read(),content=text(bytes);sameGrant(authorizer,'files.read',grant.id);return {path:hold.path,content,sha256:hash(bytes)};}finally{hold.close();}});
+export type PcReadOptions={offset?:number;length?:number;tailLines?:number};
+export async function readPcFile(file:string,authorizer:PcAuthorizer,options:PcReadOptions={}):Promise<{path:string;content:string;sha256:string;sizeBytes?:number;offset?:number;nextOffset?:number;partial?:boolean}>{
+  const grant=authorizer.assert('files.read');
+  const {offset,length,tailLines}=options;
+  if(tailLines!==undefined&&(offset!==undefined||length!==undefined))throw invalidPcArgument('tailLines','Cannot combine tailLines with offset or length');
+  if(tailLines!==undefined&&(!Number.isSafeInteger(tailLines)||tailLines<1||tailLines>2000))throw invalidPcArgument('tailLines','Must be between 1 and 2000');
+  if(offset!==undefined&&(!Number.isSafeInteger(offset)||offset<0))throw invalidPcArgument('offset','Must be a nonnegative integer');
+  if(length!==undefined&&(!Number.isSafeInteger(length)||length<1||length>MAX_TEXT))throw invalidPcArgument('length','Must be between 1 and 2097152 bytes');
+  return operation(()=>{const hold=session(file,grant.roots,'file',false,grant.fullAccess);try{
+    const sizeBytes=hold.size();
+    if(offset===undefined&&length===undefined&&tailLines===undefined&&sizeBytes>MAX_TEXT)
+      throw new PcOperationError('pc_file_too_large',{limitBytes:MAX_TEXT,sizeBytes});
+    const start=tailLines!==undefined?Math.max(0,sizeBytes-MAX_TEXT):offset??0;
+    const bytes=hold.read(undefined,start,tailLines!==undefined?Math.min(sizeBytes-start,MAX_TEXT):offset!==undefined||length!==undefined?length??MAX_TEXT:undefined);
+    let content=text(bytes);
+    if(tailLines!==undefined){
+      if(start>0){const firstBreak=content.indexOf('\n');content=firstBreak<0?'':content.slice(firstBreak+1);}
+      content=content.split('\n').slice(-tailLines-(content.endsWith('\n')?1:0)).join('\n');
+    }
+    sameGrant(authorizer,'files.read',grant.id);
+    return {path:hold.path,content,sha256:hash(bytes),...(offset!==undefined||length!==undefined||tailLines!==undefined?{sizeBytes,offset:start,nextOffset:start+bytes.length,partial:true}: {})};
+  }finally{hold.close();}});
 }
 export async function createPcFile(file:string,content:string,authorizer:PcAuthorizer):Promise<{path:string;sha256:string}>{
   const grant=authorizer.assert('files.write');return operation(()=>{const bytes=encode(content),hold=session(file,grant.roots,'parent',false,grant.fullAccess);try{const stage=hold.stage(bytes);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path,sha256:hash(bytes)};}finally{stage.close();}}finally{hold.close();}});

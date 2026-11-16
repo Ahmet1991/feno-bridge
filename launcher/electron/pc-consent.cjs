@@ -19,6 +19,15 @@ function createPcConsentController({profileId,clock=Date.now,confirmLocally,audi
       store.save(selection);permanentApprovalSaved=true;
       active=makeGrant(selection);safeAudit('full_access_enabled');return copy(active);
     },
+    async activateFullAccessAsync(selection){
+      validatePcSelection(selection);
+      if(profileId!=='pc2-normal'||selection.fullAccess!==true||pending||persistentRevocationPending||!Number.isFinite(clock())
+        ||!(store?.isProtectionAvailableAsync?await store.isProtectionAvailableAsync():protection()))throw deny();
+      const expected=++generation;active=undefined;
+      if(store?.saveAsync)await store.saveAsync(selection);else store.save(selection);
+      if(generation!==expected)throw deny();
+      permanentApprovalSaved=true;active=makeGrant(selection);safeAudit('full_access_enabled');return copy(active);
+    },
     async approve(selection){
       validatePcSelection(selection);if(selection.fullAccess)throw deny();selection=copyPcSelection(selection);
       if(pending||persistentRevocationPending)throw deny();pending=true;const started=generation;
@@ -44,6 +53,11 @@ function createPcConsentController({profileId,clock=Date.now,confirmLocally,audi
     },
     isActiveGrant(id){return typeof id==='string'&&this.status().enabled===true&&active?.id===id;},
     revoke(){generation++;active=undefined;safeAudit('revoked');clearPersisted();},
+    async revokeAsync(){
+      generation++;active=undefined;safeAudit('revoked');
+      try{if(store?.clearAsync)await store.clearAsync();else store?.clear();persistentRevocationPending=false;permanentApprovalSaved=false;}
+      catch(error){persistentRevocationPending=true;throw error;}
+    },
     suspend(){generation++;active=undefined;},
   };
 }

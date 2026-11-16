@@ -5,9 +5,10 @@ import type {PcGrant,PcPrivateFileReader} from './types';
 export const PC_HEARTBEAT_MAX_AGE_MS=15000;
 export function createPcPolicySync(options:{directory:string;authorizer:PcAuthorizer;files:PcPrivateFileReader;clock?:()=>number;onRevoked?:()=>void|Promise<void>}) {
   const clock=options.clock??Date.now;let lastId:string|undefined,lastGrant:string|undefined;
-  const revoke=()=>{
+  const clear=(explicit:boolean)=>{
     const notify=!!lastId||options.authorizer.status().enabled;
-    lastId=undefined;lastGrant=undefined;options.authorizer.revoke();
+    lastId=undefined;lastGrant=undefined;
+    if(explicit)options.authorizer.revoke();else options.authorizer.suspend();
     // Cleanup failures must never keep authorization alive.
     if(notify)try{void Promise.resolve(options.onRevoked?.()).catch(()=>{});}catch{}
   };
@@ -23,12 +24,12 @@ export function createPcPolicySync(options:{directory:string;authorizer:PcAuthor
       const now=clock();
       if(payload.schema!==2||payload.profileId!==options.authorizer.profileId||!Number.isFinite(now)
         ||!Number.isSafeInteger(payload.heartbeatAt)||payload.heartbeatAt>now+2000||now-payload.heartbeatAt>PC_HEARTBEAT_MAX_AGE_MS)throw Error();
-      if(payload.grant===null){revoke();return;}
+      if(payload.grant===null){clear(true);return;}
       const grant=payload.grant as PcGrant;validatePcGrant(grant,now,options.authorizer.profileId);
       const snapshot=JSON.stringify(grant);
       if(lastId===grant.id){if(snapshot!==lastGrant)throw Error();return;}
-      if(lastId)revoke();
+      if(lastId)clear(false);
       options.authorizer.setGrantFromLocalApproval(grant);lastId=grant.id;lastGrant=snapshot;
-    }catch{revoke();}
+    }catch{clear(false);}
   }};
 }

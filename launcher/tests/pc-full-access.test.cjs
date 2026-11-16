@@ -10,36 +10,36 @@ function fixture(enabled=true,kind='production'){
   const configPath=path.join(profile.coreHome,'config.json');
   fs.writeFileSync(configPath,JSON.stringify({version:3,pcFullAccess:enabled,appName:'Test'}));
   let confirms=0;const actions=[];
-  const make=()=>createPcLauncherService({profile,bunPath,sharedDirectory:path.join(root,'coord'),
+  const make=(overrides={})=>createPcLauncherService({profile,bunPath,sharedDirectory:path.join(root,'coord'),
     confirmLocally:async()=>{confirms++;return true;},fullAccessConfigPath:configPath,
-    listFixedDriveRoots:()=>['C:\\','D:\\'],audit:e=>actions.push(e)});
+    listFixedDriveRoots:()=>['C:\\','D:\\'],audit:e=>actions.push(e),...overrides});
   return {root,profile,configPath,make,actions,get confirms(){return confirms;}};
 }
-windowsTest('explicit normal config starts full grant without local dialog, persists across restart and rejects DEV',()=>{
+windowsTest('explicit normal config starts full grant without local dialog, persists across restart and rejects DEV',async()=>{
   const f=fixture();const a=f.make();try{
-    a.start();assert.equal(a.status().enabled,true);assert.equal(a.status().fullAccess,true);
+    a.start();await a.heartbeat();assert.equal(a.status().enabled,true);assert.equal(a.status().fullAccess,true);
     assert.equal(a.status().expiresAt,null);assert.equal(f.confirms,0);
     assert.deepEqual(a.status().roots,['C:\\','D:\\']);
     assert.equal(a.status().permissions.length,11);assert.deepEqual(a.status().allowedApps,[]);
     const signed=JSON.parse(fs.readFileSync(path.join(f.profile.coreHome,'runtime','pc2-normal','pc-consent-state.json'),'utf8'));
     assert.equal(signed.payload.grant.fullAccess,true);assert.ok(signed.signature);
-    a.suspend();const restarted=f.make();restarted.start();try{assert.equal(restarted.status().enabled,true);assert.equal(f.confirms,0);}finally{restarted.suspend();}
+    a.suspend();const restarted=f.make();restarted.start();try{await restarted.heartbeat();assert.equal(restarted.status().enabled,true);assert.equal(f.confirms,0);}finally{restarted.suspend();}
     assert.ok(f.actions.some(e=>e.action==='full_access_enabled'));
   }finally{a.suspend();}
 });
-windowsTest('corrupt signed transport is reissued from explicit flag and tampered saved receipt is not trusted',()=>{
+windowsTest('corrupt signed transport is reissued from explicit flag and tampered saved receipt is not trusted',async()=>{
   const f=fixture(),a=f.make();try{
-    a.start();const state=path.join(f.profile.coreHome,'runtime','pc2-normal','pc-consent-state.json');
-    fs.writeFileSync(state,'{tampered');a.heartbeat();
+    a.start();await a.heartbeat();const state=path.join(f.profile.coreHome,'runtime','pc2-normal','pc-consent-state.json');
+    fs.writeFileSync(state,'{tampered');await a.heartbeat();
     const repaired=JSON.parse(fs.readFileSync(state,'utf8'));
     assert.equal(repaired.payload.grant.fullAccess,true);
     const encrypted=path.join(f.profile.userData,'pc-control','pc2-normal','pc-permanent-consent.enc');
-    a.suspend();fs.writeFileSync(encrypted,'tampered');const next=f.make();next.start();try{assert.equal(next.status().enabled,true);}finally{next.suspend();}
+    a.suspend();fs.writeFileSync(encrypted,'tampered');const next=f.make();next.start();try{await next.heartbeat();assert.equal(next.status().enabled,true);}finally{next.suspend();}
   }finally{a.suspend();}
 });
 windowsTest('full mode can be disabled from settings and old selective approval remains intact',async()=>{
   const f=fixture(),a=f.make();try{
-    a.start();assert.equal(a.status().fullAccess,true);
+    a.start();await a.heartbeat();assert.equal(a.status().fullAccess,true);
     const disabled=a.disableFullAccess();assert.equal(disabled.enabled,false);
     assert.equal(disabled.fullAccess,false);assert.equal(JSON.parse(fs.readFileSync(f.configPath)).pcFullAccess,false);
     a.suspend();const next=f.make();next.start();try{
@@ -64,4 +64,17 @@ windowsTest('DEV profile ignores pcFullAccess even when the DEV config contains 
   const f=fixture(true,'development'),service=f.make();
   try{service.start();assert.equal(service.status().enabled,false);assert.equal(service.status().fullAccess,false);assert.equal(f.confirms,0);}
   finally{service.suspend();}
+});
+windowsTest('a slow fixed-drive lookup keeps the Electron main event loop responsive',async()=>{
+  const f=fixture();let release;
+  const service=f.make({listFixedDriveRoots:()=>new Promise(resolve=>{release=resolve;})});
+  try{
+    service.start();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(typeof release,'function');
+    assert.equal(service.status().enabled,false);
+    release(['C:\\','D:\\']);
+    await service.heartbeat();
+    assert.equal(service.status().fullAccess,true);
+  }finally{service.suspend();}
 });

@@ -32,7 +32,9 @@ function copy(grant:PcGrant):PcGrant{return {profileId:grant.profileId,id:grant.
 export class PcAuthorizer {
   readonly profileId:PcProfileId;
   private active:PcGrant|undefined;
-  private readonly seenIds=new Set<string>();
+  private readonly seenIds=new Map<string,string>();
+  private readonly revokedIds=new Set<string>();
+  private lastId:string|undefined;
   private readonly clock:()=>number;
   constructor(options:{profileId:PcProfileId;clock?:()=>number}) {
     if(!options||!PC_PROFILE_IDS.includes(options.profileId))throw new PcAccessDeniedError();
@@ -40,10 +42,15 @@ export class PcAuthorizer {
   }
   setGrantFromLocalApproval(grant:PcGrant):void {
     validatePcGrant(grant,this.clock(),this.profileId);
-    if(this.seenIds.has(grant.id))throw new PcAccessDeniedError();
-    this.seenIds.add(grant.id);this.active=copy(grant);
+    const snapshot=JSON.stringify(copy(grant));
+    if(this.revokedIds.has(grant.id)||(this.seenIds.has(grant.id)&&this.seenIds.get(grant.id)!==snapshot))throw new PcAccessDeniedError();
+    // Replacing a grant permanently retires the old identity, including one
+    // which was temporarily suspended during a heartbeat/read interruption.
+    if(this.lastId&&this.lastId!==grant.id)this.revokedIds.add(this.lastId);
+    this.lastId=grant.id;this.seenIds.set(grant.id,snapshot);this.active=copy(grant);
   }
-  revoke():void{this.active=undefined;}
+  suspend():void{this.active=undefined;}
+  revoke():void{if(this.lastId)this.revokedIds.add(this.lastId);this.active=undefined;this.lastId=undefined;}
   private current(now:number):PcGrant|undefined {
     if(!Number.isFinite(now)||(this.active?.expiresAt!==null&&this.active&&this.active.expiresAt<=now))this.revoke();
     return this.active;

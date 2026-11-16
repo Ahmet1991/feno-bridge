@@ -7,13 +7,15 @@ import {createPcJobManager,createPcJobResources,inferPcCommandSpecs,type PcJobKi
 import {inferPcDeveloperTasks} from './developer-tasks';
 import {resolveAllowedPath} from './paths';
 import {randomUUID} from 'node:crypto';
-import {createPcWindowsController,pcWindowsHelperStatus,type PcDesktopInput,type PcWindowsHelper} from './windows';
+import {createPcWindowsController,pcWindowsHelperStatus,PC_DESKTOP_KEYS,type PcDesktopInput,type PcWindowsHelper} from './windows';
 import {createPcAdbController,resolveTrustedAdbPath,type PcAdbInput,type PcAdbRun} from './adb';
 import {createPcApplicationLauncher,type PcLaunchableApp} from './launch';
 import {createConfiguredGithubRunnerProbe,getRunnerStatus,type PcRunnerProbe} from './runner';
 import type {PcHostLease} from './resource-locks';
+import {version as pcVersion} from '../../package.json';
+import type {PcReadOptions} from './files';
 export interface PcHost {
-  status():Promise<object>;listFiles(path:string):Promise<unknown>;readFile(path:string):Promise<unknown>;
+  status():Promise<object>;listFiles(path:string,offset?:number,limit?:number):Promise<unknown>;readFile(path:string,options?:PcReadOptions):Promise<unknown>;
   applyPatch(path:string,sha:string,patch:string):Promise<unknown>;createFile(path:string,content:string):Promise<unknown>;createDirectory(path:string):Promise<unknown>;
   startJob(kind:PcJobKind,root:string):Promise<unknown>;listProjectTasks(root:string):Promise<unknown>;startProjectTask(root:string,id:string):Promise<unknown>;
   startTerminal(root:string,command:string,purpose:string):Promise<unknown>;jobStatus(id:string):Promise<unknown>;jobLogs(id:string,cursor:number):Promise<unknown>;cancelJob(id:string):Promise<unknown>;
@@ -23,7 +25,7 @@ export interface PcHost {
   desktopInput?(input:PcDesktopInput):Promise<unknown>;
   adbDevices?():Promise<unknown>;adbInput?(serial:string,input:PcAdbInput):Promise<unknown>;
   adbScreencap?(serial:string):Promise<Uint8Array>;runnerStatus?():Promise<unknown>;
-  launchApp?(app:string,url?:string):Promise<unknown>;
+  launchApp?(app:string,url?:string,filePath?:string):Promise<unknown>;
 }
 export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobManagerOptions,'auditCommand'>&{
   acquireLease:(operation:'job'|'terminal'|'desktop-input'|'adb',operationId:string)=>Promise<PcHostLease>;
@@ -32,6 +34,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
   adbPath?:string;adbRun?:PcAdbRun;
   launchResolve?:(app:PcLaunchableApp)=>string|undefined;launchSpawn?:(executable:string,args:string[])=>void|Promise<void>;
   runnerProbe?:PcRunnerProbe;
+  devMode?:()=>string;
 }):PcHost{
   const resources=createPcJobResources();type Manager=ReturnType<typeof createPcJobManager>;
   const managers=new Map<string,{manager:Manager;tasks:string[]}>(),owners=new Map<string,Manager>();let activeGrant:string|undefined;
@@ -77,16 +80,22 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
   }
   function job(id:string){const grant=authorizer.assert('jobs');const manager=owners.get(id);if(!manager||grant.id!==activeGrant)throw new PcAccessDeniedError();return manager;}
   async function start(root:string,action:(manager:Manager)=>Promise<{jobId:string}>){
-    const entry=forProject(root),grantId=activeGrant;const result=await action(entry.manager);
+    const entry=forProject(root),grantId=activeGrant;
+    // Old processes and leases must be retired before acquiring new ownership.
+    await Promise.all([...retired]);
+    if(authorizer.assert('jobs').id!==grantId||activeGrant!==grantId)throw new PcAccessDeniedError();
+    const result=await action(entry.manager);
     try{if(authorizer.assert('jobs').id!==grantId||activeGrant!==grantId)throw new PcAccessDeniedError();}
     catch(error){await entry.manager.revokeAll();throw error;}
     owners.set(result.jobId,entry.manager);return result;
   }
   return {
-    status:async()=>({platform:process.platform,coordinationReady:options.coordinationReady?.()===true,cleanupRequired:cleanupFailed,
+    status:async()=>({platform:process.platform,version:pcVersion,profileId:authorizer.profileId,devMode:options.devMode?.()??'unknown',
+      ...(()=>{const g=authorizer.assert('status');return {fullAccess:g?.fullAccess===true,roots:g?.roots??[],permissions:g?.permissions??[],allowedApps:g?.allowedApps??[]};})(),
+      coordinationReady:options.coordinationReady?.()===true,cleanupRequired:cleanupFailed,
       desktop:options.windowsHelper?{available:true,source:'injected'}:pcWindowsHelperStatus(),
       ...(authorizer.assert('status')?.permissions.includes('jobs')?{activeJobs:resources.activeJobCount(),terminalBusy:resources.hasActiveTerminal()}: {})}),
-    listFiles:p=>listPcFiles(p,'.',authorizer),readFile:p=>readPcFile(p,authorizer),applyPatch:(p,s,v)=>applyPcPatch(p,s,v,authorizer),
+    listFiles:(p,offset,limit)=>listPcFiles(p,'.',authorizer,offset,limit),readFile:(p,options)=>readPcFile(p,authorizer,options),applyPatch:(p,s,v)=>applyPcPatch(p,s,v,authorizer),
     createFile:(p,c)=>createPcFile(p,c,authorizer),createDirectory:p=>createPcDirectory(p,authorizer),
     startJob:(kind,projectRoot)=>start(projectRoot,m=>m.startPcJob({kind,projectRoot},authorizer)),
     listProjectTasks:async root=>forProject(root).tasks,
@@ -107,7 +116,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
       const state=await getRunnerStatus({label:'fenotip-tv'},options.runnerProbe??(options.runnerDirectory?createConfiguredGithubRunnerProbe(options.runnerDirectory):undefined));
       if(authorizer.assert('runner').id!==id)throw new PcAccessDeniedError();return state;
     },
-    launchApp:async(app,url)=>runGuarded('apps.launch',async signal=>createPcApplicationLauncher({authorizer,signal,resolve:options.launchResolve,spawnApp:options.launchSpawn}).launchPcApp(app,url)),
+    launchApp:async(app,url,filePath)=>runGuarded('apps.launch',async signal=>createPcApplicationLauncher({authorizer,signal,resolve:options.launchResolve,spawnApp:options.launchSpawn}).launchPcApp(app,url,filePath)),
   };
 }
 export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;host:PcHost;beforeRequest?:()=>void|Promise<void>;
@@ -120,18 +129,18 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   };
   const run=async(action:()=>Promise<unknown>,status=false,tool='unknown')=>{
     try{await deps.beforeRequest?.();const data=await action();const value=status?{ok:true,...data as object}:{ok:true,data};await audit(tool,'ok');return {content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
-    catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';const value={ok:false,code};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
+    catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
   const imageRun=async(action:()=>Promise<Uint8Array>,tool='unknown')=>{
     try{await deps.beforeRequest?.();const data=await action();const value={ok:true};
       await audit(tool,'ok');
       return {content:[{type:'image' as const,mimeType:'image/png',data:Buffer.from(data).toString('base64')}],structuredContent:value};
     }catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';
-      const value={ok:false,code};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
+      const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
   server.registerTool('pc_status',{title:'Feno PC status',description:'Read local approval and coordination status; never grants access.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(async()=>({...a.status(),...await h.status()}),true,'pc_status'));
-  server.registerTool('pc_list_files',{title:'List approved project files',inputSchema:z.object({path:p}).strict(),annotations:readOnly},({path})=>run(()=>{a.assert('files.read');return h.listFiles(path);},false,'pc_list_files'));
-  server.registerTool('pc_read_file',{title:'Read approved UTF-8 file',description:'Bounded read within approved roots. Sensitive files are denied.',inputSchema:z.object({path:p}).strict(),annotations:readOnly},({path})=>run(()=>{a.assert('files.read');return h.readFile(path);},false,'pc_read_file'));
+  server.registerTool('pc_list_files',{title:'List approved project files',description:'Returns sizeBytes, modifiedAt and pagination; default 100, max 200 entries.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(200).optional()}).strict(),annotations:readOnly},({path,offset,limit})=>run(()=>{a.assert('files.read');return h.listFiles(path,offset,limit);},false,'pc_list_files'));
+  server.registerTool('pc_read_file',{title:'Read approved UTF-8 file',description:'Default limit 2 MiB; for larger files pass byte offset/length (max 2097152) or tailLines (max 2000). Sensitive files are denied.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),length:z.number().int().min(1).max(2097152).optional(),tailLines:z.number().int().min(1).max(2000).optional()}).strict(),annotations:readOnly},({path,offset,length,tailLines})=>run(()=>{a.assert('files.read');return h.readFile(path,{offset,length,tailLines});},false,'pc_read_file'));
   server.registerTool('pc_write_patch',{title:'Patch approved file using SHA-256',description:'A SHA mismatch requires rereading the file and rebuilding the unified patch.',inputSchema:z.object({path:p,sha256:z.string().regex(/^[a-fA-F0-9]{64}$/),patch:z.string().min(1).max(256*1024)}).strict(),annotations:write},({path,sha256,patch})=>run(()=>{a.assert('files.write');return h.applyPatch(path,sha256,patch);},false,'pc_write_patch'));
   server.registerTool('pc_create_file',{title:'Create one new approved file',inputSchema:z.object({path:p,content:z.string().max(256*1024)}).strict(),annotations:write},({path,content})=>run(()=>{a.assert('files.write');return h.createFile(path,content);},false,'pc_create_file'));
   server.registerTool('pc_create_directory',{title:'Create one approved directory',inputSchema:z.object({path:p}).strict(),annotations:write},({path})=>run(()=>{a.assert('files.write');return h.createDirectory(path);},false,'pc_create_directory'));
@@ -147,9 +156,9 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerTool('pc_list_windows',{title:'List approved Windows application windows',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('screen.read');if(!h.listWindows)throw new PcAccessDeniedError();return h.listWindows();},false,'pc_list_windows'));
   server.registerTool('pc_capture_screen',{title:'Capture approved window PNG',inputSchema:z.object({windowId}).strict(),annotations:readOnly},({windowId:id})=>imageRun(async()=>{a.assert('screen.read');if(!h.captureScreen)throw new PcAccessDeniedError();return (await h.captureScreen(id)).data;},'pc_capture_screen'));
   server.registerTool('pc_capture_full_screen',{title:'Capture full desktop or one monitor PNG (high risk)',inputSchema:z.object({mode:z.enum(['all','monitor']),monitor:z.number().int().min(0).max(7).optional()}).strict(),annotations:readOnly},({mode,monitor})=>imageRun(async()=>{a.assert('screen.full');if(!h.captureFullScreen)throw new PcAccessDeniedError();return (await h.captureFullScreen(mode,monitor)).data;},'pc_capture_full_screen'));
-  server.registerTool('pc_desktop_input',{title:'Control approved focused window',inputSchema:z.object({windowId,action:z.enum(['click','right_click','double_click','drag','scroll','key','type']),x:z.number().int().min(0).max(8192).optional(),y:z.number().int().min(0).max(8192).optional(),endX:z.number().int().min(0).max(8192).optional(),endY:z.number().int().min(0).max(8192).optional(),delta:z.number().int().min(-1080).max(1080).optional(),key:z.string().max(24).optional(),text:z.string().max(300).optional()}).strict(),annotations:write},input=>run(()=>{a.assert('desktop.input');if(!h.desktopInput)throw new PcAccessDeniedError();return h.desktopInput(input);},false,'pc_desktop_input'));
+  server.registerTool('pc_desktop_input',{title:'Control approved focused window',description:`Actions: click, right_click, double_click, drag (x/y to endX/endY), scroll, key, type. Keys (case-insensitive; Esc/Escape accepted): ${PC_DESKTOP_KEYS.join(', ')}. Double-click/drag require desktop.advanced.`,inputSchema:z.object({windowId,action:z.enum(['click','right_click','double_click','drag','scroll','key','type']),x:z.number().int().min(0).max(8192).optional(),y:z.number().int().min(0).max(8192).optional(),endX:z.number().int().min(0).max(8192).optional(),endY:z.number().int().min(0).max(8192).optional(),delta:z.number().int().min(-1080).max(1080).optional(),key:z.string().max(24).optional(),text:z.string().max(300).optional()}).strict(),annotations:write},input=>run(()=>{a.assert('desktop.input');if(!h.desktopInput)throw new PcAccessDeniedError();return h.desktopInput(input);},false,'pc_desktop_input'));
   server.registerTool('pc_adb_devices',{title:'List connected ADB devices',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('adb');if(!h.adbDevices)throw new PcAccessDeniedError();return h.adbDevices();},false,'pc_adb_devices'));
   server.registerTool('pc_adb_input',{title:'Send emulator tap, key or text',inputSchema:z.object({serial,action:z.enum(['tap','key','text']),x:z.number().int().min(0).max(8192).optional(),y:z.number().int().min(0).max(8192).optional(),value:z.string().max(150).optional()}).strict(),annotations:write},({serial,...input})=>run(()=>{a.assert('adb');if(!h.adbInput)throw new PcAccessDeniedError();return h.adbInput(serial,input);},false,'pc_adb_input'));
   server.registerTool('pc_adb_screencap',{title:'Capture emulator PNG',inputSchema:z.object({serial}).strict(),annotations:readOnly},({serial})=>imageRun(async()=>{a.assert('adb');if(!h.adbScreencap)throw new PcAccessDeniedError();return h.adbScreencap(serial);},'pc_adb_screencap'));
-  server.registerTool('pc_launch_app',{title:'Open locally approved application',inputSchema:z.object({app:z.string().min(1).max(4096),url:z.string().max(2048).optional()}).strict(),annotations:write},({app,url})=>run(()=>{a.assert('apps.launch');if(!h.launchApp)throw new PcAccessDeniedError();return h.launchApp(app,url);},false,'pc_launch_app'));
+  server.registerTool('pc_launch_app',{title:'Open locally approved application',description:'Use filePath for a file in Notepad (full-access grant only); url accepts HTTP(S) for browsers.',inputSchema:z.object({app:z.string().min(1).max(4096),url:z.string().max(2048).optional(),filePath:p.optional()}).strict(),annotations:write},({app,url,filePath})=>run(()=>{a.assert('apps.launch');if(!h.launchApp)throw new PcAccessDeniedError();return h.launchApp(app,url,filePath);},false,'pc_launch_app'));
 }

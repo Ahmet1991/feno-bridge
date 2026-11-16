@@ -16,7 +16,7 @@ function fixture(){
 const transient=code=>Object.assign(new Error('pc_private_storage'),{code:'pc_private_storage_transient',nativeCode:code});
 
 test('a single EPERM/EBUSY/helper timeout does not silently revoke the grant',()=>{
-  for(const error of [transient(32),transient(33),Object.assign(new Error('timeout'),{code:'ETIMEDOUT'})]){
+  for(const error of [transient(5),transient(32),transient(33),Object.assign(new Error('timeout'),{code:'ETIMEDOUT'}),Object.assign(new Error('helper failed'),{code:'pc_private_storage',nativeCode:5})]){
     const f=fixture();f.channelFault(error);f.guard.heartbeat();
     assert.equal(f.active(),true);assert.equal(f.revocations(),0);
     assert.equal(f.guard.status().channelFailures,1);

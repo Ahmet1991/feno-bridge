@@ -16,7 +16,7 @@ windowsTest('normal launcher starts denied, local approval binds its profile, an
     await f.service.approve(f.selection);assert.equal(f.service.status().enabled,true);
     assert.deepEqual(f.service.status().permissions,f.selection.permissions);
     assert.equal(f.service.status().permissionDetails['terminal.exec'].risk,'high');
-    now=61000;f.service.heartbeat();assert.equal(f.service.status().enabled,false);
+    now=61000;await f.service.heartbeat();assert.equal(f.service.status().enabled,false);
     assert.equal(f.service.readTransportForTest,undefined);
   }finally{f.service.suspend();}
 });

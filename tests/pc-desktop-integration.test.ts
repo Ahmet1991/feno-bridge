@@ -61,9 +61,9 @@ test('desktop focus loss returns pc_focus_required, while invalid input and unli
   try{await w.pcDesktopInput({windowId:'123',action:'click',x:4,y:5});throw Error('unexpected success');}
   catch(e){expect((e as PcOperationError).code).toBe('pc_focus_required');}
   expect(w.pcDesktopInput({windowId:'234',action:'key',key:'ENTER'})).rejects.toThrow('pc_access_denied');
-  expect(w.pcDesktopInput({windowId:'123',action:'type',text:'x'.repeat(301)})).rejects.toThrow('pc_access_denied');
-  expect(w.pcDesktopInput({windowId:'123',action:'key',key:'ALT+TAB'})).rejects.toThrow('pc_access_denied');
-  expect(w.pcDesktopInput({windowId:'123',action:'click',x:-1,y:0})).rejects.toThrow('pc_access_denied');
+  expect(w.pcDesktopInput({windowId:'123',action:'type',text:'x'.repeat(301)})).rejects.toThrow('pc_invalid_argument');
+  expect(w.pcDesktopInput({windowId:'123',action:'key',key:'ALT+TAB'})).rejects.toMatchObject({code:'pc_invalid_argument',details:{field:'key'}});
+  expect(w.pcDesktopInput({windowId:'123',action:'click',x:-1,y:0})).rejects.toThrow('pc_invalid_argument');
   expect(w.pcDesktopInput({windowId:'123',action:'drag',x:1,y:1,endX:2,endY:2})).rejects.toThrow('pc_access_denied');
 });
 
@@ -73,7 +73,10 @@ test('double click and drag require independent advanced permission and valid en
   expect(await w.pcDesktopInput({windowId:'123',action:'double_click',x:1,y:2})).toEqual({ok:true});
   expect(await w.pcDesktopInput({windowId:'123',action:'drag',x:1,y:2,endX:3,endY:4})).toEqual({ok:true});
   expect(calls).toContain('drag');
-  expect(w.pcDesktopInput({windowId:'123',action:'drag',x:1,y:2,endX:-1,endY:4})).rejects.toThrow('pc_access_denied');
+  expect(w.pcDesktopInput({windowId:'123',action:'drag',x:1,y:2,endX:-1,endY:4})).rejects.toThrow('pc_invalid_argument');
+  expect(await w.pcDesktopInput({windowId:'123',action:'key',key:'Escape'})).toEqual({ok:true});
+  expect(await w.pcDesktopInput({windowId:'123',action:'key',key:'Ctrl+S'})).toEqual({ok:true});
+  expect(await w.pcDesktopInput({windowId:'123',action:'key',key:'Ctrl+End'})).toEqual({ok:true});
 });
 
 test('revoking grant or aborting capture during helper execution suppresses image output',async()=>{
@@ -123,7 +126,7 @@ test('launcher uses fixed app IDs, local executable and one validated browser UR
   expect(calls).toHaveLength(1);expect(calls[0]!.args).toEqual(['https://example.com/']);
   for(const [app,url] of [['cmd.exe',undefined],['notepad.exe',undefined],['chrome.exe','--incognito'],['chrome.exe','file:///C:/secret'],
     ['chrome.exe','https://example.com/ --disable-security'],['chrome.exe','https://user:pass@example.com/'],['chrome.exe','https://example.com\\@evil/']] as const)
-    await expect(launcher.launchPcApp(app,url)).rejects.toThrow('pc_access_denied');
+    await expect(launcher.launchPcApp(app,url)).rejects.toThrow(app==='chrome.exe'?'pc_invalid_argument':'pc_access_denied');
   expect(calls).toHaveLength(1);
   expect(()=>validatePcLaunchUrl('http://127.0.0.1/path?x=1')).not.toThrow();
   a.revoke();await expect(launcher.launchPcApp('chrome.exe')).rejects.toThrow('pc_access_denied');
