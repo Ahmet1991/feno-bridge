@@ -2,6 +2,8 @@ import sharp from 'sharp';
 
 export const PC_SCREENSHOT_URI = 'ui://widget/pc-screenshot.html';
 export const PC_SCREENSHOT_MIME = 'text/html;profile=mcp-app';
+export const PC_SCREENSHOT_SKYBRIDGE_URI = 'ui://widget/pc-screenshot-skybridge.html';
+export const PC_SCREENSHOT_SKYBRIDGE_MIME = 'text/html+skybridge';
 const MAX_EDGE = 1600;
 const MAX_WIDGET_BYTES = 1_800_000;
 
@@ -39,7 +41,7 @@ export async function makePcScreenshotResult({data, mimeType, title}: PcScreensh
 }
 
 /** Self-contained ChatGPT/MCP Apps card; it never fetches or loads remote resources. */
-export const PC_SCREENSHOT_HTML = `<!doctype html>
+function makeScreenshotHtml(mode:'mcpapp'|'skybridge') {return `<!doctype html>
 <html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Feno Bridge · Ekran görüntüsü</title>
 <style>
@@ -64,6 +66,7 @@ img{display:block;width:100%;height:auto;object-fit:contain}
 <div id="zoom" aria-hidden="true" role="dialog" aria-label="Büyük ekran görüntüsü"><button id="close" type="button" aria-label="Kapat">×</button><img id="large" alt="Büyütülmüş ekran görüntüsü"></div>
 <script>
 (()=>{
+const useMcpApp=${mode==='mcpapp'};
 const byId=id=>document.getElementById(id);
 const zoom=byId('zoom');
 let connected=false,hostContext={},nextId=1;
@@ -115,8 +118,8 @@ function render(){
   const summary=host.toolOutput||result.structuredContent||{};
   if(data)paint(summary,data);
 }
-const initializeId=parent&&parent!==window?send('ui/initialize',{
-  protocolVersion:'2026-01-26',appInfo:{name:'feno-pc-screenshot',title:'Feno Bridge Ekran Görüntüsü',version:'5.1.9'},
+const initializeId=useMcpApp&&parent&&parent!==window?send('ui/initialize',{
+  protocolVersion:'2026-01-26',appInfo:{name:'feno-pc-screenshot',title:'Feno Bridge Ekran Görüntüsü',version:'5.1.10'},
   appCapabilities:{availableDisplayModes:['inline','fullscreen']}}):null;
 window.addEventListener('message',event=>{
   if(event.source!==parent||!event.data||event.data.jsonrpc!=='2.0')return;
@@ -143,4 +146,7 @@ byId('preview').addEventListener('load',size);
 window.addEventListener('openai:set_globals',render);
 render();
 })();
-</script></body></html>`;
+</script></body></html>`;}
+
+export const PC_SCREENSHOT_HTML=makeScreenshotHtml('mcpapp');
+export const PC_SCREENSHOT_SKYBRIDGE_HTML=makeScreenshotHtml('skybridge');

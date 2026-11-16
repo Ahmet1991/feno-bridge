@@ -11,7 +11,9 @@ import {createPcWindowsController,pcWindowsHelperStatus,PC_DESKTOP_KEYS,type PcD
 import {createPcAdbController,resolveTrustedAdbPath,type PcAdbInput,type PcAdbRun} from './adb';
 import {createPcApplicationLauncher,type PcLaunchableApp} from './launch';
 import {readPcImage} from './files';
-import {makePcScreenshotResult,PC_SCREENSHOT_HTML,PC_SCREENSHOT_MIME,PC_SCREENSHOT_URI,type PcScreenshotSource} from './screenshot-widget';
+import {makePcScreenshotResult,PC_SCREENSHOT_HTML,PC_SCREENSHOT_MIME,PC_SCREENSHOT_URI,
+  PC_SCREENSHOT_SKYBRIDGE_HTML,PC_SCREENSHOT_SKYBRIDGE_MIME,PC_SCREENSHOT_SKYBRIDGE_URI,type PcScreenshotSource} from './screenshot-widget';
+import {PC_PROBE_MCP_APP_URI,PC_PROBE_SKYBRIDGE_URI,PC_PROBE_MCP_APP_HTML,PC_PROBE_SKYBRIDGE_HTML} from './widget-probe';
 import {createConfiguredGithubRunnerProbe,getRunnerStatus,type PcRunnerProbe} from './runner';
 import type {PcHostLease} from './resource-locks';
 import {version as pcVersion} from '../../package.json';
@@ -147,8 +149,35 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerResource('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
     async()=>({contents:[{uri:PC_SCREENSHOT_URI,mimeType:PC_SCREENSHOT_MIME,text:PC_SCREENSHOT_HTML,
       _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/ui':{availableDisplayModes:['inline','fullscreen']},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
-  const imageToolMeta={ui:{resourceUri:PC_SCREENSHOT_URI},'openai/outputTemplate':PC_SCREENSHOT_URI,
+  server.registerResource('pc-screenshot-skybridge',PC_SCREENSHOT_SKYBRIDGE_URI,
+    {mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,description:'Ekran görüntüsü (Skybridge yedek kart)'},
+    async()=>({contents:[{uri:PC_SCREENSHOT_SKYBRIDGE_URI,mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,text:PC_SCREENSHOT_SKYBRIDGE_HTML}]}));
+  server.registerResource('pc-probe-mcpapp',PC_PROBE_MCP_APP_URI,
+    {mimeType:'text/html;profile=mcp-app',description:'MCP Apps bağlantı teşhisi'},
+    async()=>({contents:[{uri:PC_PROBE_MCP_APP_URI,mimeType:'text/html;profile=mcp-app',text:PC_PROBE_MCP_APP_HTML,
+      _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]}},'openai/ui':{availableDisplayModes:['inline']}}}]}));
+  server.registerResource('pc-probe-skybridge',PC_PROBE_SKYBRIDGE_URI,
+    {mimeType:'text/html+skybridge',description:'Skybridge bağlantı teşhisi'},
+    async()=>({contents:[{uri:PC_PROBE_SKYBRIDGE_URI,mimeType:'text/html+skybridge',text:PC_PROBE_SKYBRIDGE_HTML}]}));
+  // MCP Apps is the documented default; switch only the screenshot card with an environment flag.
+  const skybridge=process.env.FENO_PC_WIDGET_MODE==='skybridge';
+  const selectedScreenshotUri=skybridge?PC_SCREENSHOT_SKYBRIDGE_URI:PC_SCREENSHOT_URI;
+  const imageToolMeta={...(skybridge?{}:{ui:{resourceUri:selectedScreenshotUri}}),'openai/outputTemplate':selectedScreenshotUri,
     'openai/toolInvocation/invoking':'Ekran görüntüsü alınıyor…','openai/toolInvocation/invoked':'Ekran görüntüsü hazır.'};
+  const probe=async(tool:string)=>{
+    await deps.beforeRequest?.();await audit(tool,'ok');
+    return {content:[{type:'text' as const,text:'Türkçe test kartı'}],structuredContent:{message:'Türkçe test kartı'}};
+  };
+  server.registerTool('pc_widget_probe_mcpapp',{title:'MCP Apps teşhis kartını göster',
+    description:'Sabit Türkçe metinle MCP Apps bileşen bağlantısını sınar.',inputSchema:z.object({}).strict(),annotations:readOnly,
+    _meta:{ui:{resourceUri:PC_PROBE_MCP_APP_URI},'openai/outputTemplate':PC_PROBE_MCP_APP_URI,
+      'openai/toolInvocation/invoking':'MCP Apps kartı açılıyor…','openai/toolInvocation/invoked':'MCP Apps kartı hazır.'}},
+    ()=>probe('pc_widget_probe_mcpapp'));
+  server.registerTool('pc_widget_probe_skybridge',{title:'Skybridge teşhis kartını göster',
+    description:'Sabit Türkçe metinle klasik ChatGPT bileşen bağlantısını sınar.',inputSchema:z.object({}).strict(),annotations:readOnly,
+    _meta:{'openai/outputTemplate':PC_PROBE_SKYBRIDGE_URI,
+      'openai/toolInvocation/invoking':'Skybridge kartı açılıyor…','openai/toolInvocation/invoked':'Skybridge kartı hazır.'}},
+    ()=>probe('pc_widget_probe_skybridge'));
   server.registerTool('pc_status',{title:'Feno PC status',description:'Read local approval and coordination status; never grants access.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(async()=>({...a.status(),...await h.status()}),true,'pc_status'));
   server.registerTool('pc_list_files',{title:'List approved project files',description:'Returns sizeBytes, modifiedAt and pagination; default 100, max 200 entries.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(200).optional()}).strict(),annotations:readOnly},({path,offset,limit})=>run(()=>{a.assert('files.read');return h.listFiles(path,offset,limit);},false,'pc_list_files'));
   server.registerTool('pc_read_file',{title:'Read approved UTF-8 file',description:'Default limit 2 MiB; for larger files pass byte offset/length (max 2097152) or tailLines (max 2000). Sensitive files are denied.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),length:z.number().int().min(1).max(2097152).optional(),tailLines:z.number().int().min(1).max(2000).optional()}).strict(),annotations:readOnly},({path,offset,length,tailLines})=>run(()=>{a.assert('files.read');return h.readFile(path,{offset,length,tailLines});},false,'pc_read_file'));

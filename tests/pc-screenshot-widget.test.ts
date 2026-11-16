@@ -61,15 +61,15 @@ test('all screenshot tools share a discoverable self-contained resource and keep
   const png=await image();
   const definitions=new Map<string,any>();
   const callbacks=new Map<string,(args:any)=>Promise<any>>();
-  let resource:()=>Promise<any>=async()=>({});
+  const resources=new Map<string,()=>Promise<any>>();
   const server={registerTool:(name:string,definition:unknown,handler:(args:any)=>Promise<any>)=>{
     definitions.set(name,definition);callbacks.set(name,handler);
-  },registerResource:(_name:string,_uri:string,_opts:unknown,handler:()=>Promise<any>)=>{resource=handler;}} as unknown as McpServer;
+  },registerResource:(_name:string,uri:string,_opts:unknown,handler:()=>Promise<any>)=>{resources.set(uri,handler);}} as unknown as McpServer;
   const host={listWindows:async()=>[{id:'123',title:'Chrome Haberler',processName:'chrome.exe'}],
     captureScreen:async()=>({mimeType:'image/png',data:png}),captureFullScreen:async()=>({mimeType:'image/png',data:png}),
     adbScreencap:async()=>png,showImage:async()=>({mimeType:'image/png',data:png})} as unknown as PcHost;
   registerPcTools(server,{authorizer:auth,host});
-  const contents=(await resource()).contents[0];
+  const contents=(await resources.get(PC_SCREENSHOT_URI)!()).contents[0];
   expect(contents.uri).toBe(PC_SCREENSHOT_URI);
   expect(contents.mimeType).toBe(PC_SCREENSHOT_MIME);
   expect(contents.text).toBe(PC_SCREENSHOT_HTML);
