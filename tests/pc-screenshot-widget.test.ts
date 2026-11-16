@@ -81,6 +81,7 @@ test('all screenshot tools share a discoverable self-contained resource and keep
   expect(contents.text).not.toMatch(/<script[^>]+src=|<link[^>]+href=|fetch\s*\(|XMLHttpRequest|https?:\/\//);
   expect(contents._meta.ui.csp).toEqual({connectDomains:[],resourceDomains:[]});
   expect(contents._meta['openai/ui'].availableDisplayModes).toEqual(['inline']);
+  expect(contents._meta['openai/ui'].preferredDisplayMode).toBe('inline');
   for(const [name,args] of [
     ['pc_capture_screen',{windowId:'123'}],['pc_capture_full_screen',{mode:'all'}],
     ['pc_adb_screencap',{serial:'emulator-5554'}],['pc_show_image',{path:'C:\\image.png'}],
