@@ -1,12 +1,27 @@
 import { spawn } from 'node:child_process';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { join, win32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PcAccessDeniedError, PcAuthorizer } from './authorization';
-import { invalidPcArgument } from './errors';
+import { PcOperationError, invalidPcArgument } from './errors';
 import {resolveAllowedPath} from './paths';
+import {invokePackagedWindowsHelper,pcWindowsHelperStatus,type PcWindowsHelper} from './windows';
 
 export const PC_LAUNCHABLE_APPS = ['notepad.exe', 'chrome.exe', 'msedge.exe'] as const;
 export type PcLaunchableApp = string;
+
+export function normalizePcLaunchApp(app: unknown): string {
+  if(typeof app!=='string'||!app.length||app.length>4096)throw invalidPcArgument('app','Expected a valid executable name');
+  const lower=app.toLowerCase();
+  for(const name of PC_LAUNCHABLE_APPS){
+    if(lower===name||lower===name.slice(0,-4))return name;
+  }
+  // Other installed executables may be launched in full access, but must be explicit.
+  if(!lower.endsWith('.exe'))throw invalidPcArgument('app','Unknown application alias',PC_LAUNCHABLE_APPS);
+  if(!(/^[a-zA-Z0-9_ .()-]+\.exe$/i.test(app)||/^[a-z]:\\[^\x00-\x1f"<>|?*]+\.exe$/i.test(app)))
+    throw invalidPcArgument('app','Invalid executable path');
+  return app;
+}
 
 export function resolveTrustedPcApplication(app: PcLaunchableApp, environment: NodeJS.ProcessEnv = process.env): string | undefined {
   const system = environment.SystemRoot || 'C:\\Windows';
@@ -47,10 +62,27 @@ function resolveFullPcApplication(app:string, environment:NodeJS.ProcessEnv=proc
   return undefined;
 }
 
-export function validatePcLaunchUrl(raw: unknown): string {
-  if (typeof raw !== 'string' || raw.length < 8 || raw.length > 2048 || /[\s\x00-\x1f\x7f]/.test(raw)) throw invalidPcArgument('url','Expected a valid HTTP(S) URL');
+export function validatePcLaunchUrl(raw: unknown,roots:string[]=[],fullAccess=false): string {
+  if (typeof raw !== 'string' || raw.length < 8 || raw.length > 2048 || /[\s\x00-\x1f\x7f]/.test(raw)) throw invalidPcArgument('url','Expected a valid URL');
   let url: URL;
   try { url = new URL(raw); } catch { throw invalidPcArgument('url','Invalid URL'); }
+  if(url.protocol==='file:'){
+    if(!fullAccess||!/^file:\/\/\/[a-z]:\//i.test(raw)||url.hostname||url.username||url.password
+      ||url.search||url.hash||url.href!==raw||raw.includes('\\'))
+      throw invalidPcArgument('url','Only canonical local file URLs inside approved roots are accepted');
+    try{
+      const requested=fileURLToPath(url);
+      // Reject junctions/symlinks even when their resolved destination is inside a permitted drive.
+      let current=win32.parse(requested).root;
+      for(const part of requested.slice(current.length).split('\\').filter(Boolean)){
+        current=win32.join(current,part);
+        if(lstatSync(current).isSymbolicLink())throw Error('reparse point');
+      }
+      const permitted=resolveAllowedPath(requested,roots,{fullAccess:true});
+      if(!statSync(permitted).isFile())throw Error('not a regular file');
+    }catch{throw invalidPcArgument('url','Local file does not resolve to a regular file inside approved roots');}
+    return url.href;
+  }
   if (!['https:', 'http:'].includes(url.protocol) || !url.hostname || url.username || url.password
     || url.href !== raw || raw.includes('\\')) throw invalidPcArgument('url','Only canonical HTTP(S) URLs without credentials are accepted');
   return url.href;
@@ -60,6 +92,7 @@ export function createPcApplicationLauncher(options: {
   authorizer: PcAuthorizer;
   resolve?: (app: PcLaunchableApp) => string | undefined;
   spawnApp?: (executable: string, args: string[]) => void | Promise<void>;
+  windowHelper?: PcWindowsHelper;
   signal?: AbortSignal;
 }) {
   const resolve = options.resolve ?? resolveTrustedPcApplication;
@@ -82,12 +115,25 @@ export function createPcApplicationLauncher(options: {
       resolve();
     });
   }));
+  const windowHelper=options.windowHelper??(pcWindowsHelperStatus().available?invokePackagedWindowsHelper:undefined);
+  type LaunchWindow={id:string;title:string;processName:string};
+  async function listed(app:string):Promise<LaunchWindow[]>{
+    if(!windowHelper)return [];
+    try{
+      const raw=await windowHelper('list',{},options.signal);
+      if(!Array.isArray(raw))return [];
+      return raw.filter((item):item is LaunchWindow=>item&&typeof item==='object'
+        &&typeof item.id==='string'&&/^[1-9][0-9]{0,15}$/.test(item.id)
+        &&typeof item.title==='string'&&typeof item.processName==='string'
+        &&item.processName.toLowerCase()===win32.basename(app).toLowerCase());
+    }catch{return [];}
+  }
   return {
-    async launchPcApp(app: string, rawUrl?: string, filePath?:string, userDataDir?:string): Promise<{ launched: true; app: string }> {
+    async launchPcApp(app: string, rawUrl?: string, filePath?:string, userDataDir?:string): Promise<{ launched: true; app: string;windowId?:string }> {
       if (options.signal?.aborted) throw new PcAccessDeniedError();
       const grant = options.authorizer.assert('apps.launch');
+      app=normalizePcLaunchApp(app);
       if (!grant.fullAccess&&(!PC_LAUNCHABLE_APPS.includes(app as typeof PC_LAUNCHABLE_APPS[number]) || !grant.allowedApps.includes(app))) throw new PcAccessDeniedError();
-      if(grant.fullAccess&&(typeof app!=='string'||!(/^[a-zA-Z0-9_ .()-]+\.exe$/i.test(app)||/^[a-z]:\\[^\x00-\x1f"<>|?*]+\.exe$/i.test(app))))throw new PcAccessDeniedError();
       if(rawUrl!==undefined&&filePath!==undefined)throw invalidPcArgument('filePath','Cannot specify both url and filePath');
       if(filePath!==undefined&&(!grant.fullAccess||win32.basename(app).toLowerCase()!=='notepad.exe'))
         throw invalidPcArgument('filePath','File arguments are supported only for Notepad in full access');
@@ -104,12 +150,40 @@ export function createPcApplicationLauncher(options: {
         const allowed=resolveAllowedPath(filePath,grant.roots,{fullAccess:grant.fullAccess});
         if(!statSync(allowed).isFile())throw invalidPcArgument('filePath','Expected an existing regular file');
         args.push(allowed);
-      }else if(rawUrl!==undefined)args.push(validatePcLaunchUrl(rawUrl));
+      }else if(rawUrl!==undefined)args.push(validatePcLaunchUrl(rawUrl,grant.roots,grant.fullAccess===true));
       const executable = options.resolve?resolve(app):grant.fullAccess?resolveFullPcApplication(app):resolve(app);
-      if (!executable || !win32.isAbsolute(executable)) throw new PcAccessDeniedError();
+      if (!executable || !win32.isAbsolute(executable)) throw invalidPcArgument('app','Application executable was not found');
       if (options.signal?.aborted || options.authorizer.assert('apps.launch').id !== grant.id) throw new PcAccessDeniedError();
+      const before=grant.fullAccess?await listed(app):[];
       await spawnApp(executable, args);
       if (options.signal?.aborted || options.authorizer.assert('apps.launch').id !== grant.id) throw new PcAccessDeniedError();
+      if(grant.fullAccess&&windowHelper){
+        let selected:LaunchWindow|undefined;
+        let fallback:LaunchWindow|undefined;
+        const known=new Set(before.map(item=>item.id));
+        for(let attempt=0;attempt<16;attempt++){
+          const current=await listed(app);
+          selected=current.find(item=>!known.has(item.id));
+          if(selected)break;
+          // Only a plain app activation may legitimately reuse a pre-existing window.
+          // A URL, document, or isolated browser profile must not target an unrelated tab.
+          fallback=rawUrl===undefined&&filePath===undefined&&userDataDir===undefined&&current.length===1
+            ?current[0]:undefined;
+          if(attempt<15)await new Promise(resolve=>setTimeout(resolve,75));
+        }
+        selected??=fallback;
+        if(selected){
+          if(options.signal?.aborted||options.authorizer.assert('apps.launch').id!==grant.id)throw new PcAccessDeniedError();
+          const activation=await windowHelper('activate',{windowId:selected.id,title:selected.title,
+            processName:selected.processName},options.signal);
+          if(activation&&typeof activation==='object'&&(activation as {reason?:unknown}).reason==='focus_required')
+            throw new PcOperationError('pc_focus_required');
+          if(!activation||typeof activation!=='object'||(activation as {ok?:unknown}).ok!==true)
+            throw new PcAccessDeniedError();
+          return {launched:true,app,windowId:selected.id};
+        }
+        throw new PcOperationError('pc_focus_required');
+      }
       return { launched: true, app };
     },
   };

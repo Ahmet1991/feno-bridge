@@ -58,6 +58,13 @@ internal static class PcWindowsHelper {
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr handle,StringBuilder text,int size);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr handle,out uint processId);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr handle);
+    [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr handle);
+    [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr handle,int command);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr handle);
+    [DllImport("user32.dll",SetLastError=true)] private static extern bool AttachThreadInput(uint from,uint to,bool attach);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr handle,uint command);
     [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr handle,uint flags);
     [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent,IntPtr child);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr handle,out RECT rect);
@@ -130,26 +137,63 @@ internal static class PcWindowsHelper {
             && rect.Right-rect.Left<=MaximumCoordinate && rect.Bottom-rect.Top<=MaximumCoordinate);
         return rect;
     }
-    private static bool Foreground(IntPtr hwnd) {
-        if(!IsWindowEnabled(hwnd))return false;
+    private static bool Foreground(IntPtr hwnd,uint appPid,bool allowOwnedPopup) {
         IntPtr foreground=GetForegroundWindow();
         if(foreground==hwnd)return true;
-        if(foreground==IntPtr.Zero || GetAncestor(foreground,2)!=hwnd || !IsChild(hwnd,foreground))return false;
+        if(foreground==IntPtr.Zero)return false;
         uint owner,focused;GetWindowThreadProcessId(hwnd,out owner);GetWindowThreadProcessId(foreground,out focused);
-        return owner!=0 && owner==focused;
+        if(owner!=0 && owner==focused && GetAncestor(foreground,2)==hwnd && IsChild(hwnd,foreground))return true;
+        if(!allowOwnedPopup || !IsWindowVisible(foreground) || Owner(foreground)!=appPid)
+            return false;
+        // An owned dialog or context-menu window can retain foreground while Esc closes it.
+        IntPtr current=foreground;
+        for(int i=0;i<16 && current!=IntPtr.Zero;i++){
+            if(current==hwnd)return true;
+            current=GetWindow(current,4); // GW_OWNER
+        }
+        return GetAncestor(foreground,3)==hwnd; // GA_ROOTOWNER
     }
-    private static void SafeFocus(IntPtr hwnd,uint pid,uint appPid) {
-        if(!Unlocked() || !Foreground(hwnd))throw new InvalidOperationException("focus_required");
+    private static bool Activate(IntPtr hwnd) {
+        if(IsIconic(hwnd))ShowWindowAsync(hwnd,9); // SW_RESTORE
+        if(SetForegroundWindow(hwnd) && GetForegroundWindow()==hwnd)return true;
+        IntPtr foreground=GetForegroundWindow();uint ignored;
+        uint foregroundThread=foreground==IntPtr.Zero?0:GetWindowThreadProcessId(foreground,out ignored);
+        uint targetThread=GetWindowThreadProcessId(hwnd,out ignored),ownThread=GetCurrentThreadId();
+        bool foregroundAttached=false,targetAttached=false;
+        try {
+            if(foregroundThread!=0 && foregroundThread!=ownThread)
+                foregroundAttached=AttachThreadInput(ownThread,foregroundThread,true);
+            if(targetThread!=0 && targetThread!=ownThread && targetThread!=foregroundThread)
+                targetAttached=AttachThreadInput(ownThread,targetThread,true);
+            BringWindowToTop(hwnd);SetForegroundWindow(hwnd);
+        }finally{
+            if(targetAttached)AttachThreadInput(ownThread,targetThread,false);
+            if(foregroundAttached)AttachThreadInput(ownThread,foregroundThread,false);
+        }
+        if(GetForegroundWindow()==hwnd)return true;
+        // Simulate one neutral Alt press to satisfy Windows' foreground-lock exception.
+        INPUT[] alt={Keyboard(0x12,false),Keyboard(0x12,true)};
+        if(SendInput(2,alt,Marshal.SizeOf(typeof(INPUT)))==2)SetForegroundWindow(hwnd);
+        return GetForegroundWindow()==hwnd;
+    }
+    private static void EnsureForeground(IntPtr hwnd,uint appPid,bool recover) {
+        if(!Unlocked())throw new InvalidOperationException("focus_required");
+        if(!Foreground(hwnd,appPid,recover) && (!recover || !Activate(hwnd)))
+            throw new InvalidOperationException("focus_required");
+        if(!Foreground(hwnd,appPid,recover))throw new InvalidOperationException("focus_required");
+    }
+    private static void SafeFocus(IntPtr hwnd,uint pid,uint appPid,bool recover) {
         uint current;GetWindowThreadProcessId(hwnd,out current);
         Require(current==pid && Owner(hwnd)==appPid);
-        NotPassword(hwnd,null,false);
+        EnsureForeground(hwnd,appPid,recover);
+        NotPassword(hwnd,null,recover,appPid);
     }
     private static bool IsNonClientPoint(IntPtr hwnd,System.Drawing.Point point) {
         long packed=((long)(ushort)point.Y<<16)|(ushort)point.X;
         int hit=unchecked((int)SendMessageW(hwnd,0x0084,IntPtr.Zero,new IntPtr(packed)).ToInt64());
         return hit==2 || hit==3 || hit==8 || hit==9 || hit==20 || hit==21;
     }
-    private static void NotPassword(IntPtr hwnd,System.Drawing.Point? point,bool allowNonClient) {
+    private static void NotPassword(IntPtr hwnd,System.Drawing.Point? point,bool allowNonClient,uint appPid=0) {
         AutomationElement element=point.HasValue
             ? AutomationElement.FromPoint(new System.Windows.Point(point.Value.X,point.Value.Y))
             : AutomationElement.FocusedElement;
@@ -162,7 +206,10 @@ internal static class PcWindowsHelper {
             if(element.Equals(root)){inside=true;break;}
             element=TreeWalker.RawViewWalker.GetParent(element);
         }
-        Require(inside);
+        // Native menus and owned save dialogs can have their own UIA roots.
+        // Permit a focused element from the verified application process in full access.
+        Require(inside || (!point.HasValue && allowNonClient && root!=null
+            && AutomationElement.FocusedElement!=null && AutomationElement.FocusedElement.Current.ProcessId==appPid));
     }
     private static object Png(Bitmap bitmap) {
         using(MemoryStream stream=new MemoryStream()) {
@@ -254,7 +301,8 @@ internal static class PcWindowsHelper {
         return SendInput((uint)batch.Length,batch,Marshal.SizeOf(typeof(INPUT)))==(uint)batch.Length;
     }
     private static object InputAction(string action,IDictionary<string,object> args,IntPtr hwnd,RECT rect,uint pid,uint appPid) {
-        SafeFocus(hwnd,pid,appPid);
+        bool allowFocus=args.ContainsKey("allowFocus") && args["allowFocus"] is bool && (bool)args["allowFocus"];
+        SafeFocus(hwnd,pid,appPid,allowFocus);
         bool allowNonClient=args.ContainsKey("allowNonClient") && args["allowNonClient"] is bool && (bool)args["allowNonClient"];
         if(action=="click" || action=="right_click" || action=="double_click" || action=="drag" || action=="scroll") {
             int x=GetNumber(args,"x",0,MaximumCoordinate),y=GetNumber(args,"y",0,MaximumCoordinate);
@@ -266,7 +314,7 @@ internal static class PcWindowsHelper {
                 Require(endX<rect.Right-rect.Left && endY<rect.Bottom-rect.Top);
                 NotPassword(hwnd,new System.Drawing.Point(rect.Left+endX,rect.Top+endY),allowNonClient);
             }
-            Require(SetCursorPos(start.X,start.Y));SafeFocus(hwnd,pid,appPid);
+            Require(SetCursorPos(start.X,start.Y));SafeFocus(hwnd,pid,appPid,allowFocus);
             if(action=="scroll") {
                 int delta=GetNumber(args,"delta",-1080,1080);Require(delta!=0);
                 mouse_event(0x0800,0,0,unchecked((uint)delta),UIntPtr.Zero);
@@ -275,12 +323,12 @@ internal static class PcWindowsHelper {
                 Require(MouseDrag(rect.Left+endX,rect.Top+endY));
             }else Require(MouseClick(action=="right_click",action=="double_click"));
         }else if(action=="key") {
-            string key=GetString(args,"key");Require(KeyNames.Contains(key));SafeFocus(hwnd,pid,appPid);
+            string key=GetString(args,"key");Require(KeyNames.Contains(key));SafeFocus(hwnd,pid,appPid,allowFocus);
             Require(EmitKey(key));
         }else if(action=="type") {
             string value=GetString(args,"text");
             Require(value.Length>0 && value.Length<=300 && Regex.IsMatch(value,@"^[\p{L}\p{N} .,_@:/!?()\-—]+$"));
-            foreach(char character in value) { SafeFocus(hwnd,pid,appPid);Require(UnicodeChar(character)); }
+            foreach(char character in value) { SafeFocus(hwnd,pid,appPid,allowFocus);Require(UnicodeChar(character)); }
         }else throw new InvalidOperationException();
         return new {ok=true};
     }
@@ -306,6 +354,10 @@ internal static class PcWindowsHelper {
         Require(String.Equals(Title(hwnd),GetString(args,"title"),StringComparison.Ordinal));
         RECT rect=WindowRect(hwnd);
         if(action=="capture")return Capture(hwnd,rect,pid,appPid);
+        if(action=="activate"){
+            EnsureForeground(hwnd,appPid,true);
+            return new {ok=true};
+        }
         return InputAction(action,args,hwnd,rect,pid,appPid);
     }
     [STAThread] private static int Main(string[] argv) {

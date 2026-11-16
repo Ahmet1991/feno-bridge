@@ -6,7 +6,7 @@ import { PcAccessDeniedError, PcAuthorizer } from "./authorization";
 import { PcOperationError, invalidPcArgument } from "./errors";
 
 type PcWindow = { id: string; title: string; processName: string };
-type PcHelperAction = "session" | "list" | "capture" | "full" | "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type" | "clipboard_read" | "clipboard_write";
+type PcHelperAction = "session" | "list" | "capture" | "full" | "activate" | "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type" | "clipboard_read" | "clipboard_write";
 export type PcDesktopInput = { windowId: string; action: "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type";
   x?: number; y?: number; endX?: number; endY?: number; delta?: number; key?: string; text?: string };
 export type PcWindowsHelper = (action: PcHelperAction, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
@@ -111,7 +111,7 @@ export function createVerifiedWindowsHelper(options: VerifiedHelperOptions): PcW
         if (aborted||signal?.aborted) throw new Error('cancelled');
         const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         if (code !== 0 && !(result?.ok === false && result?.reason === "focus_required"
-          && ["click", "right_click", "double_click", "drag", "scroll", "key", "type"].includes(action))) throw new Error("helper failure");
+          && ["activate","click", "right_click", "double_click", "drag", "scroll", "key", "type"].includes(action))) throw new Error("helper failure");
         resolve(result);
       } catch { reject(new PcAccessDeniedError()); }
     });
@@ -123,6 +123,7 @@ async function packagedWindowsHelper(action: PcHelperAction, args: Record<string
   if (process.platform !== "win32") throw new PcAccessDeniedError();
   return createVerifiedWindowsHelper(defaultHelperPaths())(action, args, signal);
 }
+export const invokePackagedWindowsHelper:PcWindowsHelper=packagedWindowsHelper;
 
 export function createPcWindowsController(options: {
   authorizer: PcAuthorizer;
@@ -258,7 +259,8 @@ export function createPcWindowsController(options: {
       const selected = await assertWindow(input.windowId, "desktop.input");
       guard(permission,id);
       const response = await helper(input.action, { ...args, processName: selected.processName, title: selected.title,
-        allowNonClient:authorizer.assert('desktop.input').fullAccess===true },options.signal);
+        allowNonClient:authorizer.assert('desktop.input').fullAccess===true,
+        allowFocus:authorizer.assert('desktop.input').fullAccess===true },options.signal);
       if (response && typeof response === "object" && (response as { ok?: unknown }).ok === false
         && (response as { reason?: unknown }).reason === "focus_required") throw new PcOperationError("pc_focus_required");
       if (!response || typeof response !== "object" || (response as { ok?: unknown }).ok !== true) throw new PcAccessDeniedError();

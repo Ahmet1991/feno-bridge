@@ -2,17 +2,30 @@ import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { PcAccessDeniedError, PcAuthorizer } from "./authorization";
+import { invalidPcArgument } from "./errors";
+import { ANDROID_KEYCODES } from "./android-keycodes";
 
 // Base64 expands ~4/3; stay comfortably below the tunnel's 10 MiB response limit.
 const MAX_ADB_OUTPUT = 6 * 1024 * 1024;
 const VALID_SERIAL = /^[A-Za-z0-9_.:-]{1,80}$/;
 const EMULATOR_SERIAL = /^emulator-[0-9]{4,5}$/;
-const ALLOWED_KEY = new Set([
-  "KEYCODE_DPAD_UP", "KEYCODE_DPAD_DOWN", "KEYCODE_DPAD_LEFT", "KEYCODE_DPAD_RIGHT", "KEYCODE_DPAD_CENTER",
-  "KEYCODE_BACK", "KEYCODE_HOME", "KEYCODE_MENU", "KEYCODE_ENTER", "KEYCODE_ESCAPE",
-  "KEYCODE_MEDIA_PLAY_PAUSE", "KEYCODE_MEDIA_PLAY", "KEYCODE_MEDIA_PAUSE", "KEYCODE_MEDIA_FAST_FORWARD",
-  "KEYCODE_MEDIA_REWIND", "KEYCODE_VOLUME_UP", "KEYCODE_VOLUME_DOWN", "KEYCODE_VOLUME_MUTE",
+// Selective approvals retain their original remote-control key subset.
+const SELECTIVE_KEYS = new Set([
+  'KEYCODE_DPAD_UP','KEYCODE_DPAD_DOWN','KEYCODE_DPAD_LEFT','KEYCODE_DPAD_RIGHT','KEYCODE_DPAD_CENTER',
+  'KEYCODE_BACK','KEYCODE_HOME','KEYCODE_MENU','KEYCODE_ENTER','KEYCODE_ESCAPE',
+  'KEYCODE_MEDIA_PLAY_PAUSE','KEYCODE_MEDIA_PLAY','KEYCODE_MEDIA_PAUSE','KEYCODE_MEDIA_FAST_FORWARD',
+  'KEYCODE_MEDIA_REWIND','KEYCODE_VOLUME_UP','KEYCODE_VOLUME_DOWN','KEYCODE_VOLUME_MUTE',
 ]);
+const KEY_EXAMPLES = ['KEYCODE_HOME','HOME','BACK','ENTER','SETTINGS','KEYCODE_SETTINGS'] as const;
+function normalizeAdbKey(value: unknown): string {
+  if (typeof value !== 'string' || !/^(?:KEYCODE_)?[A-Za-z0-9_]{1,80}$/.test(value))
+    throw invalidPcArgument('value','Expected a recognized Android key name',KEY_EXAMPLES);
+  const upper=value.toUpperCase();
+  const canonical=upper.startsWith('KEYCODE_')?upper:`KEYCODE_${upper}`;
+  if(!ANDROID_KEYCODES.has(canonical))
+    throw invalidPcArgument('value','Unknown Android key name',KEY_EXAMPLES);
+  return canonical;
+}
 
 /** Avoid running an unrelated `adb` executable via a process-inherited PATH. */
 export function resolveTrustedAdbPath(
@@ -125,8 +138,9 @@ export function createPcAdbController(options: {
           args = ["shell", "input", "tap", String(input.x), String(input.y)];
           break;
         case "key":
-          if (!input.value || !ALLOWED_KEY.has(input.value)) throw new PcAccessDeniedError();
-          args = ["shell", "input", "keyevent", input.value];
+          const key = normalizeAdbKey(input.value);
+          if (!authorizer.assert('adb').fullAccess && !SELECTIVE_KEYS.has(key)) throw new PcAccessDeniedError();
+          args = ["shell", "input", "keyevent", key];
           break;
         case "text":
           if (!input.value || input.value.length > 150 || !/^[A-Za-z0-9 ._-]+$/.test(input.value)) throw new PcAccessDeniedError();
