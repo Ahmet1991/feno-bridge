@@ -38,6 +38,31 @@ test('MCP probe reports load, handshake, host response, tool-result and error',(
   win.happyDOM.abort();
 });
 
+test('MCP probe repeated results and host context do not create infinite status or resize loop',()=>{
+  const {win,sent,emit,status}=load(PC_PROBE_MCP_APP_HTML);
+  emit({jsonrpc:'2.0',id:sent[0].id,result:{protocolVersion:'2026-01-26',hostContext:{theme:'light'}}});
+  const result={jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent:{message:'same'}}};
+  emit(result);
+  const initial=status();
+  const initialSizes=sent.filter(m=>m.method==='ui/notifications/size-changed').length;
+  for(let i=0;i<50;i++){
+    emit(result);
+    emit({jsonrpc:'2.0',method:'ui/notifications/host-context-changed',params:{theme:'light'}});
+  }
+  expect(status()).toBe(initial);
+  expect(sent.filter(m=>m.method==='ui/notifications/size-changed')).toHaveLength(initialSizes);
+  win.happyDOM.abort();
+});
+
+test('Skybridge probe repeats globals without appending the same tool result',()=>{
+  const host={toolOutput:{message:'same'}};
+  const {win,status}=load(PC_PROBE_SKYBRIDGE_HTML,host);
+  const initial=status();
+  for(let i=0;i<50;i++)win.dispatchEvent(new win.Event('openai:set_globals'));
+  expect(status()).toBe(initial);
+  win.happyDOM.abort();
+});
+
 test('MCP probe retries with a protocol version explicitly offered by the host',()=>{
   const {win,sent,emit,status}=load(PC_PROBE_MCP_APP_HTML);
   emit({jsonrpc:'2.0',id:sent[0].id,error:{code:-32602,message:'version mismatch',data:{supportedVersions:['2025-06-18']}}});
@@ -87,6 +112,9 @@ test('Skybridge screenshot also paints after late openai:set_globals without ext
 });
 
 test('probe MIME, tool metadata and screenshot fallback resources are independently registered',async()=>{
+  const previous=process.env.FENO_PC_WIDGET_PROBES;
+  process.env.FENO_PC_WIDGET_PROBES='1';
+  try {
   const definitions=new Map<string,any>();
   const tools=new Map<string,()=>Promise<any>>();
   const resources=new Map<string,{definition:any;read:()=>Promise<any>}>();
@@ -109,10 +137,26 @@ test('probe MIME, tool metadata and screenshot fallback resources are independen
     expect((await tools.get(tool)?.())?.structuredContent?.message).toBe('Türkçe test kartı');
   }
   expect(resources.has(PC_SCREENSHOT_SKYBRIDGE_URI)).toBe(true);
+  } finally { if(previous===undefined)delete process.env.FENO_PC_WIDGET_PROBES;else process.env.FENO_PC_WIDGET_PROBES=previous; }
+});
+
+test('diagnostic tools are hidden unless explicitly opted in',()=>{
+  const previous=process.env.FENO_PC_WIDGET_PROBES;
+  delete process.env.FENO_PC_WIDGET_PROBES;
+  const names:string[]=[];
+  const server={registerTool:(name:string)=>names.push(name),registerResource:()=>{}} as unknown as McpServer;
+  try{
+    registerPcTools(server,{authorizer:new PcAuthorizer({profileId:'pc2-normal'}),host:{} as PcHost});
+    expect(names).not.toContain('pc_widget_probe_mcpapp');
+    expect(names).not.toContain('pc_widget_probe_skybridge');
+    expect(names).toContain('pc_capture_screen');
+  }finally{if(previous===undefined)delete process.env.FENO_PC_WIDGET_PROBES;else process.env.FENO_PC_WIDGET_PROBES=previous;}
 });
 
 test('explicit skybridge flag switches screenshots without changing either diagnostic tool',()=>{
   const before=process.env.FENO_PC_WIDGET_MODE;
+  const probeBefore=process.env.FENO_PC_WIDGET_PROBES;
+  process.env.FENO_PC_WIDGET_PROBES='1';
   const definitions=new Map<string,any>();
   const server={registerTool:(name:string,definition:any)=>definitions.set(name,definition),registerResource:()=>{}} as unknown as McpServer;
   try{
@@ -127,5 +171,7 @@ test('explicit skybridge flag switches screenshots without changing either diagn
   }finally{
     if(before===undefined)delete process.env.FENO_PC_WIDGET_MODE;
     else process.env.FENO_PC_WIDGET_MODE=before;
+    if(probeBefore===undefined)delete process.env.FENO_PC_WIDGET_PROBES;
+    else process.env.FENO_PC_WIDGET_PROBES=probeBefore;
   }
 });

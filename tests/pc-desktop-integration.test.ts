@@ -67,6 +67,18 @@ test('desktop focus loss returns pc_focus_required, while invalid input and unli
   expect(w.pcDesktopInput({windowId:'123',action:'drag',x:1,y:1,endX:2,endY:2})).rejects.toThrow('pc_access_denied');
 });
 
+test('failed Notepad Unicode injection reports an actionable input code',async()=>{
+  const a=approve(['desktop.input']);
+  const w=windows(a,async action=>{
+    if(action==='session')return {unlocked:true};
+    if(action==='list')return [windowInfo];
+    if(action==='type')return {ok:false,reason:'input_failed'};
+    return {ok:true};
+  });
+  await expect(w.pcDesktopInput({windowId:'123',action:'type',text:'telefondan merhaba'}))
+    .rejects.toMatchObject({code:'pc_input_failed'});
+});
+
 test('double click and drag require independent advanced permission and valid endpoint',async()=>{
   const a=approve(['desktop.input','desktop.advanced']);const calls:string[]=[];
   const w=windows(a,fixtureHelper({onCall:action=>calls.push(action)}));

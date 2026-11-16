@@ -49,8 +49,12 @@ test('widget renders the canonical host metadata envelope without external acces
   expect(getElementById('title').textContent).toBe('Chrome • Haberler');
   expect(getElementById('show').hidden).toBe(false);
   expect(getElementById('empty').hidden).toBe(true);
-  handlers.get('show:click')?.();handlers.get('close:click')?.();
-  expect(requestedModes).toEqual(['fullscreen','inline']);
+  handlers.get('show:click')?.();
+  expect(getElementById('show').hidden).toBe(true);
+  handlers.get('close:click')?.();
+  expect(getElementById('show').hidden).toBe(false);
+  // Zoom stays inside the inline card; even a click must not open the host side panel.
+  expect(requestedModes).toEqual([]);
 });
 
 test('all screenshot tools share a discoverable self-contained resource and keep image-only metadata private',async()=>{
@@ -76,7 +80,7 @@ test('all screenshot tools share a discoverable self-contained resource and keep
   expect(contents.text).toContain('toolResponseMetadata');
   expect(contents.text).not.toMatch(/<script[^>]+src=|<link[^>]+href=|fetch\s*\(|XMLHttpRequest|https?:\/\//);
   expect(contents._meta.ui.csp).toEqual({connectDomains:[],resourceDomains:[]});
-  expect(contents._meta['openai/ui'].availableDisplayModes).toEqual(['inline','fullscreen']);
+  expect(contents._meta['openai/ui'].availableDisplayModes).toEqual(['inline']);
   for(const [name,args] of [
     ['pc_capture_screen',{windowId:'123'}],['pc_capture_full_screen',{mode:'all'}],
     ['pc_adb_screencap',{serial:'emulator-5554'}],['pc_show_image',{path:'C:\\image.png'}],

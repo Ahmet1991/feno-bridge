@@ -148,7 +148,7 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   };
   server.registerResource('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
     async()=>({contents:[{uri:PC_SCREENSHOT_URI,mimeType:PC_SCREENSHOT_MIME,text:PC_SCREENSHOT_HTML,
-      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/ui':{availableDisplayModes:['inline','fullscreen']},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
+      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline']},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
   server.registerResource('pc-screenshot-skybridge',PC_SCREENSHOT_SKYBRIDGE_URI,
     {mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,description:'Ekran görüntüsü (Skybridge yedek kart)'},
     async()=>({contents:[{uri:PC_SCREENSHOT_SKYBRIDGE_URI,mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,text:PC_SCREENSHOT_SKYBRIDGE_HTML}]}));
@@ -168,6 +168,7 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
     await deps.beforeRequest?.();await audit(tool,'ok');
     return {content:[{type:'text' as const,text:'Türkçe test kartı'}],structuredContent:{message:'Türkçe test kartı'}};
   };
+  if(process.env.FENO_PC_WIDGET_PROBES==='1'){
   server.registerTool('pc_widget_probe_mcpapp',{title:'MCP Apps teşhis kartını göster',
     description:'Sabit Türkçe metinle MCP Apps bileşen bağlantısını sınar.',inputSchema:z.object({}).strict(),annotations:readOnly,
     _meta:{ui:{resourceUri:PC_PROBE_MCP_APP_URI},'openai/outputTemplate':PC_PROBE_MCP_APP_URI,
@@ -178,6 +179,7 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
     _meta:{'openai/outputTemplate':PC_PROBE_SKYBRIDGE_URI,
       'openai/toolInvocation/invoking':'Skybridge kartı açılıyor…','openai/toolInvocation/invoked':'Skybridge kartı hazır.'}},
     ()=>probe('pc_widget_probe_skybridge'));
+  }
   server.registerTool('pc_status',{title:'Feno PC status',description:'Read local approval and coordination status; never grants access.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(async()=>({...a.status(),...await h.status()}),true,'pc_status'));
   server.registerTool('pc_list_files',{title:'List approved project files',description:'Returns sizeBytes, modifiedAt and pagination; default 100, max 200 entries.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(200).optional()}).strict(),annotations:readOnly},({path,offset,limit})=>run(()=>{a.assert('files.read');return h.listFiles(path,offset,limit);},false,'pc_list_files'));
   server.registerTool('pc_read_file',{title:'Read approved UTF-8 file',description:'Default limit 2 MiB; for larger files pass byte offset/length (max 2097152) or tailLines (max 2000). Sensitive files are denied.',inputSchema:z.object({path:p,offset:z.number().int().min(0).optional(),length:z.number().int().min(1).max(2097152).optional(),tailLines:z.number().int().min(1).max(2000).optional()}).strict(),annotations:readOnly},({path,offset,length,tailLines})=>run(()=>{a.assert('files.read');return h.readFile(path,{offset,length,tailLines});},false,'pc_read_file'));

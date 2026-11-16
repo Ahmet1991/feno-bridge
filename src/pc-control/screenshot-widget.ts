@@ -1,8 +1,8 @@
 import sharp from 'sharp';
 
-export const PC_SCREENSHOT_URI = 'ui://widget/pc-screenshot.html';
+export const PC_SCREENSHOT_URI = 'ui://widget/pc-screenshot-v5.1.11.html';
 export const PC_SCREENSHOT_MIME = 'text/html;profile=mcp-app';
-export const PC_SCREENSHOT_SKYBRIDGE_URI = 'ui://widget/pc-screenshot-skybridge.html';
+export const PC_SCREENSHOT_SKYBRIDGE_URI = 'ui://widget/pc-screenshot-skybridge-v5.1.11.html';
 export const PC_SCREENSHOT_SKYBRIDGE_MIME = 'text/html+skybridge';
 const MAX_EDGE = 1600;
 const MAX_WIDGET_BYTES = 1_800_000;
@@ -54,11 +54,11 @@ header{display:flex;justify-content:space-between;align-items:flex-start;gap:12p
 #title{font-weight:650;overflow-wrap:anywhere}#time{font-size:12px;color:var(--muted);white-space:nowrap}
 button{font:inherit;color:inherit;cursor:zoom-in;border:0;background:none;padding:0}
 #show{width:100%;display:block;border:1px solid var(--line);border-radius:10px;overflow:hidden}
-img{display:block;width:100%;height:auto;object-fit:contain}
+#preview{display:block;width:100%;height:auto;max-height:480px;object-fit:contain}
 #empty{padding:24px;text-align:center;color:var(--muted)}
-#zoom{display:none;position:fixed;inset:0;z-index:10;background:rgba(0,0,0,.94);padding:38px 12px 12px;box-sizing:border-box;overflow:auto;cursor:zoom-out}
-#zoom[aria-hidden="false"]{display:grid;place-items:center}
-#zoom img{width:auto;max-width:100%;max-height:calc(100dvh - 52px);height:auto;object-fit:contain}
+#zoom{display:none;position:relative;width:100%;box-sizing:border-box;background:#12161e;padding:44px 12px 12px;border-radius:10px;overflow:hidden;cursor:zoom-out}
+#zoom[aria-hidden="false"]{display:block}
+#zoom img{display:block;width:100%;height:auto;max-height:none;object-fit:contain}
 #close{position:absolute;top:6px;right:16px;color:white;cursor:pointer;padding:5px 9px;font-size:22px}
 </style></head><body><main><header><div id="title">Ekran görüntüsü</div><time id="time"></time></header>
 <button id="show" type="button" aria-label="Ekran görüntüsünü büyüt" hidden><img id="preview" alt="Bilgisayar ekranının görüntüsü"></button>
@@ -69,16 +69,21 @@ img{display:block;width:100%;height:auto;object-fit:contain}
 const useMcpApp=${mode==='mcpapp'};
 const byId=id=>document.getElementById(id);
 const zoom=byId('zoom');
-let connected=false,hostContext={},nextId=1;
+let connected=false,hostContext={},nextId=1,lastHeight=-1,lastSizedAt=0,resizeTimer=null,lastPaint='';
 const parent=window.parent;
 function send(method,params){const id=nextId++;parent.postMessage({jsonrpc:'2.0',id,method,params},'*');return id}
 function notify(method,params){parent.postMessage({jsonrpc:'2.0',method,params},'*')}
-function size(){if(!connected)return;const root=document.documentElement,body=document.body;
-  const dims=hostContext.containerDimensions||{};
-  const width=Math.max(1,Math.ceil(body.scrollWidth||root.scrollWidth||window.innerWidth||1));
-  const height=Math.max(1,Math.ceil(body.scrollHeight||root.scrollHeight||100));
-  notify('ui/notifications/size-changed',{width:Number.isFinite(dims.maxWidth)?Math.min(width,dims.maxWidth):width,
-    height:Number.isFinite(dims.maxHeight)?Math.min(height,dims.maxHeight):height})}
+function size(){if(!connected)return;
+  const height=Math.max(1,Math.ceil(document.body.scrollHeight||document.documentElement.scrollHeight||100));
+  if(height===lastHeight)return;
+  const elapsed=Date.now()-lastSizedAt;
+  if(lastHeight>=0&&elapsed<80){
+    if(resizeTimer===null)resizeTimer=setTimeout(()=>{resizeTimer=null;size()},80-elapsed);
+    return;
+  }
+  lastHeight=height;
+  lastSizedAt=Date.now();
+  notify('ui/notifications/size-changed',{height})}
 function context(update){hostContext={...hostContext,...update};const root=document.documentElement;
   if(hostContext.theme==='dark'||hostContext.theme==='light'){
     root.setAttribute('data-theme',hostContext.theme);
@@ -87,20 +92,17 @@ function context(update){hostContext={...hostContext,...update};const root=docum
     root.style.setProperty('--muted',dark?'#a7b5c9':'#64748b');root.style.setProperty('--line',dark?'#424b59':'#dce3ed');
   }
   const dims=hostContext.containerDimensions||{};
-  root.style.maxHeight=Number.isFinite(dims.maxHeight)?dims.maxHeight+'px':'';
   root.style.maxWidth=Number.isFinite(dims.maxWidth)?dims.maxWidth+'px':'';
-  if(connected)size();
 }
-function mode(value){const request=window.openai?.requestDisplayMode;
-  if(typeof request==='function'){Promise.resolve(request({mode:value})).catch(()=>{});return}
-  if(connected&&hostContext.availableDisplayModes?.includes(value))send('ui/request-display-mode',{mode:value});
-}
-function close(){zoom.setAttribute('aria-hidden','true');mode('inline');byId('show').focus()}
+function close(){zoom.setAttribute('aria-hidden','true');byId('show').hidden=false;size();byId('show').focus()}
 byId('close').addEventListener('click',close);
 zoom.addEventListener('click',e=>{if(e.target===zoom)close()});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&zoom.getAttribute('aria-hidden')==='false')close()});
-byId('show').addEventListener('click',()=>{zoom.setAttribute('aria-hidden','false');mode('fullscreen');byId('close').focus()});
+byId('show').addEventListener('click',()=>{byId('show').hidden=true;zoom.setAttribute('aria-hidden','false');size();byId('close').focus()});
 function paint(summary,data){
+  const key=JSON.stringify([summary.title,summary.capturedAt,data?.dataUrl]);
+  if(key===lastPaint)return;
+  lastPaint=key;
   if(!data||typeof data.dataUrl!=='string'||!/^data:image\\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(data.dataUrl)){
     byId('show').hidden=true;byId('empty').hidden=false;byId('empty').textContent='Görüntü verisi bulunamadı.';size();return;
   }
@@ -119,8 +121,8 @@ function render(){
   if(data)paint(summary,data);
 }
 const initializeId=useMcpApp&&parent&&parent!==window?send('ui/initialize',{
-  protocolVersion:'2026-01-26',appInfo:{name:'feno-pc-screenshot',title:'Feno Bridge Ekran Görüntüsü',version:'5.1.10'},
-  appCapabilities:{availableDisplayModes:['inline','fullscreen']}}):null;
+  protocolVersion:'2026-01-26',appInfo:{name:'feno-pc-screenshot',title:'Feno Bridge Ekran Görüntüsü',version:'5.1.11'},
+  appCapabilities:{availableDisplayModes:['inline']}}):null;
 window.addEventListener('message',event=>{
   if(event.source!==parent||!event.data||event.data.jsonrpc!=='2.0')return;
   const msg=event.data;

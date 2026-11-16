@@ -330,7 +330,8 @@ internal static class PcWindowsHelper {
             Require(value.Length>0 && value.Length<=300 && (allowNonClient
                 ? Regex.IsMatch(value,@"^[^\x00-\x1f\x7f]+$")
                 : Regex.IsMatch(value,@"^[\p{L}\p{N} .,_@:/!?()\-—]+$")));
-            foreach(char character in value) { SafeFocus(hwnd,pid,appPid,allowFocus);Require(UnicodeChar(character)); }
+            foreach(char character in value) { SafeFocus(hwnd,pid,appPid,allowFocus);
+                if(!UnicodeChar(character))throw new InvalidOperationException("input_failed"); }
         }else throw new InvalidOperationException();
         return new {ok=true};
     }
@@ -384,9 +385,9 @@ internal static class PcWindowsHelper {
             Console.OutputEncoding=new UTF8Encoding(false);
             Console.Write(Json.Serialize(result));return 0;
         }catch(Exception ex) {
-            if(ex.Message=="focus_required") {
+            if(ex.Message=="focus_required" || ex.Message=="input_failed") {
                 Console.OutputEncoding=new UTF8Encoding(false);
-                Console.Write("{\"ok\":false,\"reason\":\"focus_required\"}");
+                Console.Write("{\"ok\":false,\"reason\":\""+ex.Message+"\"}");
             }
             return 1;
         }

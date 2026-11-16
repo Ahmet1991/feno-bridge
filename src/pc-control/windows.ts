@@ -110,7 +110,7 @@ export function createVerifiedWindowsHelper(options: VerifiedHelperOptions): PcW
       try {
         if (aborted||signal?.aborted) throw new Error('cancelled');
         const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (code !== 0 && !(result?.ok === false && result?.reason === "focus_required"
+        if (code !== 0 && !(result?.ok === false && (result?.reason === "focus_required" || result?.reason === "input_failed")
           && ["activate","click", "right_click", "double_click", "drag", "scroll", "key", "type"].includes(action))) throw new Error("helper failure");
         resolve(result);
       } catch { reject(new PcAccessDeniedError()); }
@@ -267,6 +267,9 @@ export function createPcWindowsController(options: {
         allowFocus:authorizer.assert('desktop.input').fullAccess===true },options.signal);
       if (response && typeof response === "object" && (response as { ok?: unknown }).ok === false
         && (response as { reason?: unknown }).reason === "focus_required") throw new PcOperationError("pc_focus_required");
+      if (input.action==='type' && response && typeof response==='object'
+        && (response as {ok?:unknown}).ok===false && (response as {reason?:unknown}).reason==='input_failed')
+        throw new PcOperationError('pc_input_failed');
       if (!response || typeof response !== "object" || (response as { ok?: unknown }).ok !== true) throw new PcAccessDeniedError();
       guard(permission,id);
       guard('desktop.input');
