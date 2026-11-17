@@ -26,7 +26,7 @@ test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref
         case 'Input.insertText':typed=msg.params.text;break;
         case 'Page.captureScreenshot':result={data:'iVBORw0KGgo='};break;
         case 'Page.reload':break;
-        case 'Browser.getWindowForTarget':result={windowId:1};break;
+        case 'SystemInfo.getProcessInfo':result={processInfo:[{type:'browser',id:123}]};break;
         case 'Page.getNavigationHistory':result={currentIndex:1,entries:[{id:1,url:'about:blank'},{id:2,url:page}]};break;
         case 'Target.closeTarget':result={success:true};break;
         case 'Page.enable':break;
@@ -35,10 +35,10 @@ test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref
       ws.send(JSON.stringify({id:msg.id,result}));
     }}});
   const b=createPcBrowser({directory,resolveBrowser:()=> 'chrome.exe',startBrowser:(_,args)=>{
-    started++;expect(args).toContain('--start-minimized');expect(args).toContain('--remote-debugging-port=0');
+    started++;expect(args).not.toContain('--start-minimized');expect(args).not.toContain('--headless=new');expect(args).toContain('--remote-debugging-port=0');
     expect(args.some(a=>a.startsWith('--proxy-server='))).toBe(true);
     writeFileSync(join(directory,'DevToolsActivePort'),server.port+'\n/devtools/browser/fixture');
-  }});
+  },showBrowser:pid=>{expect(pid).toBe(123);}});
   const run=(action:string,args:any={})=>b.run(action,args,new AbortController().signal);
   try{
     const {tabId}=await run('open',{url:'http://127.0.0.1:1234/'});
@@ -56,7 +56,7 @@ test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref
     await run('reload',{tabId});await expect(run('click',{tabId,ref})).rejects.toMatchObject({code:'pc_browser_ref_stale'});
     await expect(run('navigate',{tabId,url:'file:///C:/secret'})).rejects.toMatchObject({code:'pc_browser_url_blocked'});
     await expect(run('read',{tabId:'missing',mode:'text'})).rejects.toMatchObject({code:'pc_browser_tab_not_found'});
-    await run('hide');await run('show');await run('back',{tabId});
+    expect(await run('mode',{mode:'visible'})).toEqual({ok:true,mode:'visible'});await run('show');await run('back',{tabId});
     expect(calls.some(c=>c.method==='Target.activateTarget'||c.method==='Page.bringToFront')).toBe(false);
     expect(calls.filter(c=>c.method==='Input.dispatchMouseEvent')).toHaveLength(2);
     const next=await run('read',{tabId,mode:'tree'});

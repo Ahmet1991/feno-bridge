@@ -2930,7 +2930,7 @@ describe("ChatGPT outer-native harness v4", () => {
         "pc_adb_devices", "pc_adb_input", "pc_adb_screencap",
         "pc_browser_back", "pc_browser_click", "pc_browser_close_tab", "pc_browser_download_dir",
         "pc_browser_find", "pc_browser_forward", "pc_browser_hide", "pc_browser_key",
-        "pc_browser_navigate", "pc_browser_open", "pc_browser_read", "pc_browser_reload",
+        "pc_browser_mode", "pc_browser_navigate", "pc_browser_open", "pc_browser_read", "pc_browser_reload",
         "pc_browser_screenshot", "pc_browser_scroll", "pc_browser_show", "pc_browser_tabs", "pc_browser_type",
         "pc_cancel_job",
         "pc_capture_full_screen", "pc_capture_screen", "pc_clipboard_read", "pc_clipboard_write",

@@ -6,7 +6,7 @@ import { PcAccessDeniedError, PcAuthorizer } from "./authorization";
 import { PcOperationError, invalidPcArgument } from "./errors";
 
 type PcWindow = { id: string; title: string; processName: string };
-type PcHelperAction = "session" | "list" | "capture" | "full" | "activate" | "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type" | "clipboard_read" | "clipboard_write";
+type PcHelperAction = "session" | "list" | "capture" | "full" | "activate" | "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type" | "clipboard_read" | "clipboard_write" | "browser_start" | "browser_show" | "browser_present";
 export type PcDesktopInput = { windowId: string; action: "click" | "right_click" | "double_click" | "drag" | "scroll" | "key" | "type";
   x?: number; y?: number; endX?: number; endY?: number; delta?: number; key?: string; text?: string };
 export type PcWindowsHelper = (action: PcHelperAction, args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;

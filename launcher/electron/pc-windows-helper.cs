@@ -62,6 +62,72 @@ internal static class PcWindowsHelper {
     [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr handle);
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr handle,int command);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr handle);
+    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] private struct STARTUPINFO {
+        public int cb; public string reserved,desktop,title;
+        public int x,y,xSize,ySize,xCountChars,yCountChars,fillAttribute,flags;
+        public short showWindow,reserved2; public IntPtr reservedPtr,stdin,stdout,stderr;
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct PROCESS_INFORMATION {
+        public IntPtr process,thread; public uint pid,tid;
+    }
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+    private static extern bool CreateProcessW(string application,StringBuilder command,IntPtr pa,IntPtr ta,
+        bool inherit,uint flags,IntPtr environment,string cwd,ref STARTUPINFO startup,out PROCESS_INFORMATION info);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    private static string QuoteArgument(string value) {
+        StringBuilder quoted=new StringBuilder("\"");
+        int slashes=0;
+        foreach(char ch in value) {
+            if(ch=='\\'){slashes++;continue;}
+            quoted.Append('\\',ch=='"'?slashes*2+1:slashes).Append(ch);
+            slashes=0;
+        }
+        return quoted.Append('\\',slashes*2).Append('"').ToString();
+    }
+    private static object StartBrowser(IDictionary<string,object> args) {
+        string exe=GetString(args,"executable");
+        Require(Path.IsPathRooted(exe) && File.Exists(exe) &&
+            Regex.IsMatch(Path.GetFileName(exe),@"^(chrome|msedge)\.exe$",RegexOptions.IgnoreCase));
+        object raw;Require(args.TryGetValue("arguments",out raw));
+        IEnumerable list=raw as IEnumerable;Require(list!=null && !(raw is string));
+        StringBuilder command=new StringBuilder(QuoteArgument(exe));
+        foreach(object arg in list) { Require(arg is string && ((string)arg).IndexOf('\0')<0);command.Append(" ").Append(QuoteArgument((string)arg)); }
+        STARTUPINFO startup=new STARTUPINFO {cb=Marshal.SizeOf(typeof(STARTUPINFO)),flags=1,showWindow=4}; // SW_SHOWNOACTIVATE
+        PROCESS_INFORMATION info;
+        Require(CreateProcessW(exe,command,IntPtr.Zero,IntPtr.Zero,false,0,IntPtr.Zero,null,ref startup,out info));
+        CloseHandle(info.thread);CloseHandle(info.process);
+        return new {ok=true,pid=info.pid};
+    }
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd,IntPtr after,int x,int y,int w,int h,uint flags);
+    private static object ShowBrowser(IDictionary<string,object> args,bool activate) {
+        uint pid=(uint)GetNumber(args,"pid",1,int.MaxValue);
+        Require(Regex.IsMatch(ProcessName(pid),@"^(chrome|msedge)(\.exe)?$",RegexOptions.IgnoreCase));
+        IntPtr window=IntPtr.Zero;
+        for(int attempt=0;attempt<40 && window==IntPtr.Zero;attempt++){
+            EnumWindows(delegate(IntPtr hwnd,IntPtr unused) {
+                uint owner;GetWindowThreadProcessId(hwnd,out owner);
+                StringBuilder name=new StringBuilder(256);GetClassName(hwnd,name,256);
+                if(owner==pid && IsWindowVisible(hwnd) && name.ToString()=="Chrome_WidgetWin_1"){window=hwnd;return false;}
+                return true;
+            },IntPtr.Zero);
+            if(window==IntPtr.Zero)System.Threading.Thread.Sleep(50);
+        }
+        Require(window!=IntPtr.Zero);
+        if(activate)EnsureForeground(window,pid,true);
+        else {
+            // A background CDP target produces an inactive normal window. Recover
+            // an iconic/off-screen window without activating it or raising its Z order.
+            if(IsIconic(window))ShowWindowAsync(window,4); // SW_SHOWNOACTIVATE
+            for(int attempt=0;attempt<40&&IsIconic(window);attempt++)System.Threading.Thread.Sleep(50);
+            RECT rect;Require(GetWindowRect(window,out rect));
+            int left=GetSystemMetrics(76),top=GetSystemMetrics(77);
+            int right=left+GetSystemMetrics(78),bottom=top+GetSystemMetrics(79);
+            if(rect.Right<=left||rect.Left>=right||rect.Bottom<=top||rect.Top>=bottom)
+                Require(SetWindowPos(window,IntPtr.Zero,left+50,top+50,1280,800,0x0014)); // NOACTIVATE | NOZORDER
+            Require(IsWindowVisible(window)&&!IsIconic(window));
+        }
+        return new {ok=true};
+    }
     [DllImport("user32.dll",SetLastError=true)] private static extern bool AttachThreadInput(uint from,uint to,bool attach);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr handle,uint command);
@@ -351,7 +417,10 @@ internal static class PcWindowsHelper {
     private static object Execute(string action,IDictionary<string,object> args) {
         if(action=="session") { string name=InputDesktopName();bool? locked=SessionLocked();return new {unlocked=locked==false && name=="Default",locked=locked,desktopName=name}; }
         if(action=="keymap")return new {keys=KeySequence(GetString(args,"key"))};
+        if(action=="browser_start")return StartBrowser(args);
+        if(action=="browser_present")return ShowBrowser(args,false);
         Require(Unlocked());
+        if(action=="browser_show")return ShowBrowser(args,true);
         if(action=="clipboard_read") {
             string value=Clipboard.ContainsText(TextDataFormat.UnicodeText)?Clipboard.GetText(TextDataFormat.UnicodeText):"";
             Require(new UTF8Encoding(false,true).GetByteCount(value)<=65536);
