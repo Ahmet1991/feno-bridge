@@ -1,5 +1,4 @@
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { validateRuntimeBundle } = require("../electron/runtime-install.cjs");
@@ -11,12 +10,19 @@ const launcherManifest = JSON.parse(
   fs.readFileSync(path.join(launcherRoot, "package.json"), "utf8"),
 );
 const expectedVersion = launcherManifest.version;
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-smoke-"));
+// The daemon deliberately refuses runtime commands installed beneath a system
+// temp directory. Use an ignored workspace directory just like a durable install.
+const smokeRoot = path.resolve(launcherRoot, "..", ".cache");
+fs.mkdirSync(smokeRoot, { recursive: true });
+const scratch = fs.mkdtempSync(path.join(smokeRoot, "codex-web-gpt-package-smoke-"));
+const scratchTemp = path.join(scratch, "tmp");
+fs.mkdirSync(scratchTemp);
 const markerPath = path.join(scratch, "ready.json");
 const coreHome = path.join(scratch, "core-home");
 let macAppBundle;
+let failed = false;
 
-const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = 120_000;
+const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = 240_000;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -48,7 +54,9 @@ function artifact(pattern, label) {
 function smokeEnvironment() {
   return {
     ...process.env,
-    TMPDIR: scratch,
+    TMPDIR: scratchTemp,
+    TEMP: scratchTemp,
+    TMP: scratchTemp,
     CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(scratch, "launcher-data"),
     CODEX_CHATGPT_WEB_HOME: coreHome,
     CODEX_WEB_GPT_DEV_HOME: path.join(scratch, "dev-home"),
@@ -103,6 +111,9 @@ try {
   if (marker.ok !== true
     || marker.packaged !== true
     || marker.runtimeVerified !== true
+    || marker.cdpStatus !== 200
+    || marker.runtimeStartupVerified !== true
+    || (process.platform === "win32" && marker.pcServiceStarted !== true)
     || marker.version !== expectedVersion
     || marker.platform !== process.platform) {
     throw new Error(`Unexpected packaged launcher marker: ${JSON.stringify(marker)}`);
@@ -157,7 +168,11 @@ try {
     || !/^[a-f0-9]{64}$/.test(installedManifest.bundleId)) {
     throw new Error(`Packaged launcher installed the wrong durable runtime: ${JSON.stringify(installedManifest)}`);
   }
-  process.stdout.write(`PACKAGED_LAUNCHER_SMOKE_OK ${process.platform}/${process.arch}\n`);
+  process.stdout.write(`PACKAGED_LAUNCHER_SMOKE_OK ${process.platform}/${process.arch} ${JSON.stringify(marker)}\n`);
+} catch (error) {
+  failed = true;
+  process.stderr.write(`Package smoke failed; isolated evidence retained at ${scratch}\n`);
+  throw error;
 } finally {
   try {
     if (macAppBundle) {
@@ -171,7 +186,7 @@ try {
     }
   } finally {
     try {
-      fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+      if (!failed) fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     } catch (error) {
       if (!(process.platform === "win32" && ["EPERM", "EBUSY", "ENOTEMPTY"].includes(error?.code))) {
         throw error;

@@ -223,17 +223,17 @@ test("startup failure stays visible on another launch and Retry exits the failed
   assert.deepEqual(sandbox.process.env, { CODEX_HOME: "original-codex-home" });
 });
 
-test("packaged runtime is verified before launcher browser surfaces can bind ports", () => {
+test("CDP switches precede ready while packaged runtime verification precedes launcher browser surfaces", () => {
   const start = electronMain.indexOf("async function start()");
   const runtimeValidation = electronMain.indexOf("installedRuntimeRoot = runtimeRootProvider();", start);
-  const cdpPortAllocation = electronMain.indexOf("cdpPort = await findFreePort();", start);
+  const cdpPortAllocation = electronMain.indexOf("cdpPort = findFreePort();", start);
   const windowCreation = electronMain.indexOf("mainWindow = createWindow({", start);
   const controlServerStart = electronMain.indexOf("browserControl = await new BrowserControlServer({", start);
   const browserReady = electronMain.indexOf("await browserHost.ready();", start);
 
   assert.ok(runtimeValidation > start, "startup must eagerly verify the packaged runtime");
+  assert.ok(cdpPortAllocation > start && cdpPortAllocation < runtimeValidation, "CDP must be configured before asynchronous runtime verification");
   for (const [surface, position] of [
-    ["CDP port allocation", cdpPortAllocation],
     ["launcher window", windowCreation],
     ["browser control server", controlServerStart],
     ["embedded browser", browserReady],
@@ -244,7 +244,7 @@ test("packaged runtime is verified before launcher browser surfaces can bind por
 
 test("DEV launcher exposes its profile and supervises only its Full-mode MCP runtime", () => {
   assert.match(electronMain, /profile:\s*LAUNCHER_PROFILE\.kind/);
-  assert.match(electronMain, /if \(IS_DEV_PROFILE\) \{[\s\S]*?config\?\.mode === "full"[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?\} else void \(async \(\) => \{/);
+  assert.match(electronMain, /if \(IS_DEV_PROFILE\) \{[\s\S]*?config\?\.mode === "full"[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?\} else void retryRuntimeStartup\(async \(\) => \{/);
   assert.match(electronMain, /await runtimeSupervisor\?\.shutdown\(\{ cancelActiveTurns: true, force: true \}\)/);
   assert.match(electronMain, /packaged:\s*app\.isPackaged && !IS_DEV_PROFILE/);
   assert.match(electronMain, /IS_DEV_PROFILE && !stateStore\.read\(\)\.onboardingComplete/);

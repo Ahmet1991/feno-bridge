@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "5.1.15",
+  "version": "5.1.16",
   "private": true,
   "description": "Feno Bridge desktop launcher",
   "author": "miuuyy",
@@ -18,7 +18,7 @@
     "package:win": "bun run build && bun run build:runtime && bun run scripts/package.cjs --win",
     "package:linux": "bun run build && bun run build:runtime && bun run scripts/package.cjs --linux",
     "smoke:package": "bun run scripts/smoke-package.cjs",
-    "test": "node --test tests/*.test.cjs",
+    "test": "bun run scripts/test-launcher.cjs",
     "start": "electron ."
   },
   "dependencies": {
