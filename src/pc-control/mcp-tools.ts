@@ -148,10 +148,11 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   };
   server.registerResource('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
     async()=>({contents:[{uri:PC_SCREENSHOT_URI,mimeType:PC_SCREENSHOT_MIME,text:PC_SCREENSHOT_HTML,
-      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline'],preferredDisplayMode:'inline'},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
+      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline','fullscreen'],preferredDisplayMode:'inline'},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
   server.registerResource('pc-screenshot-skybridge',PC_SCREENSHOT_SKYBRIDGE_URI,
     {mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,description:'Ekran görüntüsü (Skybridge yedek kart)'},
-    async()=>({contents:[{uri:PC_SCREENSHOT_SKYBRIDGE_URI,mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,text:PC_SCREENSHOT_SKYBRIDGE_HTML}]}));
+    async()=>({contents:[{uri:PC_SCREENSHOT_SKYBRIDGE_URI,mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,text:PC_SCREENSHOT_SKYBRIDGE_HTML,
+      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline','fullscreen'],preferredDisplayMode:'inline'}}}]}));
   server.registerResource('pc-probe-mcpapp',PC_PROBE_MCP_APP_URI,
     {mimeType:'text/html;profile=mcp-app',description:'MCP Apps bağlantı teşhisi'},
     async()=>({contents:[{uri:PC_PROBE_MCP_APP_URI,mimeType:'text/html;profile=mcp-app',text:PC_PROBE_MCP_APP_HTML,
@@ -161,8 +162,7 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
     async()=>({contents:[{uri:PC_PROBE_SKYBRIDGE_URI,mimeType:'text/html+skybridge',text:PC_PROBE_SKYBRIDGE_HTML}]}));
   // MCP Apps is the documented default; switch only the screenshot card with an environment flag.
   const skybridge=process.env.FENO_PC_WIDGET_MODE==='skybridge';
-  const selectedScreenshotUri=skybridge?PC_SCREENSHOT_SKYBRIDGE_URI:PC_SCREENSHOT_URI;
-  const imageToolMeta={...(skybridge?{}:{ui:{resourceUri:selectedScreenshotUri}}),'openai/outputTemplate':selectedScreenshotUri,
+  const imageToolMeta={...(skybridge?{}:{ui:{resourceUri:PC_SCREENSHOT_URI}}),'openai/outputTemplate':PC_SCREENSHOT_SKYBRIDGE_URI,
     'openai/toolInvocation/invoking':'Ekran görüntüsü alınıyor…','openai/toolInvocation/invoked':'Ekran görüntüsü hazır.'};
   const probe=async(tool:string)=>{
     await deps.beforeRequest?.();await audit(tool,'ok');

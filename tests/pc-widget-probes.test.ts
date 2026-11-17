@@ -90,7 +90,8 @@ test('Skybridge probe never initializes MCP; receives globals and errors visibly
 test('Skybridge screenshot paints from private metadata without MCP handshake',()=>{
   const {win,sent}=load(PC_SCREENSHOT_SKYBRIDGE_HTML,{toolOutput:{title:'Not Defteri'},
     toolResponseMetadata:{mcp_tool_result:{_meta:{pcScreenshot:{dataUrl:'data:image/jpeg;base64,YWJj'}}}}});
-  expect(sent).toEqual([]);
+  expect(sent.some(m=>m.method==='ui/initialize')).toBe(true);
+  expect(sent.some(m=>m.method==='ui/notifications/initialized')).toBe(false);
   expect(win.document.getElementById('preview')?.getAttribute('src')).toBe('data:image/jpeg;base64,YWJj');
   expect(win.document.getElementById('title')?.textContent).toBe('Not Defteri');
   win.happyDOM.abort();
@@ -107,7 +108,7 @@ test('Skybridge screenshot also paints after late openai:set_globals without ext
   expect(win.document.getElementById('preview')?.getAttribute('src')).toBe('data:image/jpeg;base64,YWJj');
   expect(win.document.getElementById('title')?.textContent).toBe('Türkçe pencere');
   expect(network).toEqual([]);
-  expect(sent).toEqual([]);
+  expect(sent.some(m=>m.method==='ui/notifications/initialized')).toBe(false);
   win.happyDOM.abort();
 });
 

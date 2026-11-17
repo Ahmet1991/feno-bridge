@@ -3,12 +3,12 @@ import sharp from 'sharp';
 import {mkdtempSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {runInNewContext} from 'node:vm';
+import {Window} from 'happy-dom';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {readPcImage} from '../src/pc-control/files';
 import {registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
-import {makePcScreenshotResult,PC_SCREENSHOT_HTML,PC_SCREENSHOT_MIME,PC_SCREENSHOT_URI} from '../src/pc-control/screenshot-widget';
+import {makePcScreenshotResult,PC_SCREENSHOT_HTML,PC_SCREENSHOT_MIME,PC_SCREENSHOT_URI,PC_SCREENSHOT_SKYBRIDGE_URI,PC_SCREENSHOT_SKYBRIDGE_MIME} from '../src/pc-control/screenshot-widget';
 
 const image = async () => sharp({create:{width:3200,height:1800,channels:3,background:'#6789ab'}}).png().toBuffer();
 
@@ -23,38 +23,35 @@ test('image tool preserves model PNG and returns bounded hidden JPEG for widget'
   expect(url.startsWith('data:image/jpeg;base64,')).toBe(true);
   const preview=Buffer.from(url.slice('data:image/jpeg;base64,'.length),'base64');
   const dimensions=await sharp(preview).metadata();
-  expect(Math.max(dimensions.width!,dimensions.height!)).toBeLessThanOrEqual(1600);
-  expect(preview.length).toBeLessThanOrEqual(1_800_000);
+  expect(Math.max(dimensions.width!,dimensions.height!)).toBeLessThanOrEqual(1280);
+  expect(preview.length).toBeLessThanOrEqual(400_000);
 });
 
 test('widget renders the canonical host metadata envelope without external access',async()=>{
   const url=(await makePcScreenshotResult({data:await image(),mimeType:'image/png',title:'Tarayıcı'}))._meta.pcScreenshot.dataUrl;
-  const nodes=new Map<string,any>();
-  const handlers=new Map<string,()=>void>();const requestedModes:string[]=[];
-  const getElementById=(id:string)=>{
-    if(!nodes.has(id))nodes.set(id,{hidden:true,src:'',textContent:'',setAttribute:()=>{},
-      addEventListener:(event:string,callback:()=>void)=>handlers.set(`${id}:${event}`,callback),focus:()=>{}});
-    return nodes.get(id);
-  };
+  const win=new Window({settings:{disableJavaScriptEvaluation:false}});
+  const requestedModes:string[]=[];
+  const getElementById=(id:string)=>win.document.getElementById(id) as any;
   const script=PC_SCREENSHOT_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   expect(script).toBeTruthy();
-  runInNewContext(script!,{
-    window:{openai:{toolOutput:{title:'Chrome • Haberler',capturedAt:'2026-11-16T16:00:00Z'},
+  Object.defineProperty(win,'openai',{value:{toolOutput:{title:'Chrome • Haberler',capturedAt:'2026-11-16T16:00:00Z'},
       toolResponseMetadata:{status:'success',mcp_tool_result:{_meta:{pcScreenshot:{dataUrl:url}}}},
-      requestDisplayMode:({mode}:{mode:string})=>requestedModes.push(mode)},addEventListener:()=>{}},
-    document:{getElementById,addEventListener:()=>{}},
-  });
+      requestDisplayMode:async({mode}:{mode:string})=>{requestedModes.push(mode);return {mode:'inline'}}}});
+  win.document.write(PC_SCREENSHOT_HTML.replace(/<script>[\s\S]*?<\/script>/,''));
+  win.eval(script!);
   expect(getElementById('preview').src).toBe(url);
   expect(getElementById('large').src).toBe(url);
   expect(getElementById('title').textContent).toBe('Chrome • Haberler');
   expect(getElementById('show').hidden).toBe(false);
   expect(getElementById('empty').hidden).toBe(true);
-  handlers.get('show:click')?.();
-  expect(getElementById('show').hidden).toBe(true);
-  handlers.get('close:click')?.();
-  expect(getElementById('show').hidden).toBe(false);
-  // Zoom stays inside the inline card; even a click must not open the host side panel.
   expect(requestedModes).toEqual([]);
+  getElementById('show').click();
+  await Bun.sleep(20);
+  expect(getElementById('show').hidden).toBe(true);
+  getElementById('close').click();
+  expect(getElementById('show').hidden).toBe(false);
+  expect(requestedModes).toEqual(['fullscreen']);
+  win.happyDOM.abort();
 });
 
 test('all screenshot tools share a discoverable self-contained resource and keep image-only metadata private',async()=>{
@@ -80,14 +77,14 @@ test('all screenshot tools share a discoverable self-contained resource and keep
   expect(contents.text).toContain('toolResponseMetadata');
   expect(contents.text).not.toMatch(/<script[^>]+src=|<link[^>]+href=|fetch\s*\(|XMLHttpRequest|https?:\/\//);
   expect(contents._meta.ui.csp).toEqual({connectDomains:[],resourceDomains:[]});
-  expect(contents._meta['openai/ui'].availableDisplayModes).toEqual(['inline']);
+  expect(contents._meta['openai/ui'].availableDisplayModes).toEqual(['inline','fullscreen']);
   expect(contents._meta['openai/ui'].preferredDisplayMode).toBe('inline');
   for(const [name,args] of [
     ['pc_capture_screen',{windowId:'123'}],['pc_capture_full_screen',{mode:'all'}],
     ['pc_adb_screencap',{serial:'emulator-5554'}],['pc_show_image',{path:'C:\\image.png'}],
   ] as const){
     const definition=definitions.get(name);
-    expect(definition._meta['openai/outputTemplate']).toBe(PC_SCREENSHOT_URI);
+    expect(definition._meta['openai/outputTemplate']).toBe(PC_SCREENSHOT_SKYBRIDGE_URI);
     expect(definition._meta.ui.resourceUri).toBe(PC_SCREENSHOT_URI);
     expect(definition._meta['openai/toolInvocation/invoking']).toContain('görüntüsü');
     const response=await callbacks.get(name)!(args);
@@ -96,6 +93,9 @@ test('all screenshot tools share a discoverable self-contained resource and keep
     expect(response._meta.pcScreenshot.dataUrl).toStartWith('data:image/jpeg;base64,');
     expect(JSON.stringify(response.structuredContent)).not.toContain('base64');
   }
+  const classic=(await resources.get(PC_SCREENSHOT_SKYBRIDGE_URI)!()).contents[0];
+  expect(classic.mimeType).toBe(PC_SCREENSHOT_SKYBRIDGE_MIME);
+  expect(classic.text).toBe(contents.text);
   expect((await callbacks.get('pc_capture_screen')!({windowId:'123'})).structuredContent.title).toBe('Chrome Haberler');
 });
 

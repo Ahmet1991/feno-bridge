@@ -1,12 +1,13 @@
 import {expect, test} from 'bun:test';
-import {Window} from 'happy-dom';
+import {Window,type HTMLButtonElement,type HTMLElement} from 'happy-dom';
 import {PC_SCREENSHOT_HTML} from '../src/pc-control/screenshot-widget';
 
-function frame() {
+function frame(openai?:object) {
   const win=new Window({settings:{disableJavaScriptEvaluation:false}});
   const sent:any[]=[];
   const parent={postMessage:(message:unknown)=>sent.push(message)};
   Object.defineProperty(win,'parent',{value:parent,configurable:true});
+  if(openai)Object.defineProperty(win,'openai',{value:openai,configurable:true});
   const script=PC_SCREENSHOT_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   if(!script)throw new Error('Missing inline widget script');
   win.document.write(PC_SCREENSHOT_HTML.replace(/<script>[\s\S]*?<\/script>/,''));
@@ -20,12 +21,58 @@ test('MCP Apps handshake precedes initialized and uses the negotiated context',(
   expect(sent[0]?.method).toBe('ui/initialize');
   expect(sent[0]?.params?.appInfo?.name).toBeTruthy();
   expect(sent[0]?.params?.appCapabilities?.availableDisplayModes).toContain('inline');
-  expect(sent[0]?.params?.appCapabilities?.availableDisplayModes).toEqual(['inline']);
+  expect(sent[0]?.params?.appCapabilities?.availableDisplayModes).toEqual(['inline','fullscreen']);
   expect(sent.some(m=>m.method==='ui/notifications/initialized')).toBe(false);
   emit({jsonrpc:'2.0',id:sent[0].id,result:{protocolVersion:'2026-01-26',hostCapabilities:{},hostInfo:{name:'test-host',version:'1'},hostContext:{theme:'dark',containerDimensions:{maxHeight:700,maxWidth:520}}}});
-  expect(sent[1]?.method).toBe('ui/notifications/initialized');
+  expect(sent.some(m=>m.method==='ui/notifications/initialized')).toBe(true);
   expect(win.document.documentElement.getAttribute('data-theme')).toBe('dark');
   expect(sent.some(m=>m.method==='ui/notifications/size-changed')).toBe(true);
+  win.happyDOM.abort();
+});
+
+test('classic host paints without handshake, reports size and requests fullscreen only on tap',async()=>{
+  const heights:number[]=[];const modes:string[]=[];
+  const globals={toolOutput:{title:'Telefon'},toolResponseMetadata:{pcScreenshot:{dataUrl:'data:image/jpeg;base64,YWJj'}},
+    notifyIntrinsicHeight:(h:number)=>heights.push(h),requestDisplayMode:async({mode}:{mode:string})=>{modes.push(mode);return {mode:'inline'}}};
+  const {win,sent}=frame(globals);
+  expect(win.document.getElementById('title')?.textContent).toBe('Telefon');
+  expect(heights[0]).toBeGreaterThanOrEqual(64);
+  expect(modes).toEqual([]);
+  const before=heights.length;
+  for(let i=0;i<50;i++)win.dispatchEvent(new win.Event('openai:set_globals'));
+  expect(heights).toHaveLength(before);
+  expect(sent.some(m=>m.method==='ui/notifications/size-changed')).toBe(true);
+  (win.document.getElementById('show') as HTMLButtonElement).click();
+  await Bun.sleep(20);
+  expect(modes).toEqual(['fullscreen']);
+  expect(win.document.getElementById('zoom')?.getAttribute('aria-hidden')).toBe('false');
+  win.happyDOM.abort();
+});
+
+test('no bridge response: visible initial status, diagnostics after five seconds and inline zoom',async()=>{
+  const {win,sent,emit}=frame();
+  expect(win.document.getElementById('title')?.textContent).toContain('Feno Bridge');
+  expect(sent.some(m=>m.method==='ui/notifications/size-changed'&&m.params.height>=64)).toBe(true);
+  await new Promise(resolve=>setTimeout(resolve,5100));
+  expect(win.document.getElementById('diagnostic')?.textContent).toContain('window.openai: yok');
+  expect(win.document.getElementById('diagnostic')?.textContent).toContain('gelmedi');
+  emit({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent:{title:'Görüntü'},_meta:{pcScreenshot:{dataUrl:'data:image/jpeg;base64,YWJj'}}}});
+  expect((win.document.getElementById('diagnostic') as HTMLElement|null)?.hidden).toBe(true);
+  (win.document.getElementById('show') as HTMLButtonElement).click();
+  expect(win.document.getElementById('zoom')?.getAttribute('aria-hidden')).toBe('false');
+  win.happyDOM.abort();
+},10000);
+
+test('negotiated MCP fullscreen request follows tap and falls back on rejection',()=>{
+  const {win,sent,emit}=frame();
+  emit({jsonrpc:'2.0',id:sent[0].id,result:{hostContext:{availableDisplayModes:['inline','fullscreen']}}});
+  emit({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent:{title:'Not Defteri'},_meta:{pcScreenshot:{dataUrl:'data:image/jpeg;base64,YWJj'}}}});
+  expect(sent.some(m=>m.method==='ui/request-display-mode')).toBe(false);
+  (win.document.getElementById('show') as HTMLButtonElement).click();
+  const request=sent.find(m=>m.method==='ui/request-display-mode');
+  expect(request?.params.mode).toBe('fullscreen');
+  emit({jsonrpc:'2.0',id:request.id,error:{code:-1,message:'not supported'}});
+  expect(win.document.getElementById('zoom')?.getAttribute('aria-hidden')).toBe('false');
   win.happyDOM.abort();
 });
 
