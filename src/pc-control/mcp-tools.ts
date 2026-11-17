@@ -263,7 +263,8 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   registerBrowser('find','Web öğesi bul','Erişilebilir ad veya rol ile eşleşen öğeleri ve ref kimliklerini bulur.',{tabId,query:z.string().min(1).max(1000),maxChars,offset},true);
   registerBrowser('click','Web öğesine tıkla','Güncel ref kimliğiyle tıkla. Ödeme ve şifre işlemleri kullanıcı onayı gerektirir.',{tabId,ref});
   registerBrowser('type','Web öğesine yaz','Güncel ref kimliğiyle yaz; şifre ve ödeme alanları kullanıcı onayı gerektirir.',{tabId,ref,text:z.string().max(50000),submit:z.boolean().optional()});
-  registerBrowser('key','Tarayıcı tuşu gönder','ENTER, ESC, TAB, SPACE, BACKSPACE, DELETE, UP, DOWN, LEFT, RIGHT, HOME, END, PAGEUP veya PAGEDOWN.',{tabId,key:z.enum(['ENTER','ESC','TAB','SPACE','BACKSPACE','DELETE','UP','DOWN','LEFT','RIGHT','HOME','END','PAGEUP','PAGEDOWN'])});
+  const browserKey=z.enum(['ENTER','ESC','TAB','SPACE','BACKSPACE','DELETE','UP','DOWN','LEFT','RIGHT','HOME','END','PAGEUP','PAGEDOWN']);
+  registerBrowser('key','Tarayıcı tuşu gönder','ENTER, ESC, TAB, SPACE, BACKSPACE, DELETE, UP, DOWN, LEFT, RIGHT, HOME, END, PAGEUP veya PAGEDOWN.',{tabId,key:browserKey});
   const scrollSchema=z.object({tabId,direction:z.enum(['up','down']).optional(),ref:ref.optional(),timeoutSeconds}).strict().refine(v=>!!v.direction!==!!v.ref);
   server.registerTool('pc_browser_scroll',{title:'Web sayfasını kaydır',description:browserHint+'Yön veya öğe ref kimliği kullan.',inputSchema:scrollSchema,annotations:{...write,openWorldHint:true}},
     args=>run(()=>browserAction('scroll',args),false,'pc_browser_scroll',Object.keys(args).sort()));
@@ -271,6 +272,22 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   registerBrowser('show','Tarayıcı penceresini göster','Pencereyi ön plana getirir; kullanıcı açıkça istemedikçe çağırma.',{});
   registerBrowser('hide','Tarayıcı penceresini gizle','Ayrı tarayıcıyı penceresiz moda geçirir.',{});
   registerBrowser('download_dir','İndirme klasörünü belirle','İzinli kök içinde indirme klasörü seçer.',{path:p});
-  server.registerTool('pc_browser_screenshot',{title:'Tarayıcı sayfasının görüntüsünü al',description:browserHint+'Pencere odağı gerektirmez.',inputSchema:z.object({tabId,timeoutSeconds}).strict(),annotations:{...readOnly,openWorldHint:true},_meta:imageToolMeta},
+  const includeCursor=z.boolean().optional(),coordinate=z.number().int().min(0).max(65535).optional();
+  const computerSchema=z.object({tabId,action:z.enum(['click','double_click','right_click','hover','drag','scroll','type','key','screenshot']),
+    x:coordinate,y:coordinate,endX:coordinate,endY:coordinate,delta:z.number().int().min(-1080).max(1080).optional(),deltaX:z.number().int().min(-1080).max(1080).optional(),
+    text:z.string().max(50000).optional(),key:browserKey.optional(),includeCursor,timeoutSeconds}).strict().refine(v=>{
+    const hasPoint=v.x!==undefined&&v.y!==undefined;
+    if((v.x===undefined)!==(v.y===undefined))return false;
+    if(v.action==='screenshot')return !hasPoint&&v.endX===undefined&&v.endY===undefined&&v.text===undefined&&v.key===undefined&&v.delta===undefined&&v.deltaX===undefined;
+    if(v.includeCursor!==undefined)return false;
+    if(v.action==='drag'?(v.endX===undefined||v.endY===undefined):(v.endX!==undefined||v.endY!==undefined))return false;
+    if(v.action==='type'?(v.text===undefined):(v.text!==undefined))return false;
+    if(v.action==='key'?(v.key===undefined):(v.key!==undefined))return false;
+    if(v.action!=='scroll'&&(v.delta!==undefined||v.deltaX!==undefined))return false;
+    return hasPoint||v.action==='type'||v.action==='key';
+  });
+  server.registerTool('pc_browser_computer',{title:'Tarayıcıyı ekran görüntüsü koordinatlarıyla kullan',description:browserHint+'Canvas ve özel bileşenlerde kullan. Önce screenshot al; x/y ve endX/endY son orijinal görüntünün piksel koordinatlarıdır (width/height). Gezinme, ölçek, boyut veya kaydırma değiştiyse yeniden screenshot al. type/key koordinatsız ise etkin alana gider. scroll delta pozitif aşağı, deltaX yatay; screenshot includeCursor isteğe bağlıdır. Şifre ve ödeme alanları kullanıcı onayı gerektirir. Pencere odağını almaz.',inputSchema:computerSchema,annotations:{...write,openWorldHint:true},_meta:imageToolMeta},
+    args=>args.action==='screenshot'?imageRun(()=>browserAction('computer',args),'pc_browser_computer',Object.keys(args).sort()):run(()=>browserAction('computer',args),false,'pc_browser_computer',Object.keys(args).sort()));
+  server.registerTool('pc_browser_screenshot',{title:'Tarayıcı sayfasının görüntüsünü al',description:browserHint+'Pencere odağı gerektirmez. Orijinal görüntü piksel koordinatları pc_browser_computer için kullanılır; includeCursor ile imleci göster.',inputSchema:z.object({tabId,includeCursor,timeoutSeconds}).strict(),annotations:{...readOnly,openWorldHint:true},_meta:imageToolMeta},
     args=>imageRun(()=>browserAction('screenshot',args),'pc_browser_screenshot',Object.keys(args).sort()));
 }

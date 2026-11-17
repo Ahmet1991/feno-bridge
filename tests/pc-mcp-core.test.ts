@@ -5,7 +5,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';import 
 import {defaultConfig} from '../src/config';
 const pcNames=['pc_status','pc_list_files','pc_read_file','pc_write_patch','pc_create_file','pc_create_directory','pc_start_job','pc_list_project_tasks','pc_start_project_task','pc_start_terminal','pc_job_status','pc_job_logs','pc_cancel_job','pc_list_jobs',
   'pc_list_windows','pc_capture_screen','pc_desktop_input','pc_clipboard_read','pc_clipboard_write','pc_adb_devices','pc_adb_screencap','pc_adb_input','pc_runner_status','pc_launch_app','pc_capture_full_screen','pc_show_image',
-  ...['open','tabs','navigate','back','forward','reload','read','find','click','type','key','scroll','screenshot','close_tab','download_dir','show','hide','mode'].map(action=>'pc_browser_'+action)].sort();
+  ...['open','tabs','navigate','back','forward','reload','read','find','click','type','key','scroll','screenshot','close_tab','download_dir','show','hide','mode','computer'].map(action=>'pc_browser_'+action)].sort();
 test('native MCP advertises all desktop tools and denies unauthenticated use without changing six Codex schemas',async()=>{
   const home=mkdtempSync(join(tmpdir(),'pc-core-mcp-'));
   const transport=new StdioClientTransport({command:process.execPath,args:[join(import.meta.dir,'../src/cli.ts'),'mcp','--contract','native','--broker-socket',process.platform==='win32'?'\\\\.\\pipe\\pc-core-'+randomUUID():join(home,'broker.sock')],cwd:home,env:{...process.env as Record<string,string>,HOME:home,USERPROFILE:home,CODEX_CHATGPT_WEB_HOME:home,CODEX_HOME:join(home,'codex'),CODEX_WEB_GPT_DEV_HOME:join(home,'dev'),CODEX_CHATGPT_WEB_PRODUCTION_HOME:join(home,'production'),FENO_PC_COORDINATION_DIR:join(home,'coord')},stderr:'pipe'});
@@ -17,7 +17,7 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
     expect(resources.resources.some(r=>r.uri==='ui://widget/pc-screenshot-v5.1.18.html')).toBe(true);
     expect(resources.resources.some(r=>r.uri==='ui://widget/probe-mcpapp-v5.1.18.html')).toBe(true);
     expect(resources.resources.some(r=>r.uri==='ui://widget/probe-skybridge-v5.1.18.html')).toBe(true);
-    for(const name of ['pc_capture_screen','pc_capture_full_screen','pc_adb_screencap','pc_show_image','pc_browser_screenshot']){
+    for(const name of ['pc_capture_screen','pc_capture_full_screen','pc_adb_screencap','pc_show_image','pc_browser_screenshot','pc_browser_computer']){
       expect(tools.find(t=>t.name===name)?._meta?.['openai/outputTemplate']).toBe('ui://widget/pc-screenshot-skybridge-v5.1.18.html');
       expect(tools.find(t=>t.name===name)?._meta?.ui).toMatchObject({resourceUri:'ui://widget/pc-screenshot-v5.1.18.html'});
     }
@@ -37,6 +37,9 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
     const invalid=await client.callTool({name:'pc_read_file',arguments:{}});expect(invalid.isError).toBe(true);
     const browserDenied=await client.callTool({name:'pc_browser_open',arguments:{url:'http://127.0.0.1/'}});
     expect(browserDenied.structuredContent).toMatchObject({ok:false,code:'pc_access_denied'});
+    const computerDenied=await client.callTool({name:'pc_browser_computer',arguments:{tabId:'t1',action:'click',x:0,y:0}});
+    expect(computerDenied.structuredContent).toMatchObject({ok:false,code:'pc_access_denied'});
+    expect((await client.callTool({name:'pc_browser_computer',arguments:{tabId:'t1',action:'drag',x:0,y:0}})).isError).toBe(true);
   }finally{await client.close();}
 },15000);
 

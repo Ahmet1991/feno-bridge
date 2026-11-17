@@ -10,7 +10,8 @@ import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 
 test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref and timeout',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'pc-browser-test-'));
-  const calls:any[]=[];let page='about:blank',started=0,typed='';
+  const calls:any[]=[];let page='about:blank',started=0,typed='',scrollY=0;
+  const png=Buffer.alloc(24);Buffer.from('89504e470d0a1a0a','hex').copy(png);png.writeUInt32BE(200,16);png.writeUInt32BE(160,20);
   const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch(req,server){return server.upgrade(req)?undefined:new Response('bad',{status:400});},
     websocket:{message(ws,raw){
       const msg=JSON.parse(String(raw));calls.push(msg);let result:any={};
@@ -20,11 +21,11 @@ test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref
         case 'Target.attachToTarget':result={sessionId:'s1'};break;
         case 'Page.navigate':page=msg.params.url;break;
         case 'Accessibility.getFullAXTree':result={nodes:[{backendDOMNodeId:1,role:{value:'textbox'},name:{value:'Name'}},{backendDOMNodeId:2,role:{value:'button'},name:{value:'Save'}}]};break;
-        case 'Runtime.evaluate':result={result:{value:'Fixture '+typed}};break;
+        case 'Runtime.evaluate':result={result:{value:msg.params.expression.includes('const v=window.visualViewport')?{width:100,height:80,pageX:0,pageY:scrollY,scale:1,dpr:2}:msg.params.expression.includes('elementFromPoint')?false:'Fixture '+typed}};break;
         case 'DOM.resolveNode':result={object:{objectId:'node'}};break;
         case 'Runtime.callFunctionOn':result={result:{value:{x:10,y:20,sensitive:true}}};break;
         case 'Input.insertText':typed=msg.params.text;break;
-        case 'Page.captureScreenshot':result={data:'iVBORw0KGgo='};break;
+        case 'Page.captureScreenshot':result={data:png.toString('base64')};break;
         case 'Page.reload':break;
         case 'SystemInfo.getProcessInfo':result={processInfo:[{type:'browser',id:123}]};break;
         case 'Page.getNavigationHistory':result={currentIndex:1,entries:[{id:1,url:'about:blank'},{id:2,url:page}]};break;
@@ -52,13 +53,30 @@ test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref
     expect((await run('read',{tabId,mode:'text'})).text).toContain('test-secret');
     const found=await run('find',{tabId,query:'Save'});
     expect(await run('click',{tabId,ref:JSON.parse(found.text.trim()).ref})).toMatchObject({ok:true});
-    expect((await run('screenshot',{tabId})).data.length).toBe(8);
+    const computer=(action:string,args:any={})=>run('computer',{tabId,action,...args});
+    await expect(computer('click',{x:0,y:0})).rejects.toMatchObject({code:'pc_browser_screenshot_stale'});
+    expect((await run('screenshot',{tabId})).data.length).toBe(24);
+    expect(calls.filter(c=>c.method==='Input.dispatchMouseEvent')).toHaveLength(2);
+    await expect(computer('click',{x:200,y:2})).rejects.toMatchObject({code:'pc_invalid_argument'});
+    await computer('double_click',{x:60,y:40});
+    expect(calls.filter(c=>c.method==='Input.dispatchMouseEvent').slice(-4).map(c=>c.params)).toEqual([
+      {type:'mousePressed',x:30,y:20,button:'left',buttons:1,clickCount:1}, {type:'mouseReleased',x:30,y:20,button:'left',buttons:0,clickCount:1},
+      {type:'mousePressed',x:30,y:20,button:'left',buttons:1,clickCount:2}, {type:'mouseReleased',x:30,y:20,button:'left',buttons:0,clickCount:2}]);
+    await computer('drag',{x:10,y:10,endX:190,endY:150});
+    expect(calls.filter(c=>c.method==='Input.dispatchMouseEvent').at(-1)?.params).toMatchObject({type:'mouseReleased',x:95,y:75,buttons:0});
+    await computer('right_click',{x:10,y:10});await computer('hover',{x:10,y:10});await computer('scroll',{x:10,y:10,delta:100,deltaX:20});
+    expect(calls.filter(c=>c.method==='Input.dispatchMouseEvent').at(-1)?.params).toMatchObject({type:'mouseWheel',x:5,y:5,deltaX:20,deltaY:100});
+    await computer('type',{x:5,y:9,text:'coordinate'});expect(typed).toBe('coordinate');
+    await computer('key',{key:'ENTER'});expect(calls.filter(c=>c.method==='Input.dispatchKeyEvent').at(-1)?.params).toMatchObject({type:'keyUp',key:'Enter'});
+    scrollY=20;await expect(computer('click',{x:1,y:1})).rejects.toMatchObject({code:'pc_browser_screenshot_stale'});
+    await computer('screenshot',{includeCursor:true});await computer('click',{x:1,y:1});
     await run('reload',{tabId});await expect(run('click',{tabId,ref})).rejects.toMatchObject({code:'pc_browser_ref_stale'});
+    await expect(computer('hover',{x:1,y:1})).rejects.toMatchObject({code:'pc_browser_screenshot_stale'});
     await expect(run('navigate',{tabId,url:'file:///C:/secret'})).rejects.toMatchObject({code:'pc_browser_url_blocked'});
     await expect(run('read',{tabId:'missing',mode:'text'})).rejects.toMatchObject({code:'pc_browser_tab_not_found'});
     expect(await run('mode',{mode:'visible'})).toEqual({ok:true,mode:'visible'});await run('show');await run('back',{tabId});
     expect(calls.some(c=>c.method==='Target.activateTarget'||c.method==='Page.bringToFront')).toBe(false);
-    expect(calls.filter(c=>c.method==='Input.dispatchMouseEvent')).toHaveLength(2);
+    expect(calls.some(c=>c.method==='Page.addScriptToEvaluateOnNewDocument')).toBe(true);
     const next=await run('read',{tabId,mode:'tree'});
     await run('type',{tabId,ref:JSON.parse(next.text.split('\n')[0]).ref,text:'timeout'});
     await expect(run('read',{tabId,mode:'text',timeoutSeconds:1})).rejects.toMatchObject({code:'pc_browser_timeout'});
