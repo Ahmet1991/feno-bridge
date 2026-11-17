@@ -188,6 +188,8 @@ async function waitForPackagedRuntimeSource({
   resourcesPath,
   timeoutMs = DEFAULT_SOURCE_WAIT_TIMEOUT_MS,
   intervalMs = DEFAULT_SOURCE_WAIT_INTERVAL_MS,
+  returnBundle = false,
+  onWait,
 }) {
   if (!app.isPackaged) return null;
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || !Number.isFinite(intervalMs) || intervalMs <= 0) {
@@ -201,21 +203,24 @@ async function waitForPackagedRuntimeSource({
   };
   const deadline = Date.now() + timeoutMs;
   let lastError;
+  let onWaitReported=false;
   for (;;) {
     try {
-      return validateRuntimeBundle(source, identity);
+      const bundle=inspectRuntimeBundle(source,identity);
+      return returnBundle?bundle:bundle.runtimeRoot;
     } catch (error) {
       lastError = error;
     }
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
+    if(!onWaitReported){onWait?.(remaining);onWaitReported=true;}
     await new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, remaining)));
   }
   const detail = lastError instanceof Error ? lastError.message : String(lastError);
   throw new Error(`Packaged runtime did not fully materialize within ${timeoutMs}ms: ${detail}`);
 }
 
-function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
+function ensurePackagedRuntime({ app, coreHome, resourcesPath, sourceBundle: previouslyInspected }) {
   if (!app.isPackaged) return null;
   const identity = {
     version: app.getVersion(),
@@ -223,7 +228,7 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
     arch: process.arch,
   };
   const source = path.join(resourcesPath, "runtime");
-  const sourceBundle = inspectRuntimeBundle(source, identity);
+  const sourceBundle = previouslyInspected??inspectRuntimeBundle(source, identity);
   const expectedIdentity = { ...identity, bundleId: sourceBundle.manifest.bundleId };
   const versionsRoot = path.join(coreHome, "versions");
   const destination = path.join(

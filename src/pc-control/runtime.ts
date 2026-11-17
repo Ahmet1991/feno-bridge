@@ -9,7 +9,7 @@ import {assertCompatiblePcResourcePeers} from './resource-protocol';
 import {createPcPeerRegistry} from './resource-peers';
 import type {PcProfileId} from './types';
 import {createPcRequestLog} from './request-log';
-type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string};
+type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string;reason?:string};
 export function createDefaultPcRuntime(){
   const coreHome=getConfigDir();let profileId:PcProfileId='pc2-normal',configured=false,probes=false;
   try{const config=loadConfig();profileId=config.purpose==='dev-harness'?'pc2-dev':'pc2-normal';probes=config.pcWidgetProbes===true;configured=true;}catch{/* An unconfigured MCP remains usable for existing Codex tools only. */}

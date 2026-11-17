@@ -35,7 +35,8 @@ windowsTest('create never overwrites an existing file or directory',async()=>{
   await expect(files.createPcFile(file,'replace',auth)).rejects.toThrow('pc_file_exists');
   expect(readFileSync(file,'utf8')).toBe('keep');
   const directory=join(root,'new');expect(await files.createPcDirectory(directory,auth)).toEqual({path:directory});
-  await expect(files.createPcDirectory(directory,auth)).rejects.toThrow('pc_access_denied');
+  expect(await files.createPcDirectory(directory,auth)).toEqual({path:directory,existed:true});
+  await expect(files.createPcDirectory(file,auth)).rejects.toThrow('pc_path_is_file');
   expect(readdirSync(root).sort()).toEqual(['keep.txt','new']);
 });
 for(const [name,original,patch,want] of [

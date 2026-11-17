@@ -67,7 +67,8 @@ export function observePcRequests(transport:Transport,write:(row:Row)=>void):Tra
         const failed='error' in message||result?.isError===true;
         const content=result?.structuredContent as Record<string,unknown>|undefined;
         const code='error' in message?message.error.code:failed?identifier(content?.code):undefined;
-        emit({...row,outcome:failed?'error':'ok',...(failed?{code}:{}),responseBytes:Buffer.byteLength(JSON.stringify(message))});
+        const reason=typeof code==='string'&&['pc_desktop_unavailable','pc_helper_timeout','pc_helper_failed','pc_grant_changed'].includes(code)?short(content?.reason,160):undefined;
+        emit({...row,outcome:failed?'error':'ok',...(failed?{code}:{}),...(reason?{reason}:{}),responseBytes:Buffer.byteLength(JSON.stringify(message))});
       }catch{/* Measuring the response must not turn an already sent reply into an error. */}
     }catch(error){if(row)emit({...row,outcome:'error',code:'transport_send',responseBytes:0});throw error;}
   };

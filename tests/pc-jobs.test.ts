@@ -107,6 +107,20 @@ windowsTest('shared resources retain a retiring terminal and require jobs plus t
   await expect(d.manager.startTerminalCommand({projectRoot:d.root,command:'Write-Output ok',purpose:'fixture terminal'},d.authorizer)).rejects.toThrow('pc_terminal_busy');
   await retiring;expect(resources.activeJobCount()).toBe(0);expect(resources.hasActiveTerminal()).toBe(false);
 });
+windowsTest('full access permits two terminals under one durable lease until both exit',async()=>{
+  const c=await setup();
+  c.authorizer.setGrantFromLocalApproval({profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner'],allowedApps:[]});
+  const start=()=>c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 30',purpose:'parallel fixture'},c.authorizer);
+  const a=await start(),b=await start();
+  expect(c.manager.activeJobCount()).toBe(2);
+  await expect(start()).rejects.toThrow('pc_terminal_busy');
+  await c.manager.cancelPcJob(a.jobId,c.authorizer);
+  expect(c.counts()).toEqual({leases:1,releases:0});
+  const d=await start();
+  await c.manager.cancelPcJob(b.jobId,c.authorizer);
+  await c.manager.cancelPcJob(d.jobId,c.authorizer);
+  expect(c.counts()).toEqual({leases:1,releases:1});
+});
 windowsTest('developer tasks share containment, timeout, argument quoting and no uncontained launch fallback',async()=>{
   const c=await setup('hold',[],{jobTimeoutMs:70,commandSpecs:{'script:test':{command:process.execPath,args:[fixture,'hold'],usesEmulator:false}}});
   const {jobId}=await c.manager.startDeveloperTask({taskId:'script:test',projectRoot:c.root},c.authorizer);
@@ -153,6 +167,14 @@ test('log redaction carries quoted secrets across CR, newlines, chunks and overf
   log.end();const output=log.page(0).lines.join('\n');
   expect(output).not.toMatch(/one|two|three|hidden|unquoted-private|refresh-private/);
   expect(output).toContain('ok');expect(output).toContain('after');
+});
+windowsTest('long terminal purpose is redacted and bounded, and script errors have a hint',async()=>{
+  const records:any[]=[];const c=await setup('hold',[],{auditCommand:(record:unknown)=>records.push(record)});
+  const started=await c.manager.startTerminalCommand({projectRoot:c.root,command:"Write-Output PSSecurityException",purpose:'password="private" '+ 'a'.repeat(200)},c.authorizer);
+  await until(()=>c.manager.activeJobCount()===0);
+  expect(records[0].purpose.length).toBe(160);
+  expect(records[0].purpose).not.toContain('private');
+  expect(c.manager.pcJobStatus(started.jobId,c.authorizer)).toHaveProperty('hint','pc_script_blocked: .ps1 çalıştırılamıyor; komutu satır içi verin');
 });
 test('audit purpose redaction handles escaped quotes and prefixed credential names',async()=>{
   const {redactPcText}=await import('../src/pc-control/job-logs');

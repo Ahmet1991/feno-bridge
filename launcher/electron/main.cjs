@@ -1,5 +1,5 @@
 const { configureWindowsTrust } = require("./windows-trust.cjs");
-configureWindowsTrust();
+const PROCESS_STARTED_AT=Date.now()-Math.round(process.uptime()*1000);
 const languages = require("./languages.json");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -19,6 +19,20 @@ const {
   shell,
   Tray,
 } = require("electron");
+const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
+const { createLogger, exportSanitizedLogs, installProcessDiagnosticGuards, registerLoggedIpc } = require("./logging.cjs");
+const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
+const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
+const {createBootReporter}=require('./startup-timing.cjs');
+// Put the first event in the directory migration will carry to the new location.
+const bootLogHome=!fs.existsSync(LAUNCHER_PROFILE.userData)&&LAUNCHER_PROFILE.legacyUserData&&fs.existsSync(LAUNCHER_PROFILE.legacyUserData)
+  ?LAUNCHER_PROFILE.legacyUserData:LAUNCHER_PROFILE.userData;
+let bootLogger=createLogger({filePath:path.join(bootLogHome,'logs','launcher.jsonl')});
+const bootReporter=createBootReporter({info:(...args)=>bootLogger.info(...args)},{processStartedAt:PROCESS_STARTED_AT});
+const trustDone=bootReporter.begin('windows_trust');
+configureWindowsTrust();
+trustDone();
+const importsDone=bootReporter.begin('application_imports');
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { createPcLauncherService, registerPcIpc } = require("./pc-service.cjs");
@@ -30,12 +44,6 @@ const {
   syncCliToolsRouting,
   syncRoundTripsRouting,
 } = require("./guidance.cjs");
-const {
-  createLogger,
-  exportSanitizedLogs,
-  installProcessDiagnosticGuards,
-  registerLoggedIpc,
-} = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const {
   ensurePackagedRuntime,
@@ -43,7 +51,6 @@ const {
   waitForPackagedRuntimeSource,
 } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
-const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController, waitForQuietRuntime } = require("./update.cjs");
 const { writeReadyMarker } = require("./update-ready.cjs");
@@ -57,11 +64,10 @@ const {
   readWindowState,
   trackWindowState,
 } = require("./window-state.cjs");
+importsDone();
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const SOURCE_ROOT = path.resolve(__dirname, "../..");
-const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
-const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
 const CORE_HOME = LAUNCHER_PROFILE.coreHome;
 const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browser.json");
 const BROWSER_HELPER_PATH = app.isPackaged
@@ -93,6 +99,7 @@ app.setName(LAUNCHER_PROFILE.displayName);
 if (process.platform === "win32") {
   app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");
 }
+const migrationDone=bootReporter.begin('user_data_migration');
 const launcherUserData = !IS_DEV_PROFILE && LAUNCHER_PROFILE.legacyUserData
   ? migrateLegacyLauncherUserData({
       legacyPath: LAUNCHER_PROFILE.legacyUserData,
@@ -103,9 +110,11 @@ fs.mkdirSync(launcherUserData, { recursive: true, mode: 0o700 });
 if (process.platform !== "win32") fs.chmodSync(launcherUserData, 0o700);
 app.setPath("userData", launcherUserData);
 app.setAppLogsPath(path.join(launcherUserData, "logs"));
+bootLogger=createLogger({filePath:path.join(launcherUserData,'logs','launcher.jsonl')});
 installProcessDiagnosticGuards({
   filePath: path.join(launcherUserData, "logs", "process-stream-errors.log"),
 });
+migrationDone();
 
 let mainWindow = null;
 let mainWindowReadyToShow = false;
@@ -1166,7 +1175,9 @@ async function requestQuit() {
 }
 
 async function start() {
+  const lockingDone=bootReporter.begin('single_instance_lock');
   const gotLock = app.requestSingleInstanceLock();
+  lockingDone();
   if (!gotLock) {
     app.quit();
     return;
@@ -1174,7 +1185,10 @@ async function start() {
   app.on("second-instance", () => showMainWindow());
   app.on("activate", () => showMainWindow());
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
+  const sourceDone=bootReporter.begin('runtime_source');
+  let sourceBundle=await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, returnBundle:true,
+    onWait:waitMs=>bootReporter.wait('runtime_source','source_materializing',waitMs) });
+  sourceDone();
   let installedRuntimeRoot = null;
   let runtimeRootResolved = false;
   const runtimeRootProvider = () => {
@@ -1185,22 +1199,27 @@ async function start() {
         app,
         coreHome: CORE_HOME,
         resourcesPath: process.resourcesPath,
+        sourceBundle,
       });
+      sourceBundle=null;
       runtimeRootResolved = true;
     }
     return installedRuntimeRoot;
   };
-  installedRuntimeRoot = runtimeRootProvider();
+  const runtimeDone=bootReporter.begin('runtime_install');installedRuntimeRoot = runtimeRootProvider();runtimeDone();
 
+  const portDone=bootReporter.begin('debug_port');
   cdpPort = await findFreePort();
+  portDone();
   if (process.platform === "linux") {
     app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
   }
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
 
-  await app.whenReady();
+  const readyDone=bootReporter.begin('electron_ready');await app.whenReady();readyDone();
 
+  const stateDone=bootReporter.begin('state_and_autostart');
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
@@ -1227,6 +1246,7 @@ async function start() {
     && stateStore.read().autoStart !== autostart.enabled) {
     setAutostart(app, stateStore.read().autoStart);
   }
+  stateDone();
   const logger = createLogger({
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),

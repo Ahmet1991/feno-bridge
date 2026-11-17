@@ -8,9 +8,9 @@ export function redactPcText(text:string):string {
     .replace(/\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+/g,'[REDACTED]');
 }
 export function createPcJobLog(){
-  const lines:string[]=[];let bytes=0,base=0;
+  const lines:string[]=[];let bytes=0,base=0,scriptBlocked=false;
   function append(raw:string,overflow:boolean){
-    const safe=redactPcText(raw);const line=overflow?safe.slice(0,LINE-11)+'[truncated]':safe.slice(0,LINE);
+    const safe=redactPcText(raw);if(/\bPSSecurityException\b/.test(safe))scriptBlocked=true;const line=overflow?safe.slice(0,LINE-11)+'[truncated]':safe.slice(0,LINE);
     lines.push(line);bytes+=Buffer.byteLength(line);
     while(lines.length>LINES||bytes>BYTES){bytes-=Buffer.byteLength(lines.shift()!);base++;}
   }
@@ -49,7 +49,7 @@ export function createPcJobLog(){
     return {write:(chunk:Buffer)=>text(decoder.write(chunk)),end(){text(decoder.end());if(pending||overflow)append(pending,overflow);pending='';overflow=false;}};
   }
   const stdout=stream(),stderr=stream();
-  return {stdout,stderr,end(){stdout.end();stderr.end();},page(cursor:number){
+  return {stdout,stderr,scriptBlocked:()=>scriptBlocked,end(){stdout.end();stderr.end();},page(cursor:number){
     const start=Math.min(lines.length,Math.max(0,cursor-base)),page:string[]=[];let size=0;
     for(let i=start;i<lines.length&&page.length<250;i++){
       const line=lines[i]!;const n=Buffer.byteLength(line);if(size+n>64*1024)break;page.push(line);size+=n;

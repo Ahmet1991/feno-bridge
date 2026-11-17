@@ -19,12 +19,15 @@ test('MCP request logging correlates metadata only and rotates',async()=>{
   await transport.send({jsonrpc:'2.0',id:2,result:{isError:true,structuredContent:{code:'pc_access_denied'},content:[{data:'NO_LOG'}]}});
   transport.onmessage({jsonrpc:'2.0',id:3,method:'resources/read',params:{uri:'ui://widget/test.html'}});
   await transport.send({jsonrpc:'2.0',id:3,error:{code:-32602,message:'NO_LOG'}});
+  transport.onmessage({jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'pc_capture_screen',arguments:{text:'NO_LOG'}}});
+  await transport.send({jsonrpc:'2.0',id:4,result:{isError:true,structuredContent:{code:'pc_helper_timeout',reason:'helper_deadline'},content:[{data:'NO_LOG'}]}});
   const raw=readFileSync(file,'utf8');
   expect(raw).not.toContain('NO_LOG');
   const rows=raw.trim().split('\n').map(line=>JSON.parse(line));
   expect(rows[0]).toMatchObject({method:'initialize',clientInfo:{name:'ChatGPT',version:'1.2'},protocolVersion:'2025-06-18',capabilityKeys:['roots'],outcome:'ok'});
   expect(rows[1]).toMatchObject({method:'tools/call',tool:'pc_capture_screen',outcome:'error',code:'pc_access_denied'});
   expect(rows[2]).toMatchObject({method:'resources/read',uri:'ui://widget/test.html',code:-32602});
+  expect(rows[3]).toMatchObject({method:'tools/call',tool:'pc_capture_screen',outcome:'error',code:'pc_helper_timeout',reason:'helper_deadline'});
   expect(rows[0].responseBytes).toBeGreaterThan(0);
   for(let i=0;i<30;i++)sink({method:'tools/list',outcome:'ok',responseBytes:20});
   expect(readdirSync(dir)).toContain('pc-mcp-requests.jsonl.1');

@@ -22,7 +22,7 @@ export interface PcHost {
   status():Promise<object>;listFiles(path:string,offset?:number,limit?:number):Promise<unknown>;readFile(path:string,options?:PcReadOptions):Promise<unknown>;
   applyPatch(path:string,sha:string,patch:string):Promise<unknown>;createFile(path:string,content:string):Promise<unknown>;createDirectory(path:string):Promise<unknown>;
   startJob(kind:PcJobKind,root:string,timeoutSeconds?:number):Promise<unknown>;listProjectTasks(root:string):Promise<unknown>;startProjectTask(root:string,id:string):Promise<unknown>;
-  startTerminal(root:string,command:string,purpose:string,timeoutSeconds?:number):Promise<unknown>;jobStatus(id:string):Promise<unknown>;jobLogs(id:string,cursor:number):Promise<unknown>;cancelJob(id:string):Promise<unknown>;
+  startTerminal(root:string,command:string,purpose:string,timeoutSeconds?:number):Promise<unknown>;listJobs?():Promise<unknown>;jobStatus(id:string):Promise<unknown>;jobLogs(id:string,cursor:number):Promise<unknown>;cancelJob(id:string):Promise<unknown>;
   revokeActiveJobs():Promise<void>;
   listWindows?():Promise<unknown>;captureScreen?(id:string):Promise<{mimeType:'image/png';data:Uint8Array}>;
   captureFullScreen?(mode:'all'|'monitor',monitor?:number):Promise<{mimeType:'image/png';data:Uint8Array}>;
@@ -50,12 +50,16 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     action:(signal:AbortSignal)=>Promise<T>,leased?:'desktop-input'|'adb'):Promise<T>{
     const id=authorizer.assert(permission).id;
     const controller=new AbortController();actions.add(controller);
+    const guard=()=>{
+      try{if(controller.signal.aborted||authorizer.assert(permission).id!==id)throw new PcAccessDeniedError();}
+      catch(error){if(permission==='screen.read'||permission==='screen.full'||permission==='desktop.input')throw new PcOperationError('pc_grant_changed',{reason:'grant_changed'});throw error;}
+    };
     let lease:Awaited<ReturnType<typeof options.acquireLease>>|undefined;
     try{
       if(leased)lease=await options.acquireLease(leased,randomUUID());
-      if(controller.signal.aborted||authorizer.assert(permission).id!==id)throw new PcAccessDeniedError();
+      guard();
       const result=await action(controller.signal);
-      if(controller.signal.aborted||authorizer.assert(permission).id!==id)throw new PcAccessDeniedError();
+      guard();
       return result;
     }finally{
       actions.delete(controller);
@@ -100,13 +104,14 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
       ...(()=>{const g=authorizer.assert('status');return {fullAccess:g?.fullAccess===true,roots:g?.roots??[],permissions:g?.permissions??[],allowedApps:g?.allowedApps??[]};})(),
       coordinationReady:options.coordinationReady?.()===true,cleanupRequired:cleanupFailed,
       desktop:options.windowsHelper?{available:true,source:'injected'}:pcWindowsHelperStatus(),
-      ...(authorizer.assert('status')?.permissions.includes('jobs')?{activeJobs:resources.activeJobCount(),terminalBusy:resources.hasActiveTerminal()}: {})}),
+      ...(authorizer.assert('status')?.permissions.includes('jobs')?{activeJobs:resources.activeJobCount(),terminalBusy:resources.hasActiveTerminal(),terminalSlots:resources.terminalSlots(authorizer.assert('status')?.fullAccess===true)}: {})}),
     listFiles:(p,offset,limit)=>listPcFiles(p,'.',authorizer,offset,limit),readFile:(p,options)=>readPcFile(p,authorizer,options),applyPatch:(p,s,v)=>applyPcPatch(p,s,v,authorizer),
     createFile:(p,c)=>createPcFile(p,c,authorizer),createDirectory:p=>createPcDirectory(p,authorizer),
     startJob:(kind,projectRoot,timeoutSeconds)=>start(projectRoot,m=>m.startPcJob({kind,projectRoot,timeoutSeconds},authorizer)),
     listProjectTasks:async root=>forProject(root).tasks,
     startProjectTask:(projectRoot,taskId)=>start(projectRoot,async m=>{if(!forProject(projectRoot).tasks.includes(taskId))throw new PcAccessDeniedError();return m.startDeveloperTask({projectRoot,taskId},authorizer);}),
     startTerminal:(projectRoot,command,purpose,timeoutSeconds)=>{authorizer.assert('terminal.exec');return start(projectRoot,m=>m.startTerminalCommand({projectRoot,command,purpose,timeoutSeconds},authorizer));},
+    listJobs:async()=>{const grant=authorizer.assert('jobs');return grant.id===activeGrant?[...managers.values()].flatMap(e=>e.manager.listPcJobs(authorizer)).sort((a,b)=>b.startedAt-a.startedAt).slice(0,20):[];},
     jobStatus:async id=>job(id).pcJobStatus(id,authorizer),jobLogs:async(id,cursor)=>job(id).pcJobLogs(id,cursor,authorizer),
     cancelJob:async id=>{await job(id).cancelPcJob(id,authorizer);return {cancelled:true};},
     revokeActiveJobs:async()=>{await retire();await Promise.all([...retired]);},
@@ -130,22 +135,22 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
 }
 export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;host:PcHost;beforeRequest?:()=>void|Promise<void>;
   pcWidgetProbes?:boolean;
-  auditTool?:(record:{tool:string;at:number;outcome:'ok'|'error';code?:string})=>void|Promise<void>}){
+  auditTool?:(record:{tool:string;at:number;outcome:'ok'|'error';code?:string;reason?:string})=>void|Promise<void>}){
   const a=deps.authorizer,h=deps.host,p=z.string().min(1).max(4096),jobId=z.string().uuid();
   const readOnly={readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false};
   const write={readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:false};
-  const audit=async(tool:string,outcome:'ok'|'error',code?:string)=>{
-    try{await deps.auditTool?.({tool,at:Date.now(),outcome,...(code?{code}:{})});}catch{/* Audit I/O must not alter the tool result. */}
+  const audit=async(tool:string,outcome:'ok'|'error',code?:string,reason?:string)=>{
+    try{await deps.auditTool?.({tool,at:Date.now(),outcome,...(code?{code}:{}),...(reason?{reason}:{})});}catch{/* Audit I/O must not alter the tool result. */}
   };
   const run=async(action:()=>Promise<unknown>,status=false,tool='unknown')=>{
     try{await deps.beforeRequest?.();const data=await action();const value=status?{ok:true,...data as object}:{ok:true,data};await audit(tool,'ok');return {content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
-    catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
+    catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code,error instanceof PcOperationError&&['pc_desktop_unavailable','pc_helper_timeout','pc_helper_failed','pc_grant_changed'].includes(code)?error.details?.reason:undefined);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
   const imageRun=async(action:()=>Promise<PcScreenshotSource>,tool='unknown')=>{
     try{await deps.beforeRequest?.();const source=await action();const result=await makePcScreenshotResult(source);
       await audit(tool,'ok');return result;
     }catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';
-      const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
+      const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code,error instanceof PcOperationError&&['pc_desktop_unavailable','pc_helper_timeout','pc_helper_failed','pc_grant_changed'].includes(code)?error.details?.reason:undefined);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
   server.registerResource('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
     async()=>({contents:[{uri:PC_SCREENSHOT_URI,mimeType:PC_SCREENSHOT_MIME,text:PC_SCREENSHOT_HTML,
@@ -191,7 +196,8 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerTool('pc_start_job',{title:'Start configured project job',description:'Project scripts run with the Windows account permissions; the project is not a sandbox.',inputSchema:z.object({kind:z.enum(['typecheck','unit-tests','android-build','playback-smoke']),projectRoot:p,timeoutSeconds:z.number().int().min(1).max(600).optional()}).strict(),annotations:write},({kind,projectRoot,timeoutSeconds})=>run(()=>{a.assert('jobs');return h.startJob(kind,projectRoot,timeoutSeconds);},false,'pc_start_job'));
   server.registerTool('pc_list_project_tasks',{title:'List locally selected development tasks',inputSchema:z.object({projectRoot:p}).strict(),annotations:readOnly},({projectRoot})=>run(()=>{a.assert('jobs');return h.listProjectTasks(projectRoot);},false,'pc_list_project_tasks'));
   server.registerTool('pc_start_project_task',{title:'Start one configured development task',inputSchema:z.object({projectRoot:p,taskId:z.string().min(4).max(120).regex(/^(?:script:[a-zA-Z0-9:._-]+|android:[a-zA-Z]+|git:[a-z-]+)$/)}).strict(),annotations:write},({projectRoot,taskId})=>run(()=>{a.assert('jobs');return h.startProjectTask(projectRoot,taskId);},false,'pc_start_project_task'));
-  server.registerTool('pc_start_terminal',{title:'Run explicitly approved Windows terminal',description:'Requires jobs AND terminal.exec. Runs with your Windows account permissions, outside project boundaries. One terminal per host; pc_terminal_busy means wait for completion.',inputSchema:z.object({projectRoot:p,command:z.string().min(1).max(2048).refine(v=>!v.includes('\0')),purpose:z.string().min(3).max(160),timeoutSeconds:z.number().int().min(1).max(600).optional()}).strict(),annotations:{...write,openWorldHint:true}},({projectRoot,command,purpose,timeoutSeconds})=>run(()=>{a.assert('jobs');a.assert('terminal.exec');return h.startTerminal(projectRoot,command,purpose,timeoutSeconds);},false,'pc_start_terminal'));
+  server.registerTool('pc_start_terminal',{title:'Run explicitly approved Windows terminal',description:'Requires jobs AND terminal.exec. Runs with your Windows account permissions, outside project boundaries. Use inline PowerShell commands instead of .ps1 script files. pc_terminal_busy means wait for completion.',inputSchema:z.object({projectRoot:p,command:z.string().min(1).max(2048).refine(v=>!v.includes('\0')),purpose:z.string().min(3).max(4096),timeoutSeconds:z.number().int().min(1).max(600).optional()}).strict(),annotations:{...write,openWorldHint:true}},({projectRoot,command,purpose,timeoutSeconds})=>run(()=>{a.assert('jobs');a.assert('terminal.exec');return h.startTerminal(projectRoot,command,purpose,timeoutSeconds);},false,'pc_start_terminal'));
+  server.registerTool('pc_list_jobs',{title:'List recent owned jobs',description:'Newest 20 jobs for the current profile and grant; no raw commands.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('jobs');if(!h.listJobs)throw new PcAccessDeniedError();return h.listJobs();},false,'pc_list_jobs'));
   server.registerTool('pc_job_status',{title:'Read owned project job state',inputSchema:z.object({jobId}).strict(),annotations:readOnly},({jobId})=>run(()=>{a.assert('jobs');return h.jobStatus(jobId);},false,'pc_job_status'));
   server.registerTool('pc_job_logs',{title:'Read bounded redacted job output',description:'Up to250 lines/64KiB per page; nextCursor and firstCursor identify retained output. Secrets matching known patterns are masked.',inputSchema:z.object({jobId,cursor:z.number().int().min(0).default(0)}).strict(),annotations:readOnly},({jobId,cursor})=>run(()=>{a.assert('jobs');return h.jobLogs(jobId,cursor);},false,'pc_job_logs'));
   server.registerTool('pc_cancel_job',{title:'Cancel owned job and descendants',inputSchema:z.object({jobId}).strict(),annotations:write},({jobId})=>run(()=>{a.assert('jobs');return h.cancelJob(jobId);},false,'pc_cancel_job'));

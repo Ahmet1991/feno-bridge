@@ -27,7 +27,10 @@ test("runtime-changing IPC waits for startup, and every startup branch releases 
   assert.equal(electronMain.match(/\.finally\(finishRuntimeStartup\)/g)?.length, 2);
   assert.equal(electronMain.match(/else finishRuntimeStartup\(\);/g)?.length, 1);
   // Certificates must be configured before any module opens a connection.
-  assert.match(electronMain, /^const \{ configureWindowsTrust \} = require\("\.\/windows-trust\.cjs"\);\r?\nconfigureWindowsTrust\(\);/);
+  const boot = electronMain.indexOf('const bootReporter=createBootReporter');
+  const trust = electronMain.indexOf('configureWindowsTrust();');
+  const browser = electronMain.indexOf('require("./browser-host.cjs")');
+  assert.ok(boot >= 0 && trust > boot && browser > trust, 'boot is logged before trust, and trust before network modules');
 
   const vm = require("node:vm");
   let finishRuntimeStartup;

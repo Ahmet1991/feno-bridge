@@ -6,7 +6,7 @@ test('actual isolated native MCP discovery preserves exactly the six 5.0.96 tool
   const root=mkdtempSync(join(tmpdir(),'pc2-mcp-contract-'));
   const broker=process.platform==='win32'?'\\\\.\\pipe\\pc2-contract-'+randomUUID():join(root,'broker.sock');
   const env=Object.fromEntries(Object.entries(process.env).filter((p):p is [string,string]=>typeof p[1]==='string'));
-  const transport=new StdioClientTransport({command:process.execPath,args:[join(import.meta.dir,'../src/cli.ts'),'mcp','--contract','native','--broker-socket',broker],env:{...env,CODEX_CHATGPT_WEB_HOME:root,CODEX_HOME:join(root,'codex')},stderr:'pipe'});
+  const transport=new StdioClientTransport({command:process.execPath,args:[join(import.meta.dir,'../src/cli.ts'),'mcp','--contract','native','--broker-socket',broker],cwd:root,env:{...env,HOME:root,USERPROFILE:root,CODEX_CHATGPT_WEB_HOME:root,CODEX_HOME:join(root,'codex'),CODEX_WEB_GPT_DEV_HOME:join(root,'dev'),CODEX_CHATGPT_WEB_PRODUCTION_HOME:join(root,'production'),FENO_PC_COORDINATION_DIR:join(root,'coord')},stderr:'pipe'});
   const client=new Client({name:'isolated-pc2-contract-test',version:'1'});
   try{
     await client.connect(transport);const {tools}=await client.listTools();

@@ -46,6 +46,12 @@ test('approved window list filters allowedApps and capture only returns bounded 
   const bad=windows(a,async action=>action==='list'?[windowInfo]:action==='session'?{unlocked:true}:{mimeType:'image/png',base64:Buffer.alloc(6*1024*1024+1).toString('base64')});
   expect(bad.capturePcWindow('123')).rejects.toThrow('pc_access_denied');
 });
+test('session failure identifies noninteractive desktop and a changed grant',async()=>{
+  const a=approve(['screen.read']);
+  await expect(windows(a,async()=>({unlocked:false,desktopName:'Winlogon'})).listPcWindows()).rejects.toMatchObject({code:'pc_desktop_unavailable'});
+  const b=approve(['screen.read']);
+  await expect(windows(b,async()=>{b.revoke();return {unlocked:true};}).listPcWindows()).rejects.toMatchObject({code:'pc_grant_changed'});
+});
 
 test('full screen opt-in is separate from approved-window permission',async()=>{
   const a=approve(['screen.full'],[]);const w=windows(a);
@@ -97,7 +103,7 @@ test('revoking grant or aborting capture during helper execution suppresses imag
   const pending=windows(a,helper).capturePcWindow('123');
   for(let i=0;!finish&&i<10;i++)await Bun.sleep(1);
   expect(finish).toBeDefined();a.revoke();finish({mimeType:'image/png',base64:PNG.toString('base64')});
-  expect(pending).rejects.toThrow('pc_access_denied');
+  expect(pending).rejects.toThrow('pc_grant_changed');
   const b=approve(['screen.read']);const abort=new AbortController();
   const stopped=createPcWindowsController({authorizer:b,runHelper:fixtureHelper(),signal:abort.signal});abort.abort();
   expect(stopped.listPcWindows()).rejects.toThrow('pc_access_denied');
@@ -177,7 +183,7 @@ test('the one-controller lease serializes desktop input and revoke aborts in-fli
   expect(finish).toBeDefined();
   expect(host.desktopInput!({windowId:'123',action:'key',key:'ENTER'})).rejects.toMatchObject({code:'pc_resource_busy'});
   a.revoke();await host.revokeActiveJobs();finish({ok:true});
-  expect(pending).rejects.toThrow('pc_access_denied');
+  expect(pending).rejects.toThrow('pc_grant_changed');
   expect(releaseCount).toBe(1);
 });
 

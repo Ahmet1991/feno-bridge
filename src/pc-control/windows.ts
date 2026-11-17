@@ -29,7 +29,7 @@ export function normalizePcDesktopKey(key:unknown):string {
 }
 
 type VerifiedHelperPaths = { executablePath: string; manifestPath: string };
-type VerifiedHelperOptions = VerifiedHelperPaths & { spawnHelper?: typeof spawn };
+type VerifiedHelperOptions = VerifiedHelperPaths & { spawnHelper?: typeof spawn; timeoutMs?:number };
 // The launcher supplies the packaged application's resource directory. A standalone CLI
 // cannot silently fall back to the writable profile's copied Bun runtime.
 const defaultHelperPaths = (): VerifiedHelperPaths => {
@@ -69,7 +69,7 @@ export function pcWindowsHelperStatus(paths: VerifiedHelperPaths = defaultHelper
 export function createVerifiedWindowsHelper(options: VerifiedHelperOptions): PcWindowsHelper {
   const { executablePath, manifestPath, spawnHelper = spawn } = options;
   return async (action, args, signal) => {
-  if (signal?.aborted) throw new PcAccessDeniedError();
+  if (signal?.aborted) throw new PcOperationError('pc_grant_changed',{reason:'grant_revoked'});
   const inputBytes=Buffer.from(JSON.stringify({ action, args }), "utf8");
   const usingStdin=action==='clipboard_write';
   const payload=inputBytes.toString('base64');
@@ -77,44 +77,47 @@ export function createVerifiedWindowsHelper(options: VerifiedHelperOptions): PcW
     // Synchronous verify immediately before spawn, once per invocation. No async gap.
     try { verifyHelper({ executablePath, manifestPath }); }
     catch (error) { reject(error); return; }
-    if (signal?.aborted) { reject(new PcAccessDeniedError()); return; }
-    const child = spawnHelper(executablePath, usingStdin?["--stdin"]:["--payload", payload], {
+    if (signal?.aborted) { reject(new PcOperationError('pc_grant_changed',{reason:'grant_revoked'})); return; }
+    let child:ReturnType<typeof spawn>;
+    try{child = spawnHelper(executablePath, usingStdin?["--stdin"]:["--payload", payload], {
       windowsHide: true, shell: false, stdio: [usingStdin?"pipe":"ignore", "pipe", "pipe"],
-    });
+    });}catch{reject(new PcOperationError('pc_helper_failed',{reason:'spawn_failed'}));return;}
     if(usingStdin)child.stdin?.end(inputBytes);
     const chunks: Buffer[] = [];
     let size = 0;
-    let settled = false;
-    let aborted=false;
-    const cancel = () => { aborted=true; child.kill(); };
-    const timer = setTimeout(cancel, 12_000);
+    let settled = false, failure:PcOperationError|undefined;
+    const cancel = () => { stop(new PcOperationError('pc_grant_changed',{reason:'grant_revoked'})); };
+    const timer = setTimeout(()=>stop(new PcOperationError('pc_helper_timeout',{reason:'helper_deadline'})), options.timeoutMs??12_000);
     signal?.addEventListener('abort', cancel, {once:true});
-    function fail() {
-      if (settled) return;
-      settled = true;
+    function stop(error:PcOperationError) {
+      if (settled||failure) return;
+      failure=error;
       clearTimeout(timer);
-      signal?.removeEventListener('abort', cancel);
-      reject(new PcAccessDeniedError());
+      // Keep the desktop lease until subprocess closure proves input has stopped.
+      child.kill();
     }
     child.stdout!.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > 11 * 1024 * 1024) { cancel(); return; }
+      if(failure)return;
+      if (size > 11 * 1024 * 1024) { stop(new PcOperationError('pc_helper_failed',{reason:'output_limit'}));return; }
       chunks.push(chunk);
     });
-    child.once("error", fail);
+    child.once("error", ()=>{failure??=new PcOperationError('pc_helper_failed',{reason:'spawn_failed'});});
     child.once("close", code => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);
+      if(failure){reject(failure);return;}
       try {
-        if (aborted||signal?.aborted) throw new Error('cancelled');
+        if (signal?.aborted) {reject(new PcOperationError('pc_grant_changed',{reason:'grant_revoked'}));return;}
         const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         if (code !== 0 && !(result?.ok === false && (result?.reason === "focus_required" || result?.reason === "input_failed")
           && ["activate","click", "right_click", "double_click", "drag", "scroll", "key", "type"].includes(action))) throw new Error("helper failure");
         resolve(result);
-      } catch { reject(new PcAccessDeniedError()); }
+      } catch { reject(new PcOperationError('pc_helper_failed',{reason:code!==0?`exit_code_${code??'unknown'}`:'invalid_output'})); }
     });
+    if(signal?.aborted)cancel();
   });
   };
 }
@@ -134,19 +137,22 @@ export function createPcWindowsController(options: {
   const { authorizer } = options;
   const helper = options.runHelper ?? packagedWindowsHelper;
   const guard=(permission:'screen.read'|'screen.full'|'desktop.input'|'desktop.advanced',expected?:string)=>{
-    if(options.signal?.aborted)throw new PcAccessDeniedError();
-    const grant=authorizer.assert(permission);
-    if(expected && grant.id!==expected)throw new PcAccessDeniedError();
+    if(options.signal?.aborted)throw expected?new PcOperationError('pc_grant_changed',{reason:'grant_revoked'}):new PcAccessDeniedError();
+    let grant;try{grant=authorizer.assert(permission);}catch(error){if(expected)throw new PcOperationError('pc_grant_changed',{reason:'grant_revoked'});throw error;}
+    if(expected && grant.id!==expected)throw new PcOperationError('pc_grant_changed',{reason:'grant_identity_changed'});
     return grant;
   };
   const interactive = options.isInteractive ?? (async () => {
     const result = await helper("session", {}, options.signal);
-    return !!result && typeof result === "object" && (result as { unlocked?: unknown }).unlocked === true;
+    if(!result||typeof result!=='object'||typeof (result as {unlocked?:unknown}).unlocked!=='boolean')throw new PcOperationError('pc_helper_failed',{reason:'invalid_session_output'});
+    const session=result as {unlocked:boolean;desktopName?:unknown};
+    if(!session.unlocked){const name=typeof session.desktopName==='string'&&/^(Default|Winlogon|Screen-saver)$/i.test(session.desktopName)?session.desktopName:'unknown';throw new PcOperationError('pc_desktop_unavailable',{reason:`input_desktop_${name}`});}
+    return true;
   });
 
   async function assertInteractive(permission: "screen.read" | "desktop.input") {
     const id=guard(permission).id;
-    if (!(await interactive())) throw new PcAccessDeniedError();
+    if (!(await interactive())) throw new PcOperationError('pc_desktop_unavailable',{reason:'noninteractive_session'});
     guard(permission,id);
   }
 
@@ -178,7 +184,7 @@ export function createPcWindowsController(options: {
     listPcWindows: async () => windows("screen.read"),
     async clipboardRead():Promise<{text:string}> {
       const grant=guard('desktop.input');if(!authorizer.assert('desktop.input').fullAccess)throw new PcAccessDeniedError();
-      if(!(await interactive()))throw new PcAccessDeniedError();guard('desktop.input',grant.id);
+      if(!(await interactive()))throw new PcOperationError('pc_desktop_unavailable',{reason:'noninteractive_session'});guard('desktop.input',grant.id);
       const raw=await helper('clipboard_read',{},options.signal);
       if(!raw||typeof raw!=='object'||typeof (raw as {text?:unknown}).text!=='string'
         ||Buffer.byteLength((raw as {text:string}).text,'utf8')>65536)throw new PcAccessDeniedError();
@@ -188,7 +194,7 @@ export function createPcWindowsController(options: {
       if(typeof text!=='string'||Buffer.byteLength(text,'utf8')>65536||text.includes('\0'))
         throw invalidPcArgument('text','Clipboard text must be at most 65536 UTF-8 bytes');
       const grant=guard('desktop.input');if(!authorizer.assert('desktop.input').fullAccess)throw new PcAccessDeniedError();
-      if(!(await interactive()))throw new PcAccessDeniedError();guard('desktop.input',grant.id);
+      if(!(await interactive()))throw new PcOperationError('pc_desktop_unavailable',{reason:'noninteractive_session'});guard('desktop.input',grant.id);
       const result=await helper('clipboard_write',{text},options.signal);
       if(!result||typeof result!=='object'||(result as {ok?:unknown}).ok!==true)throw new PcAccessDeniedError();
       guard('desktop.input',grant.id);return {ok:true};
@@ -210,7 +216,7 @@ export function createPcWindowsController(options: {
       const id=guard('screen.full').id;
       if(!['all','monitor'].includes(mode)||mode==='monitor'&&(!Number.isSafeInteger(monitor)||monitor!<0||monitor!>7)
         ||mode==='all'&&monitor!==undefined)throw new PcAccessDeniedError();
-      if(!(await interactive()))throw new PcAccessDeniedError();
+      if(!(await interactive()))throw new PcOperationError('pc_desktop_unavailable',{reason:'noninteractive_session'});
       guard('screen.full',id);
       const raw=await helper('full',{mode,...(mode==='monitor'?{monitor}:{})},options.signal);
       if(!raw||typeof raw!=='object'||(raw as {mimeType?:unknown}).mimeType!=='image/png'
@@ -265,13 +271,13 @@ export function createPcWindowsController(options: {
       const response = await helper(input.action, { ...args, processName: selected.processName, title: selected.title,
         allowNonClient:authorizer.assert('desktop.input').fullAccess===true,
         allowFocus:authorizer.assert('desktop.input').fullAccess===true },options.signal);
+      guard(permission,id);
       if (response && typeof response === "object" && (response as { ok?: unknown }).ok === false
         && (response as { reason?: unknown }).reason === "focus_required") throw new PcOperationError("pc_focus_required");
       if (input.action==='type' && response && typeof response==='object'
         && (response as {ok?:unknown}).ok===false && (response as {reason?:unknown}).reason==='input_failed')
         throw new PcOperationError('pc_input_failed');
       if (!response || typeof response !== "object" || (response as { ok?: unknown }).ok !== true) throw new PcAccessDeniedError();
-      guard(permission,id);
       guard('desktop.input');
       return { ok: true };
     },

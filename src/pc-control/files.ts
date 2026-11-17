@@ -97,8 +97,18 @@ export async function createPcFile(file:string,content:string,authorizer:PcAutho
       try{stage.publish(false);}catch(error){if(existsSync(hold.path))throw new PcOperationError('pc_file_exists');throw error;}
       return {path:hold.path,sha256:hash(bytes)};}finally{stage.close();}}finally{hold.close();}});
 }
-export async function createPcDirectory(dir:string,authorizer:PcAuthorizer):Promise<{path:string}>{
-  const grant=authorizer.assert('files.write');return operation(()=>{const hold=session(dir,grant.roots,'parent',false,grant.fullAccess);try{const stage=hold.stage(undefined);try{sameGrant(authorizer,'files.write',grant.id);stage.publish(false);return {path:hold.path};}finally{stage.close();}}finally{hold.close();}});
+export async function createPcDirectory(dir:string,authorizer:PcAuthorizer):Promise<{path:string;existed?:true}>{
+  const grant=authorizer.assert('files.write');return operation(()=>{const hold=session(dir,grant.roots,'parent',false,grant.fullAccess);try{const stage=hold.stage(undefined);try{sameGrant(authorizer,'files.write',grant.id);
+    try{stage.publish(false);}catch(error){
+      if(![80,183].includes((error as {nativeCode?:number}).nativeCode??0))throw error;
+      let existing:ProjectFileSession;
+      try{existing=session(hold.path,grant.roots,'directory',false,grant.fullAccess);}catch{
+        try{const file=session(hold.path,grant.roots,'file',false,grant.fullAccess);file.close();}catch{throw error;}
+        sameGrant(authorizer,'files.write',grant.id);throw new PcOperationError('pc_path_is_file');
+      }
+      try{sameGrant(authorizer,'files.write',grant.id);return {path:existing.path,existed:true as const};}finally{existing.close();}
+    }
+    return {path:hold.path};}finally{stage.close();}}finally{hold.close();}});
 }
 
 function patchText(original:string,patch:string):string{

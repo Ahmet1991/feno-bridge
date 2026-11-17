@@ -88,14 +88,15 @@ internal static class PcWindowsHelper {
         object value; Require(data.TryGetValue(name,out value) && value is int);
         int n=(int)value; Require(n>=min && n<=max); return n;
     }
-    private static bool Unlocked() {
+    private static string InputDesktopName() {
         IntPtr desktop=OpenInputDesktop(0,false,0x0100);
-        if(desktop==IntPtr.Zero)return false;
+        if(desktop==IntPtr.Zero)return "unknown";
         try {
             StringBuilder name=new StringBuilder(256);int required;
-            return GetUserObjectInformation(desktop,2,name,512,out required) && name.ToString()=="Default";
+            return GetUserObjectInformation(desktop,2,name,512,out required) ? name.ToString() : "unknown";
         } finally { CloseDesktop(desktop); }
     }
+    private static bool Unlocked() { return InputDesktopName()=="Default"; }
     private static string ProcessName(uint pid) { return Process.GetProcessById(checked((int)pid)).ProcessName+".exe"; }
     private static uint Owner(IntPtr hwnd) {
         uint pid; GetWindowThreadProcessId(hwnd,out pid);
@@ -336,7 +337,7 @@ internal static class PcWindowsHelper {
         return new {ok=true};
     }
     private static object Execute(string action,IDictionary<string,object> args) {
-        if(action=="session")return new {unlocked=Unlocked()};
+        if(action=="session") { string name=InputDesktopName();return new {unlocked=name=="Default",desktopName=name}; }
         Require(Unlocked());
         if(action=="keymap")return new {keys=KeySequence(GetString(args,"key"))};
         if(action=="clipboard_read") {

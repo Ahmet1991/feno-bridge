@@ -7,6 +7,25 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createVerifiedWindowsHelper, pcWindowsHelperStatus } from '../src/pc-control/windows';
 
+test('helper deadline waits for process close and reports distinct failure reasons', async()=>{
+  const root=mkdtempSync(join(tmpdir(),'pc-helper-errors-'));
+  try{
+    const executablePath=join(root,'fake.exe'),manifestPath=join(root,'trusted.sha256');
+    writeFileSync(executablePath,'fixture');writeFileSync(manifestPath,createHash('sha256').update('fixture').digest('hex'));
+    let child!:EventEmitter & {stdout:PassThrough;kill:()=>boolean};let killed=false;
+    const helper=createVerifiedWindowsHelper({executablePath,manifestPath,timeoutMs:15,spawnHelper:(()=>{
+      child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),kill:()=>{killed=true;return true;}});return child;
+    }) as never});
+    let settled=false;const pending=helper('session',{}).catch(e=>{settled=true;return e;});
+    await Bun.sleep(35);expect(killed).toBe(true);expect(settled).toBe(false);
+    child.emit('close',null);expect(await pending).toMatchObject({code:'pc_helper_timeout'});
+    const bad=helper('session',{}).catch(e=>e);child.emit('close',7);
+    expect(await bad).toMatchObject({code:'pc_helper_failed',details:{reason:'exit_code_7'}});
+    const empty=helper('session',{}).catch(e=>e);child.emit('close',0);
+    expect(await empty).toMatchObject({code:'pc_helper_failed',details:{reason:'invalid_output'}});
+  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
 test('missing helper fails closed without spawning and appears unavailable in status', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pc2-integrity-'));
   try {

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, spyOn, test, onTestFinished } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "./fixtures/isolated-mcp-transport";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2931,7 +2931,7 @@ describe("ChatGPT outer-native harness v4", () => {
         "pc_capture_full_screen", "pc_capture_screen", "pc_clipboard_read", "pc_clipboard_write",
         "pc_create_directory", "pc_create_file",
         "pc_desktop_input", "pc_job_logs", "pc_job_status", "pc_launch_app",
-        "pc_list_files", "pc_list_project_tasks", "pc_list_windows", "pc_read_file",
+        "pc_list_files", "pc_list_jobs", "pc_list_project_tasks", "pc_list_windows", "pc_read_file",
         "pc_runner_status", "pc_show_image", "pc_start_job", "pc_start_project_task", "pc_start_terminal",
         "pc_status", "pc_write_patch",
       ]);
