@@ -466,7 +466,7 @@ export async function runChatGptMcpServer(options: {
     const pc = createDefaultPcRuntime();
     requestLog=pc.requestLog;
     registerPcTools(server, { authorizer: pc.authorizer, host: pc.host, beforeRequest: pc.refresh, auditTool: pc.auditTool,
-      pcWidgetProbes:pc.pcWidgetProbes,pcScreenshotMirrorDir:pc.pcScreenshotMirrorDir });
+      pcWidgetProbes:pc.pcWidgetProbes });
     const previousClose = server.server.onclose;
     server.server.onclose = () => { previousClose?.(); void pc.close().catch(() => {}); };
   }

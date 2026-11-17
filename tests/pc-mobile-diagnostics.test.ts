@@ -1,13 +1,11 @@
 import {expect,test} from 'bun:test';
-import {mkdtempSync,readFileSync,readdirSync,writeFileSync,mkdirSync} from 'node:fs';
+import {mkdtempSync,readFileSync,readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import sharp from 'sharp';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
 import {observePcRequests,createPcRequestLog} from '../src/pc-control/request-log';
-import {mirrorPcScreenshot} from '../src/pc-control/screenshot-mirror';
 
 test('MCP request logging correlates metadata only and rotates',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'pc-log-'));
@@ -44,20 +42,17 @@ test('configured probes and compatible metadata are advertised',async()=>{
   expect(resource._meta.ui.csp).toEqual({connectDomains:[],resourceDomains:[]});
 });
 
-test('mirror is opt-in, confined to granted directories, PNG, and capped at 50',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'pc-mirror-')),dir=join(root,'mirror');mkdirSync(dir);
-  const auth=new PcAuthorizer({profileId:'pc2-normal'});
-  auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'mirror-test',expiresAt:null,roots:[root],permissions:['files.write'],allowedApps:[]});
-  const source={data:await sharp({create:{width:2,height:2,channels:3,background:'red'}}).jpeg().toBuffer(),mimeType:'image/jpeg' as const,title:'Türkçe:<başlık>'};
-  expect(await mirrorPcScreenshot(undefined,source,auth)).toEqual({});
-  expect(readdirSync(dir)).toEqual([]);
-  for(let i=0;i<50;i++)writeFileSync(join(dir,'PC2-20200101-000000-'+i+'.png'),'old');
-  writeFileSync(join(dir,'other.png'),'keep');
-  const result=await mirrorPcScreenshot(dir,source,auth);
-  expect(result.mirrorPath).toBeTruthy();
-  expect(await sharp(result.mirrorPath!).metadata()).toMatchObject({format:'png'});
-  expect(readdirSync(dir).filter(n=>n.startsWith('PC2-'))).toHaveLength(50);
-  expect(readdirSync(dir)).toContain('other.png');
-  expect(await mirrorPcScreenshot(tmpdir(),source,auth)).toMatchObject({mirrorError:'pc_access_denied'});
-  expect(await mirrorPcScreenshot(join(dir,'absent'),source,auth)).toHaveProperty('mirrorError');
+test('all PC screenshot tools are unconditionally read-only and describe ChatGPT-only display',()=>{
+  const defs=new Map<string,any>();
+  const server={registerTool:(n:string,d:any)=>defs.set(n,d),registerResource:()=>{}} as unknown as McpServer;
+  // Model the former normal runtime, which always passed a mirror callback even when disabled.
+  const deps={authorizer:new PcAuthorizer({profileId:'pc2-normal'}),host:{} as PcHost,pcWidgetProbes:true,pcScreenshotMirrorDir:()=>undefined};
+  registerPcTools(server,deps);
+  for(const name of ['pc_capture_screen','pc_capture_full_screen','pc_show_image']){
+    const tool=defs.get(name);
+    expect(tool.annotations.readOnlyHint).toBe(true);
+    expect(tool.annotations.destructiveHint).toBe(false);
+    expect(tool.description??'').not.toMatch(/drive|klasör|mirror/i);
+  }
+  expect(defs.get('pc_show_image').description).toBe('İzinli köklerden sınırlı boyutta PNG/JPEG/WebP görüntüsü oku ve ChatGPT içinde göster.');
 });

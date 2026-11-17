@@ -9,7 +9,6 @@ function subscription(channel, listener) {
 contextBridge.exposeInMainWorld("codexWebLauncher", {
   pcStatus: () => ipcRenderer.invoke("launcher:pc-status"),
   pcPickRoot: () => ipcRenderer.invoke("launcher:pc-pick-root"),
-  pcScreenshotMirror: enabled => ipcRenderer.invoke("launcher:pc-screenshot-mirror", enabled),
   pcApprove: selection => ipcRenderer.invoke("launcher:pc-approve", selection),
   pcRevoke: () => ipcRenderer.invoke("launcher:pc-revoke"),
   pcDisableFullAccess: () => ipcRenderer.invoke("launcher:pc-disable-full"),

@@ -55,6 +55,5 @@ export function createDefaultPcRuntime(){
   return {authorizer,host,refresh,auditTool:(record:ToolAudit)=>writeAudit('pc-tool-audit.jsonl',record),
     requestLog:profileId==='pc2-normal'&&configured?createPcRequestLog(join(layout.directory,'pc-mcp-requests.jsonl')):undefined,
     pcWidgetProbes:profileId==='pc2-normal'&&configured&&probes,
-    pcScreenshotMirrorDir:profileId==='pc2-normal'&&configured?()=>loadConfig().pcScreenshotMirrorDir:undefined,
     async close(){if(closed)return;closed=true;clearInterval(timer);authorizer.revoke();await host.revokeActiveJobs();}};
 }
