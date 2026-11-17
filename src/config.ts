@@ -112,6 +112,8 @@ export interface AppConfig {
   autoApproveToolCalls: boolean;
   /** Local PC2 normal launcher opt-in; off by default and never enabled by setup. */
   pcFullAccess?: boolean;
+  pcWidgetProbes?: boolean;
+  pcScreenshotMirrorDir?: string;
   /**
    * Open Codex tasks in ChatGPT Temporary Chats instead of regular saved chats. Off by default
    * since 19.10, when ChatGPT stopped offering connectors in Temporary Chat.
@@ -434,6 +436,12 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (parsed.pcFullAccess !== undefined && typeof parsed.pcFullAccess !== 'boolean') {
     throw new Error(`Invalid pcFullAccess in ${path}`);
+  }
+  if (parsed.pcWidgetProbes !== undefined && typeof parsed.pcWidgetProbes !== 'boolean') {
+    throw new Error(`Invalid pcWidgetProbes in ${path}`);
+  }
+  if (parsed.pcScreenshotMirrorDir !== undefined && (typeof parsed.pcScreenshotMirrorDir !== 'string'||!isAbsolute(parsed.pcScreenshotMirrorDir)||parsed.pcScreenshotMirrorDir.length>4096)) {
+    throw new Error(`Invalid pcScreenshotMirrorDir in ${path}`);
   }
   if (parsed.temporaryChats !== undefined && typeof parsed.temporaryChats !== "boolean") {
     throw new Error(`Invalid temporaryChats in ${path}`);

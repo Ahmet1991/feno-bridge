@@ -58,6 +58,19 @@ test('PC IPC rejects another renderer and a same-origin subframe before any appr
   assert.equal(approved,0);
 });
 
+test('mirror folder IPC uses trusted main frame and native folder picker',async()=>{
+  const {registerPcIpc}=require('../electron/pc-service.cjs');const handlers=new Map(),writes=[];
+  const frame={url:'file:///trusted/index.html'},webContents={mainFrame:frame},win={webContents,isDestroyed:()=>false};
+  registerPcIpc({register:(name,fn)=>handlers.set(name,fn),getMainWindow:()=>win,rendererNavigationAllowed:()=>true,
+    getService:()=>({setScreenshotMirror:dir=>{writes.push(dir);return{};}}),
+    dialog:{showOpenDialog:async()=>({canceled:false,filePaths:['C:\\PC2-Ekran']})}});
+  const handler=handlers.get('launcher:pc-screenshot-mirror');
+  await assert.rejects(async()=>handler({sender:{},senderFrame:frame},true),/pc_access_denied/);
+  await handler({sender:webContents,senderFrame:frame},true);
+  await handler({sender:webContents,senderFrame:frame},false);
+  assert.deepEqual(writes,['C:\\PC2-Ekran',null]);
+});
+
 windowsTest('existing runtime parent ACL is not migrated when creating a new private profile directory',()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'pc-existing-runtime-'));
   const profile={kind:'production',coreHome:path.join(root,'home'),userData:path.join(root,'ui')};

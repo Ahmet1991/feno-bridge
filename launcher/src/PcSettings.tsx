@@ -32,6 +32,15 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     <h3>Yerel PC araçları</h3>
     <p role="status">{status?.enabled?'PC erişimi açık':'PC erişimi kapalı'}{status?.profileId?` · ${status.profileId}`:''}</p>
     <p>Terminal ve proje betikleri Windows hesabınızın yetkileriyle çalışır. Yerel izinler birbirinden bağımsızdır ve başlangıçta kapalıdır.</p>
+    {status?.profileId==='pc2-normal'?<div aria-label="Ekran görüntüsü yedeği">
+      <h4>Telefon için ekran görüntüsü yedeği</h4>
+      <p>{status.pcScreenshotMirrorDir||'Kapalı — görüntüler klasöre kaydedilmiyor.'}</p>
+      <p>İzinli bir klasör seçin (ör. Drive içindeki PC2-Ekran). Son 50 PC2 görüntüsü saklanır.</p>
+      <button type="button" disabled={busy||!status.available||!status.permissions.includes('files.write')}
+        onClick={()=>void action(async()=>{setStatus(await api!.pcScreenshotMirror(true));})}>Yedek klasörü seç</button>
+      <button type="button" disabled={busy||!status.available||!status.pcScreenshotMirrorDir}
+        onClick={()=>void action(async()=>{setStatus(await api!.pcScreenshotMirror(false));})}>Yedeklemeyi kapat</button>
+    </div>:null}
     {status?.profileId==='pc2-normal'?<div aria-label="DEV koordinasyon durumu">
       <p role="status">{status.devMode==='not-installed'?'Tek profil: DEV kurulu değil':
         status.devMode==='retired'?'DEV emekliye ayrıldı':

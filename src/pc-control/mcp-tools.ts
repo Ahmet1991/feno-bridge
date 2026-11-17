@@ -18,6 +18,7 @@ import {createConfiguredGithubRunnerProbe,getRunnerStatus,type PcRunnerProbe} fr
 import type {PcHostLease} from './resource-locks';
 import {version as pcVersion} from '../../package.json';
 import type {PcReadOptions} from './files';
+import {mirrorPcScreenshot} from './screenshot-mirror';
 export interface PcHost {
   status():Promise<object>;listFiles(path:string,offset?:number,limit?:number):Promise<unknown>;readFile(path:string,options?:PcReadOptions):Promise<unknown>;
   applyPatch(path:string,sha:string,patch:string):Promise<unknown>;createFile(path:string,content:string):Promise<unknown>;createDirectory(path:string):Promise<unknown>;
@@ -129,6 +130,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
   };
 }
 export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;host:PcHost;beforeRequest?:()=>void|Promise<void>;
+  pcWidgetProbes?:boolean;pcScreenshotMirrorDir?:()=>string|undefined;
   auditTool?:(record:{tool:string;at:number;outcome:'ok'|'error';code?:string})=>void|Promise<void>}){
   const a=deps.authorizer,h=deps.host,p=z.string().min(1).max(4096),jobId=z.string().uuid();
   const readOnly={readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false};
@@ -142,13 +144,17 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   };
   const imageRun=async(action:()=>Promise<PcScreenshotSource>,tool='unknown')=>{
     try{await deps.beforeRequest?.();const source=await action();const result=await makePcScreenshotResult(source);
+      if(tool!=='pc_adb_screencap'){
+        try{Object.assign(result.structuredContent,await mirrorPcScreenshot(deps.pcScreenshotMirrorDir?.(),source,a));}
+        catch{Object.assign(result.structuredContent,{mirrorError:'pc_mirror_failed'});}
+      }
       await audit(tool,'ok');return result;
     }catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';
       const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
   server.registerResource('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
     async()=>({contents:[{uri:PC_SCREENSHOT_URI,mimeType:PC_SCREENSHOT_MIME,text:PC_SCREENSHOT_HTML,
-      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline','fullscreen'],preferredDisplayMode:'inline'},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
+      _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline','fullscreen'],preferredDisplayMode:'inline'},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
   server.registerResource('pc-screenshot-skybridge',PC_SCREENSHOT_SKYBRIDGE_URI,
     {mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,description:'Ekran görüntüsü (Skybridge yedek kart)'},
     async()=>({contents:[{uri:PC_SCREENSHOT_SKYBRIDGE_URI,mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,text:PC_SCREENSHOT_SKYBRIDGE_HTML,
@@ -156,10 +162,11 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerResource('pc-probe-mcpapp',PC_PROBE_MCP_APP_URI,
     {mimeType:'text/html;profile=mcp-app',description:'MCP Apps bağlantı teşhisi'},
     async()=>({contents:[{uri:PC_PROBE_MCP_APP_URI,mimeType:'text/html;profile=mcp-app',text:PC_PROBE_MCP_APP_HTML,
-      _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]}},'openai/ui':{availableDisplayModes:['inline']}}}]}));
+      _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/ui':{availableDisplayModes:['inline']}}}]}));
   server.registerResource('pc-probe-skybridge',PC_PROBE_SKYBRIDGE_URI,
     {mimeType:'text/html+skybridge',description:'Skybridge bağlantı teşhisi'},
-    async()=>({contents:[{uri:PC_PROBE_SKYBRIDGE_URI,mimeType:'text/html+skybridge',text:PC_PROBE_SKYBRIDGE_HTML}]}));
+    async()=>({contents:[{uri:PC_PROBE_SKYBRIDGE_URI,mimeType:'text/html+skybridge',text:PC_PROBE_SKYBRIDGE_HTML,
+      _meta:{'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/ui':{availableDisplayModes:['inline']}}}]}));
   // MCP Apps is the documented default; switch only the screenshot card with an environment flag.
   const skybridge=process.env.FENO_PC_WIDGET_MODE==='skybridge';
   const imageToolMeta={...(skybridge?{}:{ui:{resourceUri:PC_SCREENSHOT_URI}}),'openai/outputTemplate':PC_SCREENSHOT_SKYBRIDGE_URI,
@@ -168,7 +175,7 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
     await deps.beforeRequest?.();await audit(tool,'ok');
     return {content:[{type:'text' as const,text:'Türkçe test kartı'}],structuredContent:{message:'Türkçe test kartı'}};
   };
-  if(process.env.FENO_PC_WIDGET_PROBES==='1'){
+  if(process.env.FENO_PC_WIDGET_PROBES==='1'||deps.pcWidgetProbes===true){
   server.registerTool('pc_widget_probe_mcpapp',{title:'MCP Apps teşhis kartını göster',
     description:'Sabit Türkçe metinle MCP Apps bileşen bağlantısını sınar.',inputSchema:z.object({}).strict(),annotations:readOnly,
     _meta:{ui:{resourceUri:PC_PROBE_MCP_APP_URI},'openai/outputTemplate':PC_PROBE_MCP_APP_URI,
@@ -196,12 +203,15 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   const windowId=z.string().regex(/^[1-9][0-9]{0,15}$/),serial=z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/);
   server.registerTool('pc_runner_status',{title:'Read fenotip-tv runner state',inputSchema:z.object({label:z.literal('fenotip-tv')}).strict(),annotations:readOnly},()=>run(()=>{a.assert('runner');if(!h.runnerStatus)throw new PcAccessDeniedError();return h.runnerStatus();},false,'pc_runner_status'));
   server.registerTool('pc_list_windows',{title:'List approved Windows application windows',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('screen.read');if(!h.listWindows)throw new PcAccessDeniedError();return h.listWindows();},false,'pc_list_windows'));
-  server.registerTool('pc_capture_screen',{title:'Pencerenin ekran görüntüsünü göster',inputSchema:z.object({windowId}).strict(),annotations:readOnly,_meta:imageToolMeta},({windowId:id})=>imageRun(async()=>{
+  const mirrorDescription='mirrorPath dönerse kullanıcı telefondaysa görüntünün ayarlanan Drive klasörüne (ör. PC2-Ekran) kaydedildiğini ve yolunu söyle. mirrorError dönerse yedek kaydının başarısız olduğunu bildir.';
+  // The optional mirror persists a new file and prunes older owned files.
+  const mirrorAnnotations=deps.pcScreenshotMirrorDir?write:readOnly;
+  server.registerTool('pc_capture_screen',{title:'Pencerenin ekran görüntüsünü göster',description:mirrorDescription,inputSchema:z.object({windowId}).strict(),annotations:mirrorAnnotations,_meta:imageToolMeta},({windowId:id})=>imageRun(async()=>{
     a.assert('screen.read');if(!h.captureScreen)throw new PcAccessDeniedError();
     const windows=await h.listWindows?.();const title=Array.isArray(windows)?windows.find(w=>w?.id===id)?.title:undefined;
     const shot=await h.captureScreen(id);return {...shot,title:typeof title==='string'?title:`Pencere ${id}`};
   },'pc_capture_screen'));
-  server.registerTool('pc_capture_full_screen',{title:'Tüm ekranların veya monitörün görüntüsünü göster',inputSchema:z.object({mode:z.enum(['all','monitor']),monitor:z.number().int().min(0).max(7).optional()}).strict(),annotations:readOnly,_meta:imageToolMeta},({mode,monitor})=>imageRun(async()=>{
+  server.registerTool('pc_capture_full_screen',{title:'Tüm ekranların veya monitörün görüntüsünü göster',description:mirrorDescription,inputSchema:z.object({mode:z.enum(['all','monitor']),monitor:z.number().int().min(0).max(7).optional()}).strict(),annotations:mirrorAnnotations,_meta:imageToolMeta},({mode,monitor})=>imageRun(async()=>{
     a.assert('screen.full');if(!h.captureFullScreen)throw new PcAccessDeniedError();const shot=await h.captureFullScreen(mode,monitor);
     return {...shot,title:mode==='all'?'Tüm ekranlar':`Monitör ${(monitor??0)+1}`};
   },'pc_capture_full_screen'));
@@ -213,8 +223,8 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerTool('pc_adb_screencap',{title:'Android ekran görüntüsünü göster',inputSchema:z.object({serial}).strict(),annotations:readOnly,_meta:imageToolMeta},({serial})=>imageRun(async()=>{
     a.assert('adb');if(!h.adbScreencap)throw new PcAccessDeniedError();return {data:await h.adbScreencap(serial),mimeType:'image/png',title:`Android ekranı (${serial})`};
   },'pc_adb_screencap'));
-  server.registerTool('pc_show_image',{title:'Kayıtlı görüntüyü göster',description:'İzinli köklerden sınırlı boyutta PNG/JPEG/WebP görüntüsü oku ve ChatGPT içinde göster.',
-    inputSchema:z.object({path:p}).strict(),annotations:readOnly,_meta:imageToolMeta},({path})=>imageRun(async()=>{
+  server.registerTool('pc_show_image',{title:'Kayıtlı görüntüyü göster',description:'İzinli köklerden sınırlı boyutta PNG/JPEG/WebP görüntüsü oku ve ChatGPT içinde göster. '+mirrorDescription,
+    inputSchema:z.object({path:p}).strict(),annotations:mirrorAnnotations,_meta:imageToolMeta},({path})=>imageRun(async()=>{
       a.assert('files.read');if(!h.showImage)throw new PcAccessDeniedError();return {...await h.showImage(path),title:path.split(/[\\/]/).pop()||'Kayıtlı görüntü'};
     },'pc_show_image'));
   server.registerTool('pc_launch_app',{title:'Open locally approved application',description:'Use filePath for Notepad and url plus optional userDataDir test profile for Chrome/Edge.',inputSchema:z.object({app:z.string().min(1).max(4096),url:z.string().max(2048).optional(),filePath:p.optional(),userDataDir:p.optional()}).strict(),annotations:write},({app,url,filePath,userDataDir})=>run(()=>{a.assert('apps.launch');if(!h.launchApp)throw new PcAccessDeniedError();return h.launchApp(app,url,filePath,userDataDir);},false,'pc_launch_app'));

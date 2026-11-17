@@ -5,13 +5,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.12/feno-bridge-5.1.12-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.12/feno-bridge-5.1.12-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.12/feno-bridge-5.1.12-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.13/feno-bridge-5.1.13-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.13/feno-bridge-5.1.13-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.13/feno-bridge-5.1.13-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.12/feno-bridge-5.1.12-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">모든 릴리스</a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.13/feno-bridge-5.1.13-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">모든 릴리스</a>
 </p>
 
 <p align="center">

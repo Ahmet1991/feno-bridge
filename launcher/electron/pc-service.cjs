@@ -35,6 +35,23 @@ function disableFullFlag(configPath){
     fs.renameSync(stage,configPath);
   }finally{try{fs.unlinkSync(stage);}catch{}}
 }
+function readMirrorFolder(configPath){
+  try{
+    const value=JSON.parse(fs.readFileSync(configPath,'utf8').replace(/^\uFEFF/,'')).pcScreenshotMirrorDir;
+    return typeof value==='string'&&path.isAbsolute(value)&&value.length<=4096?value:undefined;
+  }catch{return undefined;}
+}
+function saveMirrorFolder(configPath,folder){
+  const source=fs.readFileSync(configPath,'utf8'),bom=source.startsWith('\uFEFF')?'\uFEFF':'';
+  const config=JSON.parse(source.replace(/^\uFEFF/,''));
+  if(folder===null)delete config.pcScreenshotMirrorDir;
+  else config.pcScreenshotMirrorDir=folder;
+  const stage=path.join(path.dirname(configPath),'.pc-mirror-'+randomUUID()+'.tmp');
+  try{
+    fs.writeFileSync(stage,bom+JSON.stringify(config,null,2)+'\n',{encoding:'utf8',flag:'wx',mode:0o600});
+    fs.renameSync(stage,configPath);
+  }finally{try{fs.unlinkSync(stage);}catch{}}
+}
 function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now,confirmLocally,confirmRetirementLocally,audit=()=>{},testPeerEvidence,
   fullAccessConfigPath=path.join(profile.coreHome,'config.json'),listFixedDriveRoots=listWindowsFixedDrives}){
   const policy=pcPolicyForProfile(profile),layout=pcRuntimePaths({coreHome:profile.coreHome,profileId:policy.profileId,sharedDirectory});
@@ -132,11 +149,25 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       if(started&&guardState?.coordinationReady)try{dev=peers.observe().peers.find(p=>p.profileId==='pc2-dev');}catch{}
       const devMode=dev?.reason==='not-installed'?'not-installed':dev?.reason==='retired'?'retired':dev?.reason==='running'?'running':dev?.verified&&dev.protocol==='pc-host-control-v1'?'compatible':'unverified';
       return {...state,profileId:policy.profileId,permissionDetails:policy.permissionDetails,applicationCatalog:PC_ALLOWED_APPLICATIONS,
+        ...(policy.profileId==='pc2-normal'?{pcScreenshotMirrorDir:readMirrorFolder(fullAccessConfigPath)}:{}),
         fullAccess:state.enabled===true&&scope?.fullAccess===true,
         coordinationReady:guardState?.coordinationReady===true,lastAutoStop,
         devMode,devRetired:retirementStore?.read()===true,
         ...(state.enabled&&scope?{roots:[...scope.roots],permissions:[...scope.permissions],allowedApps:[...scope.allowedApps]}:blank()),
         available:started};
+    },
+    setScreenshotMirror(folder){
+      if(!started||policy.profileId!=='pc2-normal')throw deny();
+      if(folder!==null){
+        if(typeof folder!=='string'||!path.isAbsolute(folder)||folder.length>4096||!controller.status().enabled||!scope?.permissions.includes('files.write'))throw deny();
+        folder=fs.realpathSync.native(folder);
+        if(!fs.statSync(folder).isDirectory()||!scope.roots.some(root=>{
+          const relative=path.relative(fs.realpathSync.native(root).toLowerCase(),folder.toLowerCase());
+          return relative===''||(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative));
+        }))throw deny();
+      }
+      saveMirrorFolder(fullAccessConfigPath,folder);
+      return service.status();
     },
     async setDevRetired(retired){
       if(!started||policy.profileId!=='pc2-normal'||typeof retired!=='boolean'||!retirementStore
@@ -198,6 +229,13 @@ function registerPcIpc({register,getMainWindow,rendererNavigationAllowed,getServ
   };
   register('launcher:pc-status',event=>{trusted(event);return getService()?.status()||{enabled:false,available:false,roots:[],permissions:[],allowedApps:[]};});
   register('launcher:pc-pick-root',async event=>{const win=trusted(event);if(process.platform!=='win32')throw deny();const r=await dialog.showOpenDialog(win,{title:'PC denetimi için proje seç',properties:['openDirectory']});return r.canceled?null:r.filePaths[0]||null;});
+  register('launcher:pc-screenshot-mirror',async(event,enabled)=>{
+    const win=trusted(event),service=getService();
+    if(!service||typeof enabled!=='boolean')throw deny();
+    if(!enabled)return service.setScreenshotMirror(null);
+    const r=await dialog.showOpenDialog(win,{title:'PC2 ekran görüntüsü yedek klasörünü seç',properties:['openDirectory']});
+    return r.canceled||!r.filePaths[0]?service.status():service.setScreenshotMirror(r.filePaths[0]);
+  });
   register('launcher:pc-approve',async(event,selection)=>{trusted(event);const service=getService();if(!service)throw deny();return service.approve(selection);});
   register('launcher:pc-revoke',event=>{trusted(event);const service=getService();if(!service)throw deny();return service.revoke();});
   register('launcher:pc-disable-full',event=>{trusted(event);const service=getService();if(!service)throw deny();return service.disableFullAccess();});

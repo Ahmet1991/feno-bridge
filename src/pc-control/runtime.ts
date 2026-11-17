@@ -8,10 +8,11 @@ import {acquirePcHostLease} from './resource-locks';
 import {assertCompatiblePcResourcePeers} from './resource-protocol';
 import {createPcPeerRegistry} from './resource-peers';
 import type {PcProfileId} from './types';
+import {createPcRequestLog} from './request-log';
 type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string};
 export function createDefaultPcRuntime(){
-  const coreHome=getConfigDir();let profileId:PcProfileId='pc2-normal',configured=false;
-  try{profileId=loadConfig().purpose==='dev-harness'?'pc2-dev':'pc2-normal';configured=true;}catch{/* An unconfigured MCP remains usable for existing Codex tools only. */}
+  const coreHome=getConfigDir();let profileId:PcProfileId='pc2-normal',configured=false,probes=false;
+  try{const config=loadConfig();profileId=config.purpose==='dev-harness'?'pc2-dev':'pc2-normal';probes=config.pcWidgetProbes===true;configured=true;}catch{/* An unconfigured MCP remains usable for existing Codex tools only. */}
   const authorizer=new PcAuthorizer({profileId});
   const layout=require('../../launcher/electron/pc-runtime-paths.cjs').pcRuntimePaths({coreHome,profileId}) as {directory:string;sharedDirectory:string;legacyHomes:Record<PcProfileId,string>;devInstallPaths:string[]};
   let files:any,userSid:string|undefined;
@@ -52,5 +53,8 @@ export function createDefaultPcRuntime(){
   // continuously contending with the launcher's atomic snapshot replacement.
   refresh();const timer=setInterval(refresh,500);timer.unref();
   return {authorizer,host,refresh,auditTool:(record:ToolAudit)=>writeAudit('pc-tool-audit.jsonl',record),
+    requestLog:profileId==='pc2-normal'&&configured?createPcRequestLog(join(layout.directory,'pc-mcp-requests.jsonl')):undefined,
+    pcWidgetProbes:profileId==='pc2-normal'&&configured&&probes,
+    pcScreenshotMirrorDir:profileId==='pc2-normal'&&configured?()=>loadConfig().pcScreenshotMirrorDir:undefined,
     async close(){if(closed)return;closed=true;clearInterval(timer);authorizer.revoke();await host.revokeActiveJobs();}};
 }
