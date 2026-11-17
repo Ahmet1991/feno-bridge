@@ -14,7 +14,7 @@ import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const grant:PcGrant={profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,
   roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full',
-  'desktop.input','desktop.advanced','apps.launch','adb','runner'],allowedApps:[]};
+  'desktop.input','desktop.advanced','apps.launch','adb','runner','browser'],allowedApps:[]};
 test('full grant supports fixed drive roots only for normal profile and all eleven permissions',()=>{
   expect(()=>validatePcGrant(grant,100,'pc2-normal')).not.toThrow();
   expect(()=>validatePcGrant({...grant,profileId:'pc2-dev'},100,'pc2-dev')).toThrow();

@@ -109,7 +109,7 @@ windowsTest('shared resources retain a retiring terminal and require jobs plus t
 });
 windowsTest('full access permits two terminals under one durable lease until both exit',async()=>{
   const c=await setup();
-  c.authorizer.setGrantFromLocalApproval({profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner'],allowedApps:[]});
+  c.authorizer.setGrantFromLocalApproval({profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner','browser'],allowedApps:[]});
   const start=()=>c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 30',purpose:'parallel fixture'},c.authorizer);
   const a=await start(),b=await start();
   expect(c.manager.activeJobCount()).toBe(2);

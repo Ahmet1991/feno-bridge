@@ -58,7 +58,7 @@ test('all screenshot tools share a discoverable self-contained resource and keep
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'image-test',expiresAt:null,fullAccess:true,
     roots:['C:\\','D:\\'],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full',
-      'desktop.input','desktop.advanced','apps.launch','adb','runner']});
+      'desktop.input','desktop.advanced','apps.launch','adb','runner','browser']});
   const png=await image();
   const definitions=new Map<string,any>();
   const callbacks=new Map<string,(args:any)=>Promise<any>>();
@@ -105,7 +105,7 @@ windowsTest('saved image tool enforces native root, extension, signature and siz
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'file-image-test',expiresAt:null,fullAccess:true,
     roots:[root.slice(0,3)],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full',
-      'desktop.input','desktop.advanced','apps.launch','adb','runner']});
+      'desktop.input','desktop.advanced','apps.launch','adb','runner','browser']});
   const valid=join(root,'capture.png');writeFileSync(valid,await image());
   expect((await readPcImage(valid,auth)).mimeType).toBe('image/png');
   const wrong=join(root,'wrong.png');writeFileSync(wrong,Buffer.from('not an image'));

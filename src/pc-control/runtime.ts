@@ -10,7 +10,7 @@ import {createPcPeerRegistry} from './resource-peers';
 import type {PcProfileId} from './types';
 import {createPcRequestLog} from './request-log';
 import {createPcJobHistory} from './job-history';
-type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string;reason?:string};
+type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string;reason?:string;fields?:string[]};
 export function createDefaultPcRuntime(){
   const coreHome=getConfigDir();let profileId:PcProfileId='pc2-normal',configured=false,probes=false;
   try{const config=loadConfig();profileId=config.purpose==='dev-harness'?'pc2-dev':'pc2-normal';probes=config.pcWidgetProbes===true;configured=true;}catch{/* An unconfigured MCP remains usable for existing Codex tools only. */}
@@ -38,6 +38,8 @@ export function createDefaultPcRuntime(){
     files.writePrivateAtomic(target,Buffer.concat([previous.length+next.length>1024*1024?Buffer.alloc(0):previous,next]));
   }
   const host=createLocalPcHost(authorizer,{
+    ...(files&&configured?{browserOptions:{directory:join(layout.directory,'pc-browser-profile'),
+      ensureDirectory:(directory:string)=>files.ensurePrivateDirectory(directory)}}:{}),
     history:files&&configured?createPcJobHistory({directory:layout.directory,profileId,files}):undefined,
     coordinationReady,
     devMode:()=>profileId==='pc2-dev'?'active':retirementStore?.read()===true?'retired':'unknown',

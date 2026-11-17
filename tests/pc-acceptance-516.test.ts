@@ -13,7 +13,7 @@ function full(fullAccess=true){
   const a=new PcAuthorizer({profileId:'pc2-normal'});
   a.setGrantFromLocalApproval({profileId:'pc2-normal',id:'acceptance-516',expiresAt:null,fullAccess,
     roots:fullAccess?['C:\\','D:\\']:['C:\\fixture'],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec',
-      'screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner']});
+      'screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner','browser']});
   return a;
 }
 

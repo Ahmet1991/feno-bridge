@@ -1,12 +1,12 @@
 import {useEffect,useState} from 'react';
 import type {LauncherApi,PcControlStatus,PcCorePermission} from './types';
 
-const permissions:PcCorePermission[]=['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','desktop.advanced','apps.launch','screen.full','adb','runner'];
+const permissions:PcCorePermission[]=['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','desktop.advanced','apps.launch','screen.full','adb','runner','browser'];
 const labels:Record<PcCorePermission,string>={
   'files.read':'Dosyaları oku','files.write':'Dosyaları düzenle',jobs:'Proje işleri',
   'terminal.exec':'Terminal','screen.read':'İzinli pencereyi gör','desktop.input':'Pencereye tıklama ve yazma',
   'desktop.advanced':'Çift tık ve sürükle-bırak','apps.launch':'İzinli uygulamayı aç',
-  'screen.full':'Tüm ekranı veya monitörü gör',adb:'Android emülatörü',runner:'GitHub runner durumu',
+  'screen.full':'Tüm ekranı veya monitörü gör',adb:'Android emülatörü',runner:'GitHub runner durumu',browser:'Arka planda web tarayıcısı',
 };
 
 export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|undefined;platform:string;initialStatus?:PcControlStatus|null}){

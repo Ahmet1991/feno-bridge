@@ -17,6 +17,7 @@ const PC_PERMISSION_DETAILS=Object.freeze(Object.fromEntries(Object.entries({
   'desktop.advanced':{title:'Çift tıklama ve sürükle-bırak',risk:'high',description:'İzin verilen uygulama penceresinde çift tıklama ve sürükleme yapılabilir. Ayrıca masaüstü girişi izni gerektirir.'},
   'apps.launch':{title:'Seçilen uygulamaları başlat',risk:'high',description:'Yalnızca seçilen ve sistemde güvenilir konuma kurulu uygulamalar açılabilir. Tarayıcıya bir web adresi gönderilebilir.'},
   'screen.full':{title:'Tam ekran ve çoklu monitör görüntüsü',risk:'high',description:'YÜKSEK RİSK: Tüm ekran veya bir monitördeki diğer uygulamalar, bildirimler ve özel içerikler görünür. Pencere okuma izninden bağımsızdır.'},
+  browser:{title:'Arka planda web tarayıcısı',risk:'high',description:'Ayrı kalıcı tarayıcı profilinde sayfalar okunabilir, tıklama ve yazma yapılabilir. Açık hesaplarda işlem yapılabilir.'},
 }).map(([key,value])=>[key,Object.freeze(value)])));
 const PC_ALLOWED_APPLICATIONS=Object.freeze([
   {id:'notepad.exe',title:'Not Defteri',launchable:true},

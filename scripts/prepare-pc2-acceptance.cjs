@@ -7,7 +7,7 @@ function acceptanceExpectations(mode) {
   if (!['full', 'selective'].includes(mode)) throw Error('Kabul modu full veya selective olmalıdır.');
   return {
     mode,
-    expectedGrant:mode==='full'?'pcFullAccess:true; no expiration; all 11 permissions; local fixed drives':'explicit local selection',
+    expectedGrant:mode==='full'?'pcFullAccess:true; no expiration; all 12 permissions; local fixed drives':'explicit local selection',
     outsideSelectedProject:mode==='full'?'allow when on a local fixed drive and not a protected path':'deny',
     nonAllowlistedApplication:mode==='full'?'allow existing validated executable':'deny',
     ordinaryDriveRoot:mode==='full'?'allow':'deny',
