@@ -137,6 +137,9 @@ export interface LauncherApi {
   pcRevoke():Promise<PcControlStatus>;
   pcDisableFullAccess():Promise<PcControlStatus>;
   pcRetireDev(retired:boolean):Promise<PcControlStatus>;
+  pcChromeToggle(enabled:boolean):Promise<{enabled:boolean;connected:boolean;version:string|null}>;
+  pcChromeFolder():Promise<boolean>;
+  pcChromeExtensions():Promise<boolean>;
   snapshot(): Promise<LauncherSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;
@@ -199,7 +202,7 @@ export interface LauncherApi {
   onUpdateState(listener: (state: UpdateState) => void): () => void;
 }
 
-export type PcCorePermission='files.read'|'files.write'|'jobs'|'terminal.exec'|'screen.read'|'desktop.input'|'desktop.advanced'|'apps.launch'|'screen.full'|'adb'|'runner'|'browser';
+export type PcCorePermission='files.read'|'files.write'|'jobs'|'terminal.exec'|'screen.read'|'desktop.input'|'desktop.advanced'|'apps.launch'|'screen.full'|'adb'|'runner'|'browser'|'chrome.user';
 export interface PcApprovalSelection {durationMs:number|null;roots:string[];permissions:PcCorePermission[];allowedApps:string[]}
 export interface PcControlStatus {
   enabled:boolean;available:boolean;profileId?:'pc2-normal'|'pc2-dev';expiresAt?:number|null;fullAccess?:boolean;
@@ -208,6 +211,7 @@ export interface PcControlStatus {
   roots:string[];permissions:PcCorePermission[];allowedApps:string[];permanentApprovalSaved?:boolean;persistentRevocationPending?:boolean;
   permissionDetails?:Record<string,{title:string;description:string;risk:string}>;
   applicationCatalog?:{id:string;title:string;launchable:boolean}[];
+  chrome?:{enabled:boolean;connected:boolean;version:string|null};chromeAvailable?:boolean;
 }
 
 declare global {

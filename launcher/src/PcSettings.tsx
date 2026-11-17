@@ -7,6 +7,7 @@ const labels:Record<PcCorePermission,string>={
   'terminal.exec':'Terminal','screen.read':'İzinli pencereyi gör','desktop.input':'Pencereye tıklama ve yazma',
   'desktop.advanced':'Çift tık ve sürükle-bırak','apps.launch':'İzinli uygulamayı aç',
   'screen.full':'Tüm ekranı veya monitörü gör',adb:'Android emülatörü',runner:'GitHub runner durumu',browser:'Arka planda web tarayıcısı',
+  'chrome.user':'Kendi Chrome sekmeleriniz',
 };
 
 export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|undefined;platform:string;initialStatus?:PcControlStatus|null}){
@@ -42,6 +43,16 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
         onClick={()=>void action(async()=>{setStatus(await api!.pcRetireDev(!status.devRetired));})}>
         {status.devRetired?'DEV emekliliğini geri al':'DEV emekliye ayrıldı olarak işaretle'}
       </button>
+    </div>:null}
+    {platform==='win32'&&status?.profileId==='pc2-normal'?<div aria-label="Chrome uzantısı">
+      <h3>Chrome uzantısı</h3>
+      <p role="status">{status.chrome?.connected?'Bağlı':'Bağlı değil'} · Sürüm: {status.chrome?.version||'—'}</p>
+      <p>Kendi Chrome profilinizde çalışır. Sayfada PC2 imlecini görürsünüz; pencere kendiliğinden öne gelmez. Tam yetki ve bu anahtarın açık olması gerekir.</p>
+      <label className="pc-settings-option"><input className="pc-settings-checkbox" type="checkbox" role="switch" checked={status.chrome?.enabled===true} disabled={busy||!status.chromeAvailable}
+        onChange={event=>{const enabled=event.target.checked;void action(async()=>{await api!.pcChromeToggle(enabled);});}}/> Chrome erişimini aç / kapat</label>
+      <button type="button" disabled={busy} onClick={()=>void action(async()=>{await api!.pcChromeFolder();})}>Uzantı klasörünü aç</button>
+      <button type="button" disabled={busy} onClick={()=>void action(async()=>{await api!.pcChromeExtensions();})}>Chrome uzantılar sayfasını aç</button>
+      <ol><li>Chrome uzantılar sayfasını açın ve Geliştirici modu'nu etkinleştirin.</li><li>Paketlenmemiş öğe yükle düğmesine basıp Feno Bridge uzantı klasörünü seçin.</li><li>Bu ekranda bağlı durumunu kontrol edin ve Chrome erişimini açın.</li></ol>
     </div>:null}
     {platform!=='win32'||!status?.available?<p>PC güvenlik altyapısı hazır değil. Erişim kapalı tutuluyor.</p>:null}
     {status?.persistentRevocationPending?<p role="alert">Kalıcı iptal diske yazılamadı. Erişim kapalı. Depolama erişimini onarın.</p>:null}

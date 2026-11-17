@@ -14,8 +14,8 @@ import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const grant:PcGrant={profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,
   roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full',
-  'desktop.input','desktop.advanced','apps.launch','adb','runner','browser'],allowedApps:[]};
-test('full grant supports fixed drive roots only for normal profile and all eleven permissions',()=>{
+  'desktop.input','desktop.advanced','apps.launch','adb','runner','browser','chrome.user'],allowedApps:[]};
+test('full grant supports fixed drive roots only for normal profile and all permissions',()=>{
   expect(()=>validatePcGrant(grant,100,'pc2-normal')).not.toThrow();
   expect(()=>validatePcGrant({...grant,profileId:'pc2-dev'},100,'pc2-dev')).toThrow();
   expect(()=>validatePcGrant({...grant,fullAccess:false},100,'pc2-normal')).toThrow();
@@ -30,7 +30,7 @@ test('full grant allows unknown executable while selective grant rejects it',asy
     spawnApp:async executable=>{launched.push(executable);}});
   expect(await run.launchPcApp('paint.exe')).toEqual({launched:true,app:'paint.exe'});
   expect(launched).toHaveLength(1);
-  auth.revoke();auth.setGrantFromLocalApproval({...grant,id:'selective-456',fullAccess:undefined,roots:['C:\\Test'],allowedApps:['notepad.exe']});
+  auth.revoke();auth.setGrantFromLocalApproval({...grant,id:'selective-456',fullAccess:undefined,permissions:grant.permissions.filter(p=>p!=='chrome.user'),roots:['C:\\Test'],allowedApps:['notepad.exe']});
   await expect(run.launchPcApp('paint.exe')).rejects.toThrow();
 });
 test('full grant exposes all windows; selective empty application list still exposes none',async()=>{
@@ -38,7 +38,7 @@ test('full grant exposes all windows; selective empty application list still exp
   const desktop=createPcWindowsController({authorizer:auth,isInteractive:async()=>true,
     runHelper:async()=>[{id:'12',title:'Any app',processName:'paint.exe'}]});
   expect(await desktop.listPcWindows()).toHaveLength(1);
-  auth.revoke();auth.setGrantFromLocalApproval({...grant,id:'selective-789',fullAccess:undefined,roots:['C:\\Test'],allowedApps:[]});
+  auth.revoke();auth.setGrantFromLocalApproval({...grant,id:'selective-789',fullAccess:undefined,permissions:grant.permissions.filter(p=>p!=='chrome.user'),roots:['C:\\Test'],allowedApps:[]});
   expect(await desktop.listPcWindows()).toHaveLength(0);
 });
 test('full root containment accepts drive root and still rejects an unavailable path',()=>{

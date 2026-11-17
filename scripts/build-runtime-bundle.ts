@@ -107,6 +107,11 @@ if (process.platform === "win32") {
   if (readFileSync(manifestSource, "utf8").trim() !== digest) throw new Error("Windows helper manifest mismatch");
   copyFileSync(helperSource, join(runtimeDir, "pc-windows-helper.exe"));
   copyFileSync(manifestSource, join(runtimeDir, "pc-windows-helper.sha256"));
+  const chromeHost = spawnSync("node",[join(root,"scripts","build-chrome-native-host.cjs"),join(runtimeDir,"chrome-native-host.exe")],{cwd:root,stdio:"inherit",windowsHide:true,shell:false});
+  if(chromeHost.error)throw chromeHost.error;
+  if(chromeHost.status!==0)throw Error("Chrome native host compilation failed: "+chromeHost.status);
+  const chromeHostDigest=createHash("sha256").update(readFileSync(join(runtimeDir,"chrome-native-host.exe"))).digest("hex");
+  if(readFileSync(join(runtimeDir,"chrome-native-host.sha256"),"utf8").trim()!==chromeHostDigest)throw Error("Chrome native host manifest mismatch");
 }
 
 const launcherName = process.platform === "win32" ? "codex-chatgpt-web.cmd" : "codex-chatgpt-web";

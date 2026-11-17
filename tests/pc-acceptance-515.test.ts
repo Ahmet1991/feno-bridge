@@ -13,7 +13,7 @@ import {createPcFile,readPcFile,listPcFiles} from '../src/pc-control/files';
 function full(root:string){
   const a=new PcAuthorizer({profileId:'pc2-normal'});
   a.setGrantFromLocalApproval({profileId:'pc2-normal',id:'acceptance-515-grant',expiresAt:null,fullAccess:true,
-    roots:['C:\\','D:\\','G:\\'],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','adb','runner','desktop.advanced','apps.launch','screen.full','browser']});
+    roots:['C:\\','D:\\','G:\\'],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','adb','runner','desktop.advanced','apps.launch','screen.full','browser','chrome.user']});
   return a;
 }
 const win=process.platform==='win32'?test:test.skip;

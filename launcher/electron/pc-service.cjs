@@ -10,6 +10,7 @@ const {createPcPeerRegistry}=require('./pc-resource-peers.cjs');
 const {createPcHeartbeatGuard}=require('./pc-heartbeat-guard.cjs');
 const {createPcDevRetirementStore}=require('./pc-dev-retirement.cjs');
 const {pcRuntimePaths}=require('./pc-runtime-paths.cjs');
+const {createChromeBroker}=require('./chrome-broker.cjs');
 const deny=()=>new Error('pc_access_denied');
 async function listWindowsFixedDrives(){
   if(process.platform!=='win32')throw deny();
@@ -35,11 +36,11 @@ function disableFullFlag(configPath){
     fs.renameSync(stage,configPath);
   }finally{try{fs.unlinkSync(stage);}catch{}}
 }
-function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now,confirmLocally,confirmRetirementLocally,audit=()=>{},testPeerEvidence,
+function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now,confirmLocally,confirmRetirementLocally,audit=()=>{},testPeerEvidence,chromeOptions,
   fullAccessConfigPath=path.join(profile.coreHome,'config.json'),listFixedDriveRoots=listWindowsFixedDrives}){
   const policy=pcPolicyForProfile(profile),layout=pcRuntimePaths({coreHome:profile.coreHome,profileId:policy.profileId,sharedDirectory});
   let channel,controller,peers,retirementStore,scope,timer,guard,lastAutoStop,started=false,initialized=false,stopped=false,retirementPending=false;
-  let heartbeatPending;
+  let heartbeatPending,chromeBroker,chromeReady=false;
   let lastConfigErrorAt=-Infinity;
   const blank=()=>({roots:[],permissions:[],allowedApps:[]});
   function enabledInConfig(){
@@ -122,7 +123,12 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
         const launchValid=!saved.permissions.includes('apps.launch')||saved.allowedApps.some(app=>PC_ALLOWED_APPLICATIONS.some(item=>item.id===app&&item.launchable));
         if(appsValid&&launchValid){const grant=controller.restoreTrustedPersistentSelection(saved);channel.activate(grant);scope=copyPcSelection(saved);}
       }
-      started=true;void heartbeat().catch(error=>audit({action:'heartbeat_error',at:clock(),code:error?.code||'pc_access_denied'}));
+      started=true;
+      if(chromeOptions&&policy.profileId==='pc2-normal'){
+        chromeBroker=createChromeBroker({...chromeOptions,files,isAuthorized:()=>started&&!stopped&&controller.status().enabled&&scope?.fullAccess===true&&scope.permissions.includes('chrome.user')});
+        void chromeBroker.start().then(()=>{chromeReady=true;}).catch(()=>{chromeBroker?.close();chromeBroker=undefined;});
+      }
+      void heartbeat().catch(error=>audit({action:'heartbeat_error',at:clock(),code:error?.code||'pc_access_denied'}));
       timer=setInterval(()=>{void heartbeat().catch(error=>audit({action:'heartbeat_error',at:clock(),code:error?.code||'pc_access_denied'}));},2000);timer.unref?.();
     },
     status(){
@@ -136,8 +142,9 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
         coordinationReady:guardState?.coordinationReady===true,lastAutoStop,
         devMode,devRetired:retirementStore?.read()===true,
         ...(state.enabled&&scope?{roots:[...scope.roots],permissions:[...scope.permissions],allowedApps:[...scope.allowedApps]}:blank()),
-        available:started};
+        available:started,...(chromeOptions?{chrome:chromeBroker?.status()||{enabled:false,connected:false,version:null},chromeAvailable:chromeReady}: {})};
     },
+    toggleChrome(enabled){if(!chromeReady||!chromeBroker||policy.profileId!=='pc2-normal')throw deny();return chromeBroker.toggle(enabled);},
     async setDevRetired(retired){
       if(!started||policy.profileId!=='pc2-normal'||typeof retired!=='boolean'||!retirementStore
         ||retirementPending||typeof confirmRetirementLocally!=='function')throw deny();
@@ -185,12 +192,13 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
     suspend(){
       if(stopped)return;stopped=true;
       if(timer)clearInterval(timer);timer=undefined;scope=undefined;started=false;
+      chromeReady=false;chromeBroker?.close();chromeBroker=undefined;
       controller?.suspend();try{channel?.revoke();}finally{peers?.close();}
     },
   };
   return service;
 }
-function registerPcIpc({register,getMainWindow,rendererNavigationAllowed,getService,dialog}){
+function registerPcIpc({register,getMainWindow,rendererNavigationAllowed,getService,dialog,openChromeExtensionFolder,openChromeExtensions}){
   const trusted=event=>{
     const win=getMainWindow();
     if(!win||win.isDestroyed()||event.sender!==win.webContents||event.senderFrame!==win.webContents.mainFrame
@@ -202,5 +210,8 @@ function registerPcIpc({register,getMainWindow,rendererNavigationAllowed,getServ
   register('launcher:pc-revoke',event=>{trusted(event);const service=getService();if(!service)throw deny();return service.revoke();});
   register('launcher:pc-disable-full',event=>{trusted(event);const service=getService();if(!service)throw deny();return service.disableFullAccess();});
   register('launcher:pc-retire-dev',(event,retired)=>{trusted(event);const service=getService();if(!service)throw deny();return service.setDevRetired(retired);});
+  register('launcher:pc-chrome-toggle',(event,enabled)=>{trusted(event);const service=getService();if(!service||typeof enabled!=='boolean')throw deny();return service.toggleChrome(enabled);});
+  register('launcher:pc-chrome-folder',event=>{trusted(event);if(getService()?.status()?.profileId!=='pc2-normal'||!openChromeExtensionFolder)throw deny();return openChromeExtensionFolder();});
+  register('launcher:pc-chrome-extensions',event=>{trusted(event);if(getService()?.status()?.profileId!=='pc2-normal'||!openChromeExtensions)throw deny();return openChromeExtensions();});
 }
 module.exports={createPcLauncherService,registerPcIpc};

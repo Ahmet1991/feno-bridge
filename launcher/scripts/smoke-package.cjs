@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const { validateRuntimeBundle } = require("../electron/runtime-install.cjs");
 const { stageWindowsSmoke } = require("./stage-windows-smoke.cjs");
 
@@ -94,6 +95,27 @@ try {
   } else if (process.platform === "win32") {
     const installer = artifact(/-win-x64\.exe$/, "Windows installer");
     executable = stageWindowsSmoke({ installer, scratch, productName: launcherManifest.build.productName, run });
+    const resources = path.join(path.dirname(executable), "resources");
+    const runtime = path.join(resources, "runtime", "runtime");
+    for (const name of ["pc-windows-helper", "chrome-native-host"]) {
+      const actual = createHash("sha256").update(fs.readFileSync(path.join(runtime, name + ".exe"))).digest("hex");
+      const expected = fs.readFileSync(path.join(runtime, name + ".sha256"), "utf8").trim();
+      if (actual !== expected) throw new Error(name + " packaged SHA-256 mismatch");
+      console.log("PACKAGED_HELPER_SHA256_OK " + name + " " + actual);
+    }
+    for (const file of ["manifest.json", "worker.js", "engine.js", "dom.js"]) {
+      if (!fs.readFileSync(path.join(resources, "chrome-extension", file)).equals(fs.readFileSync(path.join(launcherRoot, "chrome-extension", file)))) {
+        throw new Error("Packaged Chrome extension differs from source: " + file);
+      }
+    }
+    const host = path.join(runtime, "chrome-native-host.exe");
+    run(host, ["--manifest"]);
+    const native = JSON.parse(fs.readFileSync(path.join(resources, "chrome-native-host.json"), "utf8"));
+    if (native.name !== "com.feno.bridge.pc2" || native.path !== host || native.type !== "stdio"
+      || JSON.stringify(native.allowed_origins) !== JSON.stringify(["chrome-extension://mcimkhafgpcecjdjjiljhljdkaggapfa/"])) {
+      throw new Error("Packaged Chrome native host manifest mismatch");
+    }
+    console.log("PACKAGED_CHROME_EXTENSION_OK " + expectedVersion);
     command = executable;
     args = ["--launcher-smoke-test"];
   } else {

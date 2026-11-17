@@ -49,6 +49,7 @@ const importsDone=bootReporter.begin('application_imports');
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { createPcLauncherService, registerPcIpc } = require("./pc-service.cjs");
+const { chromeDirectory } = require("./chrome-broker.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
   syncBundledGuidance,
@@ -654,6 +655,18 @@ function registerIpc({ logger, stateStore }) {
     rendererNavigationAllowed,
     getService: () => pcService,
     dialog,
+    openChromeExtensionFolder: async () => {
+      const directory=app.isPackaged?path.join(process.resourcesPath,"chrome-extension"):path.join(SOURCE_ROOT,"launcher","chrome-extension");
+      if(!fs.existsSync(path.join(directory,"manifest.json")))throw Error("pc_chrome_not_connected");
+      const error=await shell.openPath(directory);if(error)throw Error("pc_chrome_not_connected");
+      return true;
+    },
+    openChromeExtensions: () => {
+      const candidates=[process.env.ProgramFiles,process.env["ProgramFiles(x86)"],process.env.LOCALAPPDATA].filter(Boolean).map(root=>path.join(root,"Google","Chrome","Application","chrome.exe"));
+      const exe=candidates.find(p=>fs.existsSync(p));if(!exe)throw Error("pc_chrome_not_connected");
+      const child=require("node:child_process").spawn(exe,["chrome://extensions"],{detached:true,stdio:"ignore",windowsHide:true});
+      child.on("error",()=>{});child.unref();return true;
+    },
   });
   const runtimeChannels = new Set([
     "launcher:setup-core", "launcher:setup-mcp", "launcher:uninstall-integration",
@@ -1412,6 +1425,7 @@ async function start() {
       if (!bunPath || !path.isAbsolute(bunPath)) throw new Error("pc_trusted_runtime_required");
       pcService = createPcLauncherService({
         profile: { ...LAUNCHER_PROFILE, userData: launcherUserData }, bunPath,
+        ...(!IS_DEV_PROFILE&&app.isPackaged?{chromeOptions:{version:app.getVersion(),directory:chromeDirectory(),audit:record=>logger.info("pc_control.chrome",record)}}:{}),
         confirmLocally: async selection => {
           if (!mainWindow || mainWindow.isDestroyed()) return false;
           const response = await dialog.showMessageBox(mainWindow, {

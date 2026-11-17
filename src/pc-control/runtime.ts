@@ -10,6 +10,7 @@ import {createPcPeerRegistry} from './resource-peers';
 import type {PcProfileId} from './types';
 import {createPcRequestLog} from './request-log';
 import {createPcJobHistory} from './job-history';
+import {createUserChromeClient} from './chrome';
 type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string;reason?:string;fields?:string[]};
 export function createDefaultPcRuntime(){
   const coreHome=getConfigDir();let profileId:PcProfileId='pc2-normal',configured=false,probes=false;
@@ -38,6 +39,7 @@ export function createDefaultPcRuntime(){
     files.writePrivateAtomic(target,Buffer.concat([previous.length+next.length>1024*1024?Buffer.alloc(0):previous,next]));
   }
   const host=createLocalPcHost(authorizer,{
+    ...(files&&configured&&profileId==='pc2-normal'?{chromeAction:createUserChromeClient(files)}:{}),
     ...(files&&configured?{browserOptions:{directory:join(layout.directory,'pc-browser-profile'),
       ensureDirectory:(directory:string)=>files.ensurePrivateDirectory(directory)}}:{}),
     history:files&&configured?createPcJobHistory({directory:layout.directory,profileId,files}):undefined,

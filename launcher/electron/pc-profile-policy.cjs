@@ -18,6 +18,7 @@ const PC_PERMISSION_DETAILS=Object.freeze(Object.fromEntries(Object.entries({
   'apps.launch':{title:'Seçilen uygulamaları başlat',risk:'high',description:'Yalnızca seçilen ve sistemde güvenilir konuma kurulu uygulamalar açılabilir. Tarayıcıya bir web adresi gönderilebilir.'},
   'screen.full':{title:'Tam ekran ve çoklu monitör görüntüsü',risk:'high',description:'YÜKSEK RİSK: Tüm ekran veya bir monitördeki diğer uygulamalar, bildirimler ve özel içerikler görünür. Pencere okuma izninden bağımsızdır.'},
   browser:{title:'Arka planda web tarayıcısı',risk:'high',description:'Ayrı kalıcı tarayıcı profilinde sayfalar okunabilir, tıklama ve yazma yapılabilir. Açık hesaplarda işlem yapılabilir.'},
+  'chrome.user':{title:'Kendi Chrome sekmeleriniz',risk:'high',description:'Tam yetkide, uzantı açıkken mevcut Chrome profilindeki web sayfalarında işlem yapılabilir.'},
 }).map(([key,value])=>[key,Object.freeze(value)])));
 const PC_ALLOWED_APPLICATIONS=Object.freeze([
   {id:'notepad.exe',title:'Not Defteri',launchable:true},
@@ -31,6 +32,7 @@ const PC_PERMISSIONS=Object.freeze(['status',...Object.keys(PC_PERMISSION_DETAIL
 const PC_FULL_PERMISSIONS=Object.freeze(PC_PERMISSIONS.filter(permission=>permission!=='status'));
 function validatePcSelection(s) {
   const full=s?.fullAccess===true;
+  if(!full&&Array.isArray(s?.permissions)&&s.permissions.includes('chrome.user'))throw deny();
   const validRoot=r=>typeof r==='string'&&r.length>1&&r.length<=1024&&!r.includes('\0')&&!r.startsWith('\\\\')
     &&(/^[a-z]:[\\/]/i.test(r)?!r.slice(2).includes(':')&&(full||path.win32.normalize(r).toLowerCase()!==path.win32.parse(r).root.toLowerCase()):process.platform!=='win32'&&path.posix.isAbsolute(r)&&path.posix.normalize(r)!=='/');
   if(!s||typeof s!=='object'||(s.durationMs!==null&&(!Number.isSafeInteger(s.durationMs)||s.durationMs<=0||s.durationMs>7200000))

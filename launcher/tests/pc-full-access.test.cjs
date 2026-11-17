@@ -20,7 +20,7 @@ windowsTest('explicit normal config starts full grant without local dialog, pers
     a.start();await a.heartbeat();assert.equal(a.status().enabled,true);assert.equal(a.status().fullAccess,true);
     assert.equal(a.status().expiresAt,null);assert.equal(f.confirms,0);
     assert.deepEqual(a.status().roots,['C:\\','D:\\']);
-    assert.equal(a.status().permissions.length,12);assert.deepEqual(a.status().allowedApps,[]);
+    assert.equal(a.status().permissions.length,13);assert.ok(a.status().permissions.includes('chrome.user'));assert.deepEqual(a.status().allowedApps,[]);
     const signed=JSON.parse(fs.readFileSync(path.join(f.profile.coreHome,'runtime','pc2-normal','pc-consent-state.json'),'utf8'));
     assert.equal(signed.payload.grant.fullAccess,true);assert.ok(signed.signature);
     a.suspend();const restarted=f.make();restarted.start();try{await restarted.heartbeat();assert.equal(restarted.status().enabled,true);assert.equal(f.confirms,0);}finally{restarted.suspend();}

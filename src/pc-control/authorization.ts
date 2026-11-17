@@ -14,6 +14,7 @@ export function isValidPcRoot(root:unknown,allowDriveRoot=false):root is string 
 }
 export function validatePcGrant(grant:PcGrant,now:number,profileId:PcProfileId):void {
   const full=grant?.fullAccess===true;
+  if(!full&&Array.isArray(grant?.permissions)&&grant.permissions.includes('chrome.user'))throw new PcAccessDeniedError();
   if(grant?.fullAccess!==undefined&&typeof grant.fullAccess!=='boolean')throw new PcAccessDeniedError();
   if(full&&(profileId!=='pc2-normal'||grant.profileId!=='pc2-normal'||grant.expiresAt!==null
     ||!Array.isArray(grant.allowedApps)||grant.allowedApps.length!==0

@@ -18,7 +18,7 @@ test('normal and DEV start disabled and derive separate local stores from truste
 
 test('each real permission has an immutable risk explanation suitable for local approval UI',()=>{
   const {PC_PERMISSION_DETAILS}=require('../electron/pc-profile-policy.cjs');
-  assert.deepEqual(Object.keys(PC_PERMISSION_DETAILS).sort(),['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','desktop.advanced','apps.launch','screen.full','adb','runner','browser'].sort());
+  assert.deepEqual(Object.keys(PC_PERMISSION_DETAILS).sort(),['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','desktop.advanced','apps.launch','screen.full','adb','runner','browser','chrome.user'].sort());
   assert.equal(PC_PERMISSION_DETAILS['terminal.exec'].risk,'high');
   assert.equal(PC_PERMISSION_DETAILS.jobs.risk,'high');
   assert.equal(PC_PERMISSION_DETAILS['screen.full'].risk,'high');

@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "5.1.18",
+  "version": "5.1.19",
   "private": true,
   "description": "Feno Bridge desktop launcher",
   "author": "miuuyy",
@@ -73,6 +73,10 @@
       {
         "from": "../CHATGPT.md",
         "to": "guidance/SKILL.md"
+      },
+      {
+        "from": "chrome-extension",
+        "to": "chrome-extension"
       }
     ],
     "mac": {
