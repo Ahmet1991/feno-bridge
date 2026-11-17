@@ -7,7 +7,7 @@ import {createPcJobManager,createPcJobResources,inferPcCommandSpecs,type PcJobKi
 import {inferPcDeveloperTasks} from './developer-tasks';
 import {resolveAllowedPath} from './paths';
 import {randomUUID} from 'node:crypto';
-import {createPcWindowsController,pcWindowsHelperStatus,PC_DESKTOP_KEYS,type PcDesktopInput,type PcWindowsHelper} from './windows';
+import {createPcWindowsController,pcWindowsHelperStatus,invokePackagedWindowsHelper,PC_DESKTOP_KEYS,type PcDesktopInput,type PcWindowsHelper} from './windows';
 import {createPcAdbController,resolveTrustedAdbPath,type PcAdbInput,type PcAdbRun} from './adb';
 import {createPcApplicationLauncher,type PcLaunchableApp} from './launch';
 import {readPcImage} from './files';
@@ -33,7 +33,7 @@ export interface PcHost {
   showImage?(path:string):Promise<{mimeType:'image/png'|'image/jpeg'|'image/webp';data:Uint8Array}>;
   launchApp?(app:string,url?:string,filePath?:string,userDataDir?:string):Promise<unknown>;
 }
-export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobManagerOptions,'auditCommand'>&{
+export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobManagerOptions,'auditCommand'|'history'>&{
   acquireLease:(operation:'job'|'terminal'|'desktop-input'|'adb',operationId:string)=>Promise<PcHostLease>;
   coordinationReady?:()=>boolean;jobTimeoutMs?:number;terminalTimeoutMs?:number;runnerDirectory?:string;
   windowsHelper?:PcWindowsHelper;isInteractive?:()=>Promise<boolean>;
@@ -85,7 +85,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     if(managers.size>=16)throw new PcAccessDeniedError();
     const specs=inferPcDeveloperTasks(canonical),manager=createPcJobManager({projectRoot:canonical,profileId:authorizer.profileId,
       commandSpecs:{...inferPcCommandSpecs(canonical),...specs},resources,acquireLease:options.acquireLease,auditCommand:options.auditCommand,
-      jobTimeoutMs:options.jobTimeoutMs,terminalTimeoutMs:options.terminalTimeoutMs});
+      jobTimeoutMs:options.jobTimeoutMs,terminalTimeoutMs:options.terminalTimeoutMs,history:options.history});
     const entry={manager,tasks:Object.keys(specs).sort()};managers.set(canonical,entry);return entry;
   }
   function job(id:string){const grant=authorizer.assert('jobs');const manager=owners.get(id);if(!manager||grant.id!==activeGrant)throw new PcAccessDeniedError();return manager;}
@@ -103,7 +103,9 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     status:async()=>({platform:process.platform,version:pcVersion,profileId:authorizer.profileId,devMode:options.devMode?.()??'unknown',
       ...(()=>{const g=authorizer.assert('status');return {fullAccess:g?.fullAccess===true,roots:g?.roots??[],permissions:g?.permissions??[],allowedApps:g?.allowedApps??[]};})(),
       coordinationReady:options.coordinationReady?.()===true,cleanupRequired:cleanupFailed,
-      desktop:options.windowsHelper?{available:true,source:'injected'}:pcWindowsHelperStatus(),
+      desktop:await (async()=>{const status=options.windowsHelper?{available:true,source:'injected'}:pcWindowsHelperStatus();
+        if(!status.available)return status;
+        try{const session=await (options.windowsHelper??invokePackagedWindowsHelper)('session',{}) as {locked?:unknown};return {...status,locked:typeof session.locked==='boolean'?session.locked:null};}catch{return {...status,locked:null};}})(),
       ...(authorizer.assert('status')?.permissions.includes('jobs')?{activeJobs:resources.activeJobCount(),terminalBusy:resources.hasActiveTerminal(),terminalSlots:resources.terminalSlots(authorizer.assert('status')?.fullAccess===true)}: {})}),
     listFiles:(p,offset,limit)=>listPcFiles(p,'.',authorizer,offset,limit),readFile:(p,options)=>readPcFile(p,authorizer,options),applyPatch:(p,s,v)=>applyPcPatch(p,s,v,authorizer),
     createFile:(p,c)=>createPcFile(p,c,authorizer),createDirectory:p=>createPcDirectory(p,authorizer),
@@ -111,7 +113,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     listProjectTasks:async root=>forProject(root).tasks,
     startProjectTask:(projectRoot,taskId)=>start(projectRoot,async m=>{if(!forProject(projectRoot).tasks.includes(taskId))throw new PcAccessDeniedError();return m.startDeveloperTask({projectRoot,taskId},authorizer);}),
     startTerminal:(projectRoot,command,purpose,timeoutSeconds)=>{authorizer.assert('terminal.exec');return start(projectRoot,m=>m.startTerminalCommand({projectRoot,command,purpose,timeoutSeconds},authorizer));},
-    listJobs:async()=>{const grant=authorizer.assert('jobs');return grant.id===activeGrant?[...managers.values()].flatMap(e=>e.manager.listPcJobs(authorizer)).sort((a,b)=>b.startedAt-a.startedAt).slice(0,20):[];},
+    listJobs:async()=>{const grant=authorizer.assert('jobs');const history=new Map<string,import('./job-history').PcJobSummary>();try{for(const j of options.history?.list(grant.id)??[])history.set(j.jobId,j);}catch{/* Private storage unavailable. */}if(grant.id===activeGrant)for(const j of [...managers.values()].flatMap(e=>e.manager.listPcJobs(authorizer)))history.set(j.jobId,j);return [...history.values()].sort((a,b)=>b.startedAt-a.startedAt).slice(0,20);},
     jobStatus:async id=>job(id).pcJobStatus(id,authorizer),jobLogs:async(id,cursor)=>job(id).pcJobLogs(id,cursor,authorizer),
     cancelJob:async id=>{await job(id).cancelPcJob(id,authorizer);return {cancelled:true};},
     revokeActiveJobs:async()=>{await retire();await Promise.all([...retired]);},

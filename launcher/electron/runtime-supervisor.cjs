@@ -928,6 +928,32 @@ class RuntimeSupervisor {
     return (await this.observeTunnelForMonitor(config)).ready;
   }
 
+  checkTunnelAfterPowerEvent(event) {
+    if(this.stopping||this.startPromise||this.recoveryTasks.size||this.restartTimers.tunnel||!this.tunnel?.managed||!this.tunnelMonitorTimer)return Promise.resolve();
+    const started=Date.now();
+    const task=(async()=>{
+      let outcome='skipped';
+      try{
+        const config=this.readConfig();if(config?.mode!=='full')return;
+        this.stopTunnelMonitor();
+        const generation=this.tunnelMonitorGeneration;
+        const health=await this.observeTunnelForMonitor(config);
+        if(this.stopping||generation!==this.tunnelMonitorGeneration)return;
+        // Resume invalidates a previously ready WebSocket: loopback readiness alone cannot
+        // prove a remote TCP connection survived sleep. Reacquire the owned alias cleanly.
+        if(event==='resume'||(health.statusKnown&&!health.ready)){
+          await this.recover('tunnel');outcome='recovered';
+        }else{this.startTunnelMonitor(config);outcome=health.ready?'healthy':'unknown';}
+      }catch{
+        outcome='failed';
+        if(!this.stopping)this.scheduleRecovery('tunnel');
+      }finally{this.logger.info('runtime.tunnel_power_event',{event,outcome,elapsedMs:Date.now()-started});}
+    })();
+    this.recoveryTasks.add(task);
+    void task.finally(()=>this.recoveryTasks.delete(task));
+    return task;
+  }
+
   async waitForKnownTunnelStatus(config, timeoutMs = 10_000) {
     const deadline = Date.now() + timeoutMs;
     let health;

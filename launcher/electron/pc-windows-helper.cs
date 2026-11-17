@@ -96,7 +96,19 @@ internal static class PcWindowsHelper {
             return GetUserObjectInformation(desktop,2,name,512,out required) ? name.ToString() : "unknown";
         } finally { CloseDesktop(desktop); }
     }
-    private static bool Unlocked() { return InputDesktopName()=="Default"; }
+    [DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] private static extern bool WTSQuerySessionInformationW(IntPtr server,int sessionId,int infoClass,out IntPtr buffer,out int bytes);
+    [DllImport("wtsapi32.dll")] private static extern void WTSFreeMemory(IntPtr buffer);
+    // WTSINFOEX has an eight-byte aligned Level1 union; SessionFlags is its third DWORD.
+    private static bool? SessionLocked() {
+        IntPtr buffer;int bytes;
+        if(!WTSQuerySessionInformationW(IntPtr.Zero,Process.GetCurrentProcess().SessionId,25,out buffer,out bytes))return null;
+        try {
+            if(bytes<20 || Marshal.ReadInt32(buffer)!=1)return null;
+            int flags=Marshal.ReadInt32(buffer,16);
+            return flags==0?(bool?)true:flags==1?(bool?)false:null;
+        }finally{WTSFreeMemory(buffer);}
+    }
+    private static bool Unlocked() { bool? locked=SessionLocked();if(locked==true)throw new InvalidOperationException("desktop_locked");return locked==false && InputDesktopName()=="Default"; }
     private static string ProcessName(uint pid) { return Process.GetProcessById(checked((int)pid)).ProcessName+".exe"; }
     private static uint Owner(IntPtr hwnd) {
         uint pid; GetWindowThreadProcessId(hwnd,out pid);
@@ -337,9 +349,9 @@ internal static class PcWindowsHelper {
         return new {ok=true};
     }
     private static object Execute(string action,IDictionary<string,object> args) {
-        if(action=="session") { string name=InputDesktopName();return new {unlocked=name=="Default",desktopName=name}; }
-        Require(Unlocked());
+        if(action=="session") { string name=InputDesktopName();bool? locked=SessionLocked();return new {unlocked=locked==false && name=="Default",locked=locked,desktopName=name}; }
         if(action=="keymap")return new {keys=KeySequence(GetString(args,"key"))};
+        Require(Unlocked());
         if(action=="clipboard_read") {
             string value=Clipboard.ContainsText(TextDataFormat.UnicodeText)?Clipboard.GetText(TextDataFormat.UnicodeText):"";
             Require(new UTF8Encoding(false,true).GetByteCount(value)<=65536);
@@ -386,7 +398,7 @@ internal static class PcWindowsHelper {
             Console.OutputEncoding=new UTF8Encoding(false);
             Console.Write(Json.Serialize(result));return 0;
         }catch(Exception ex) {
-            if(ex.Message=="focus_required" || ex.Message=="input_failed") {
+            if(ex.Message=="focus_required" || ex.Message=="input_failed" || ex.Message=="desktop_locked") {
                 Console.OutputEncoding=new UTF8Encoding(false);
                 Console.Write("{\"ok\":false,\"reason\":\""+ex.Message+"\"}");
             }

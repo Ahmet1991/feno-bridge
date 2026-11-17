@@ -211,6 +211,18 @@ test("packaged runtime rejects same-count content corruption", () => {
   }
 });
 
+test("packaged source hashes files with bounded parallel asynchronous reads", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-parallel-"));
+  const resourcesPath = runtimeFixture(root);
+  const read = fs.promises.readFile;
+  let active=0, peak=0, count=0;
+  fs.promises.readFile=async function(...args){active++;count++;peak=Math.max(peak,active);try{return await read.apply(this,args);}finally{active--;}};
+  try {
+    await waitForPackagedRuntimeSource({app:{isPackaged:true,getVersion:()=>"0.2.0"},resourcesPath});
+    assert.ok(count>=6);assert.ok(peak>1 && peak<=8);
+  } finally {fs.promises.readFile=read;fs.rmSync(root,{recursive:true,force:true});}
+});
+
 test("packaged runtime source wait accepts a delayed final dependency within its bound", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-delayed-"));
   const resourcesPath = runtimeFixture(root);

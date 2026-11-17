@@ -181,6 +181,7 @@ test("startup failure stays visible on another launch and Retry exits the failed
   const sandbox = {
     mainWindow: window, mainWindowReadyToShow: false, mainWindowShowRequested: false,
     startupFailed: false, quitting: false,
+    pcStartupRetry: { stop() {} },
     browserHost: { destroy: () => events.push("destroy") },
     browserControl: { close: async () => events.push("control closed") },
     start: async () => { throw new Error("Browser idle document did not commit within 10000ms"); },

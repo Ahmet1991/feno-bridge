@@ -122,17 +122,18 @@ function validateRuntimeFile(runtimeRoot, canonicalRoot, file) {
   const absolutePath = path.join(runtimeRoot, ...file.path.split("/"));
   let metadata;
   try {
-    metadata = fs.statSync(absolutePath);
+    metadata = fs.lstatSync(absolutePath);
   } catch {
     throw new Error(`Runtime bundle file is missing: ${absolutePath}`);
   }
-  if (!metadata.isFile()) throw new Error(`Runtime bundle entry is not a file: ${absolutePath}`);
-  if (fs.lstatSync(absolutePath).isSymbolicLink()) {
+  if (metadata.isSymbolicLink()) {
     const target = fs.realpathSync(absolutePath);
     if (target !== canonicalRoot && !target.startsWith(`${canonicalRoot}${path.sep}`)) {
       throw new Error(`Runtime bundle symlink escapes the bundle: ${absolutePath}`);
     }
+    metadata = fs.statSync(absolutePath);
   }
+  if (!metadata.isFile()) throw new Error(`Runtime bundle entry is not a file: ${absolutePath}`);
   if (metadata.size !== file.size) {
     throw new Error(`Runtime bundle file size mismatch: ${absolutePath}`);
   }
@@ -142,7 +143,7 @@ function validateRuntimeFile(runtimeRoot, canonicalRoot, file) {
   }
 }
 
-function inspectRuntimeBundle(runtimeRoot, identity) {
+function prepareRuntimeInspection(runtimeRoot, identity) {
   const manifest = readRuntimeManifest(runtimeRoot, identity);
   const expectedPaths = manifest.files.map(file => file.path);
   const expectedSet = new Set(expectedPaths);
@@ -171,12 +172,44 @@ function inspectRuntimeBundle(runtimeRoot, identity) {
     throw new Error(`Runtime bundle file count mismatch: expected ${expectedPaths.length}, received ${actualPaths.length}`);
   }
 
-  const canonicalRoot = fs.realpathSync(runtimeRoot);
-  for (const file of manifest.files) validateRuntimeFile(runtimeRoot, canonicalRoot, file);
   if (identity.platform !== "win32" && (fs.statSync(paths.executable).mode & 0o111) === 0) {
     throw new Error(`Bundled Bun runtime is not executable: ${paths.executable}`);
   }
   return { manifest, runtimeRoot: paths.runtimeRoot };
+}
+
+function inspectRuntimeBundle(runtimeRoot, identity) {
+  const bundle = prepareRuntimeInspection(runtimeRoot,identity);
+  const canonicalRoot = fs.realpathSync(runtimeRoot);
+  for (const file of bundle.manifest.files) validateRuntimeFile(runtimeRoot,canonicalRoot,file);
+  return bundle;
+}
+
+async function inspectRuntimeSource(runtimeRoot, identity) {
+  const bundle=prepareRuntimeInspection(runtimeRoot,identity);
+  const canonicalRoot=await fs.promises.realpath(runtimeRoot);
+  let index=0, failure;
+  const worker=async()=>{
+    while(!failure && index<bundle.manifest.files.length){
+      const file=bundle.manifest.files[index++];
+      const absolutePath=path.join(runtimeRoot,...file.path.split('/'));
+      try {
+        let metadata=await fs.promises.lstat(absolutePath);
+        if(metadata.isSymbolicLink()){
+          const target=await fs.promises.realpath(absolutePath);
+          if(target!==canonicalRoot&&!target.startsWith(`${canonicalRoot}${path.sep}`))throw new Error(`Runtime bundle symlink escapes the bundle: ${absolutePath}`);
+          metadata=await fs.promises.stat(absolutePath);
+        }
+        if(!metadata.isFile())throw new Error(`Runtime bundle entry is not a file: ${absolutePath}`);
+        if(metadata.size!==file.size)throw new Error(`Runtime bundle file size mismatch: ${absolutePath}`);
+        const sha256=createHash('sha256').update(await fs.promises.readFile(absolutePath)).digest('hex');
+        if(sha256!==file.sha256)throw new Error(`Runtime bundle file checksum mismatch: ${absolutePath}`);
+      }catch(error){failure??=error;}
+    }
+  };
+  await Promise.all(Array.from({length:8},worker));
+  if(failure)throw failure;
+  return bundle;
 }
 
 function validateRuntimeBundle(runtimeRoot, identity) {
@@ -206,7 +239,7 @@ async function waitForPackagedRuntimeSource({
   let onWaitReported=false;
   for (;;) {
     try {
-      const bundle=inspectRuntimeBundle(source,identity);
+      const bundle=await inspectRuntimeSource(source,identity);
       return returnBundle?bundle:bundle.runtimeRoot;
     } catch (error) {
       lastError = error;

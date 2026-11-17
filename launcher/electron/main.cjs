@@ -14,6 +14,7 @@ const {
   Menu,
   nativeImage,
   nativeTheme,
+  powerMonitor,
   screen,
   session,
   shell,
@@ -141,6 +142,8 @@ let updateController = null;
 let startupReadiness = null;
 let launcherLogger = null;
 let pcService = null;
+let pcStartupRetry = null;
+let disposeTunnelWake = null;
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -1153,6 +1156,7 @@ async function requestQuit() {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Feno Bridge`);
     }
     pcService?.assertCanExit();
+    pcStartupRetry?.stop();
     pcService?.suspend();
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
@@ -1161,6 +1165,7 @@ async function requestQuit() {
     browserHost?.destroy();
     await browserControl?.close();
     exitCommitted = true;
+    disposeTunnelWake?.();
     app.quit();
     return { ok: true };
   } catch (error) {
@@ -1340,6 +1345,10 @@ async function start() {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
   }
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
+  if(!launcherSmokeTest&&!IS_DEV_PROFILE){
+    const {bindTunnelWake}=require('./tunnel-wake.cjs');
+    disposeTunnelWake=bindTunnelWake(powerMonitor,event=>runtimeSupervisor.checkTunnelAfterPowerEvent(event));
+  }
   browserHost = new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
@@ -1371,7 +1380,9 @@ async function start() {
     publish: (state) => send("launcher:update-state", state),
     logger,
   });
-  if (process.platform === "win32") {
+  if (process.platform === "win32" && !launcherSmokeTest) {
+    const { createPcStartupRetry } = require('./pc-startup-retry.cjs');
+    pcStartupRetry = createPcStartupRetry({ start() {
     try {
       const root = runtimeRootProvider();
       const bunPath = app.isPackaged && root
@@ -1415,11 +1426,12 @@ async function start() {
         },
       });
       pcService.start();
-    } catch {
+    } catch (error) {
       try { pcService?.suspend(); } catch {}
       pcService = null;
-      logger.warn("pc_control.unavailable", { code: "pc_security_initialization_failed" });
+      throw error;
     }
+    }, onFailure: error => logger.warn("pc_control.unavailable", error) });
   }
   registerIpc({ logger, stateStore });
   const trayAvailable = createTray(logger, stateStore.read().language);
@@ -1499,6 +1511,7 @@ async function start() {
       coreHome: CORE_HOME,
       userData: launcherUserData,
     });
+    pcStartupRetry?.start();
     if (config?.mode === "full") {
       void startupAuthenticationRefresh.then(() => runtimeSupervisor.startIfConfigured()).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -1510,6 +1523,7 @@ async function start() {
   } else void (async () => {
     await startupAuthenticationRefresh;
     const upgrade = await runtimeHost.upgradeManagedRuntime();
+    pcStartupRetry?.start();
     if (upgrade.updated) {
       const state = stateStore.update({
         coreSetupComplete: true,
@@ -1668,6 +1682,7 @@ async function start() {
 
 void start().catch(async (error) => {
   startupFailed = true;
+  pcStartupRetry?.stop();
   try { pcService?.suspend(); } catch {}
   const message = error instanceof Error ? error.message : String(error);
   try {

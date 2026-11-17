@@ -112,6 +112,7 @@ export function createVerifiedWindowsHelper(options: VerifiedHelperOptions): PcW
       try {
         if (signal?.aborted) {reject(new PcOperationError('pc_grant_changed',{reason:'grant_revoked'}));return;}
         const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if(result?.ok===false && result?.reason==='desktop_locked'){reject(new PcOperationError('pc_desktop_locked'));return;}
         if (code !== 0 && !(result?.ok === false && (result?.reason === "focus_required" || result?.reason === "input_failed")
           && ["activate","click", "right_click", "double_click", "drag", "scroll", "key", "type"].includes(action))) throw new Error("helper failure");
         resolve(result);
@@ -145,7 +146,8 @@ export function createPcWindowsController(options: {
   const interactive = options.isInteractive ?? (async () => {
     const result = await helper("session", {}, options.signal);
     if(!result||typeof result!=='object'||typeof (result as {unlocked?:unknown}).unlocked!=='boolean')throw new PcOperationError('pc_helper_failed',{reason:'invalid_session_output'});
-    const session=result as {unlocked:boolean;desktopName?:unknown};
+    const session=result as {unlocked:boolean;desktopName?:unknown;locked?:boolean};
+    if(session.locked===true)throw new PcOperationError('pc_desktop_locked');
     if(!session.unlocked){const name=typeof session.desktopName==='string'&&/^(Default|Winlogon|Screen-saver)$/i.test(session.desktopName)?session.desktopName:'unknown';throw new PcOperationError('pc_desktop_unavailable',{reason:`input_desktop_${name}`});}
     return true;
   });

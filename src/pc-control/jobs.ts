@@ -75,6 +75,7 @@ export interface PcJobManagerOptions {
   auditCommand:(record:PcTerminalAudit)=>void|Promise<void>;
   resources?:ReturnType<typeof createPcJobResources>;clock?:()=>number;
   jobTimeoutMs?:number;terminalTimeoutMs?:number;
+  history?:import('./job-history').PcJobHistory;
 }
 export function createPcJobManager(options:PcJobManagerOptions){
   if(!options||!['pc2-normal','pc2-dev'].includes(options.profileId)||typeof options.acquireLease!=='function'||typeof options.auditCommand!=='function')throw new PcAccessDeniedError();
@@ -82,6 +83,8 @@ export function createPcJobManager(options:PcJobManagerOptions){
   // Local configuration is snapshotted: a caller cannot mutate an in-flight command specification.
   const specs=Object.fromEntries(Object.entries(options.commandSpecs).map(([key,s])=>[key,{...s,args:[...s.args]}]));
   const jobs=new Map<string,Job>();let retiring=false;
+  function summary(j:Job):import('./job-history').PcJobSummary{return {jobId:j.id,kind:j.kind==='terminal'?'terminal':'job',state:j.state==='timed_out'?'timeout':j.state,startedAt:j.createdAt,finishedAt:j.finishedAt??null,exitCode:j.exitCode??null,projectRoot:root,purpose:j.purpose??null,commandHash:j.commandHash};}
+  function persist(j:Job){try{options.history?.write(j.grantId,summary(j));}catch{/* History I/O must not orphan a running process or change lease semantics. */}}
   function owner(authorizer:PcAuthorizer,terminal=false):string{
     if(authorizer?.profileId!==options.profileId)throw new PcAccessDeniedError();
     const id=authorizer.assert('jobs').id;if(terminal&&authorizer.assert('terminal.exec').id!==id)throw new PcAccessDeniedError();return id;
@@ -121,6 +124,7 @@ export function createPcJobManager(options:PcJobManagerOptions){
       const log=createPcJobLog(),child=spawnContainedWindowsProcess({ ...spec,allowGuiBreakaway:spec.allowGuiBreakaway===true&&terminal&&authorizer.assert('jobs').fullAccess===true },root,b=>log.stdout.write(b),b=>log.stderr.write(b));started=true;
       const job:Job={id,kind,grantId,state:'running',createdAt:clock(),closed:false,child,log,completed:Promise.resolve(),purpose:audit?.purpose,commandHash:audit?.commandHash??createHash('sha256').update(JSON.stringify([spec.command,...spec.args])).digest('hex')};
       jobs.set(id,job);
+      persist(job);
       const nativeExit=child.exited.then(()=>{});
       // Resource protocol receives the native zero-active-processes observation, never shell exit.
       const heldLease=lease;
@@ -128,9 +132,10 @@ export function createPcJobManager(options:PcJobManagerOptions){
       job.completed=Promise.all([child.exited,leaseReleased]).then(([result])=>{
         log.end();if(job.timeout)clearTimeout(job.timeout);job.closed=true;job.finishedAt=clock();release();
         job.exitCode=result.exitCode;if(job.state==='running')job.state=result.exitCode===0?'succeeded':'failed';
+        persist(job);
       });
       // Rejecting a native observation or durable release retains the reservation and job handle.
-      void job.completed.catch(()=>{if(job.state==='running')job.state='failed';});
+      void job.completed.catch(()=>{if(job.state==='running')job.state='failed';persist(job);});
       job.timeout=setTimeout(()=>{void terminate(job,'timed_out').catch(()=>{});},duration);
       return {jobId:id};
     }catch(error){
@@ -159,7 +164,7 @@ export function createPcJobManager(options:PcJobManagerOptions){
       const record={at:clock(),projectRoot:root,purpose:redactPcText(input.purpose).slice(0,160),commandHash:createHash('sha256').update(input.command).digest('hex')};
       return start('terminal',input.projectRoot,authorizer,containedWindowsTerminalSpec(input.command),record,input.timeoutSeconds);
     },
-    listPcJobs(authorizer:PcAuthorizer){const id=owner(authorizer);return [...jobs.values()].filter(j=>j.grantId===id).reverse().sort((a,b)=>b.createdAt-a.createdAt).slice(0,20).map(j=>({jobId:j.id,kind:j.kind==='terminal'?'terminal':'job',state:j.state==='timed_out'?'timeout':j.state,startedAt:j.createdAt,finishedAt:j.finishedAt??null,exitCode:j.exitCode??null,projectRoot:root,purpose:j.purpose??null,commandHash:j.commandHash}));},
+    listPcJobs(authorizer:PcAuthorizer){const id=owner(authorizer);return [...jobs.values()].filter(j=>j.grantId===id).reverse().sort((a,b)=>b.createdAt-a.createdAt).slice(0,20).map(summary);},
     pcJobStatus(id:string,authorizer:PcAuthorizer){const j=get(id,authorizer);return {state:j.state,...(j.exitCode!==undefined?{exitCode:j.exitCode}:{}),...(j.kind==='terminal'&&j.log.scriptBlocked()?{hint:'pc_script_blocked: .ps1 çalıştırılamıyor; komutu satır içi verin'}:{})};},
     pcJobLogs(id:string,cursor=0,authorizer:PcAuthorizer){const j=get(id,authorizer);if(!Number.isSafeInteger(cursor)||cursor<0)throw new PcAccessDeniedError();return j.log.page(cursor);},
     async cancelPcJob(id:string,authorizer:PcAuthorizer){await terminate(get(id,authorizer));},

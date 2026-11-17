@@ -53,6 +53,17 @@ test('session failure identifies noninteractive desktop and a changed grant',asy
   await expect(windows(b,async()=>{b.revoke();return {unlocked:true};}).listPcWindows()).rejects.toMatchObject({code:'pc_grant_changed'});
 });
 
+test('locked Default desktop rejects list capture and input',async()=>{
+  const a=approve(['screen.read','screen.full','desktop.input']);
+  const helper:PcWindowsHelper=async()=>({unlocked:false,locked:true,desktopName:'Default'});
+  const w=windows(a,helper);
+  await expect(w.listPcWindows()).rejects.toMatchObject({code:'pc_desktop_locked'});
+  await expect(w.capturePcWindow('123')).rejects.toMatchObject({code:'pc_desktop_locked'});
+  await expect(w.captureFull('all')).rejects.toMatchObject({code:'pc_desktop_locked'});
+  await expect(w.pcDesktopInput({windowId:'123',action:'key',key:'ENTER'})).rejects.toMatchObject({code:'pc_desktop_locked'});
+  expect(await createLocalPcHost(a,{windowsHelper:helper,auditCommand:()=>{},acquireLease:async()=>{throw new PcAccessDeniedError();}}).status()).toMatchObject({desktop:{locked:true}});
+});
+
 test('full screen opt-in is separate from approved-window permission',async()=>{
   const a=approve(['screen.full'],[]);const w=windows(a);
   expect((await w.captureFull('monitor',0)).data).toEqual(PNG);

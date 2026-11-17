@@ -3611,7 +3611,8 @@ describe("ChatGPT outer-native harness v4", () => {
     environment.tools = [
       { name: "exec_command", description: "Run a Codex command", parameters: { type: "object" } },
     ];
-    const abandonedToken = await broker.register(environment, 3_000);
+    // This test exercises explicit cancellation, not lease expiry. Allow slow Windows child startup.
+    const abandonedToken = await broker.register(environment, 30_000);
     const replacementToken = await broker.register(environment);
     const transport = new StdioClientTransport({
       command: process.execPath,
