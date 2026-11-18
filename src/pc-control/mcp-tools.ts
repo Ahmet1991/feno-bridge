@@ -322,6 +322,6 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
     const {tabId:_,...rest}=v;
     return computerSchema.safeParse({...rest,tabId:'chrome'}).success;
   });
-  server.registerTool('pc_chrome_computer',{title:'Kendi Chrome sekmesini imleçle kullan',description:chromeHint+'Önce screenshot al. Koordinatlar son orijinal ekran görüntüsünün pikselleridir. Şifre ve ödeme alanlarında kullanıcı onayı gerekir.',inputSchema:chromeComputerSchema,annotations:{...write,openWorldHint:true},_meta:imageToolMeta},
+  server.registerTool('pc_chrome_computer',{title:'Kendi Chrome sekmesini imleçle kullan',description:chromeHint+'Önce screenshot al. Koordinatlar son orijinal ekran görüntüsünün pikselleridir. Kaydırdıktan sonra yeni ekran görüntüsü alıp koordinatları ondan oku. Şifre ve ödeme alanlarında kullanıcı onayı gerekir.',inputSchema:chromeComputerSchema,annotations:{...write,openWorldHint:true},_meta:imageToolMeta},
     args=>args.action==='screenshot'?imageRun(()=>chromeAction('computer',args),'pc_chrome_computer'):run(()=>chromeAction('computer',args),false,'pc_chrome_computer'));
 }

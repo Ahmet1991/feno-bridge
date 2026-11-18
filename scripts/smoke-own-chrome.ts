@@ -1,4 +1,3 @@
-import {chromium} from 'playwright-core';
 import {mkdtempSync,cpSync,writeFileSync,readFileSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -6,20 +5,50 @@ import assert from 'node:assert/strict';
 const root=mkdtempSync(join(tmpdir(),'feno-own-chrome-'));
 const extension=join(root,'extension');
 cpSync(join(import.meta.dir,'../launcher/chrome-extension'),extension,{recursive:true});
+if(process.env.FENO_BASELINE==='1'){
+  for(const name of ['engine.js','dom.js','manifest.json']){
+    const old=Bun.spawnSync(['git','show','b4b0498:launcher/chrome-extension/'+name],{cwd:join(import.meta.dir,'..')});
+    assert.equal(old.exitCode,0);
+    writeFileSync(join(extension,name),old.stdout);
+  }
+}
 // Test-only worker calls the real engine, without registering a host or contacting a live broker.
-writeFileSync(join(extension,'worker.js'),"import {createChromeEngine} from './engine.js'; const original=chrome.debugger.sendCommand.bind(chrome.debugger); const detach=chrome.debugger.detach.bind(chrome.debugger); globalThis.fixtureDetached=[]; chrome.debugger.detach=async (target)=>{await detach(target);globalThis.fixtureDetached.push({tabId:target.tabId,at:Date.now()});}; chrome.debugger.sendCommand=(...args)=>globalThis.fixtureHang?new Promise(()=>{}):original(...args); globalThis.fixtureEngine=createChromeEngine(chrome);");
+writeFileSync(join(extension,'worker.js'),"import {createChromeEngine} from './engine.js'; const original=chrome.debugger.sendCommand.bind(chrome.debugger); const detach=chrome.debugger.detach.bind(chrome.debugger); globalThis.fixtureDetached=[]; chrome.debugger.detach=async (target)=>{await detach(target);globalThis.fixtureDetached.push({tabId:target.tabId,at:Date.now()});}; chrome.debugger.sendCommand=(...args)=>{if(globalThis.fixtureHang)return new Promise(()=>{});if(globalThis.fixtureCaptureHang&&args[1]==='Page.captureScreenshot'){globalThis.fixtureCaptureHang=false;return new Promise(()=>{});}return original(...args);}; globalThis.fixtureEngine=createChromeEngine(chrome);");
 const executable=join(process.env.LOCALAPPDATA!,'ms-playwright','chromium-1255','chrome-win64','chrome.exe');
 const compiler=['Framework64','Framework'].map(x=>join(process.env.SystemRoot!,'Microsoft.NET',x,'v4.0.30319','csc.exe')).find(existsSync)!;
 const probe=join(root,'foreground.dll');
 assert.equal(Bun.spawnSync([compiler,'/nologo','/target:library','/out:'+probe,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll',join(import.meta.dir,'sample-browser-foreground.cs')]).exitCode,0);
 const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>new Response('<html><body style="min-height:4000px"><h1>Fixture PC2</h1><canvas width="200" height="100" style="position:absolute;left:30px;top:80px;background:#ddd"></canvas><input aria-label="Write here" style="position:absolute;left:30px;top:220px" oninput="document.querySelector(\'p\').textContent=this.value"><p style="position:absolute;top:260px"></p><div id="result" style="position:absolute;top:300px"></div><div style="position:absolute;top:350px;left:30px;width:200px;height:100px;overflow:auto" id="nested"><div style="height:800px">nested</div></div><script>document.querySelector("canvas").onclick=()=>document.querySelector("#result").textContent="canvas-clicked"</script></body></html>',{headers:{'content-type':'text/html'}})});
-const context=await chromium.launchPersistentContext(join(root,'profile'),{executablePath:executable,headless:false,viewport:null,args:['--disable-extensions-except='+extension,'--load-extension='+extension,'--no-first-run','--no-default-browser-check']});
+// Do not attach Playwright to pages: its emulation changes background visibility.
+const profile=join(root,'profile');
+const chromeProcess=Bun.spawn([executable,'--user-data-dir='+profile,'--remote-debugging-port=0','--disable-extensions-except='+extension,'--load-extension='+extension,'--no-first-run','--no-default-browser-check','http://127.0.0.1:'+server.port+'/'],{stdout:'ignore',stderr:'ignore'});
+let socket:WebSocket|undefined;
+let seq=0;
+const pending=new Map<number,{resolve:(v:any)=>void,reject:(e:Error)=>void}>();
+function cdp(method:string,params:any={},sessionId?:string):Promise<any>{
+  return new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{pending.delete(id);reject(new Error('CDP deadline: '+method));},45000);pending.set(id,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}});socket!.send(JSON.stringify({id,method,params,sessionId}));});
+}
 let focus:ReturnType<typeof Bun.spawn>|undefined;
 try{
-  const worker=context.serviceWorkers()[0]||await context.waitForEvent('serviceworker',{timeout:15000});
-  assert.ok(worker.url().startsWith('chrome-extension://mcimkhafgpcecjdjjiljhljdkaggapfa/'));
-  const active=context.pages()[0];
-  await active.goto('http://127.0.0.1:'+server.port+'/');
+  const portFile=join(profile,'DevToolsActivePort');
+  for(let i=0;!existsSync(portFile)&&i<150;i++)await Bun.sleep(100);
+  const [port,path]=readFileSync(portFile,'utf8').trim().split(/\r?\n/);
+  socket=new WebSocket('ws://127.0.0.1:'+port+path);
+  await new Promise<void>((resolve,reject)=>{socket!.onopen=()=>resolve();socket!.onerror=()=>reject(new Error('CDP websocket failed'));});
+  socket.onmessage=e=>{const m=JSON.parse(String(e.data));const p=pending.get(m.id);if(p){pending.delete(m.id);if(m.error)p.reject(new Error(m.error.message));else p.resolve(m.result);}};
+  let targetId:string|undefined;
+  for(let i=0;i<150&&!targetId;i++){
+    const {targetInfos}=await cdp('Target.getTargets');
+    targetId=targetInfos.find((v:any)=>v.type==='service_worker'&&v.url.startsWith('chrome-extension://mcimkhafgpcecjdjjiljhljdkaggapfa/'))?.targetId;
+    if(!targetId)await Bun.sleep(100);
+  }
+  assert.ok(targetId,'test extension worker not found');
+  const {sessionId}=await cdp('Target.attachToTarget',{targetId,flatten:true});
+  const worker={evaluate:async (fn:(arg:any)=>any,arg?:any)=>{
+    const r=await cdp('Runtime.evaluate',{expression:'('+fn.toString()+')('+JSON.stringify(arg)+')',awaitPromise:true,returnByValue:true},sessionId);
+    if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);
+    return r.result.value;
+  }};
   focus=Bun.spawn(['powershell.exe','-NoProfile','-Sta','-Command','Add-Type -Path $env:FENO_FOCUS_PROBE; [ForegroundProbe]::Run($env:FENO_FOCUS_DIRECTORY)'],{windowsHide:true,stdout:'inherit',stderr:'inherit',env:{...process.env,FENO_FOCUS_PROBE:probe,FENO_FOCUS_DIRECTORY:root}});
   const ready=join(root,'foreground-ready');
   for(let i=0;!existsSync(ready)&&i<100;i++)await Bun.sleep(100);
@@ -30,7 +59,54 @@ try{
   const {tabId}=await run('open',{url:'http://127.0.0.1:'+server.port+'/'});
   await Bun.sleep(1500);
   const target=await run('tabs');assert.equal(target.windows.flatMap((w:any)=>w.tabs).find((t:any)=>t.tabId===tabId).active,false);
+  const visibility=await worker.evaluate(async id=>{const [r]=await (globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>document.visibilityState});return r.result;},tabId);
+  console.log('OWN_CHROME_VISIBILITY '+visibility);
+  assert.equal(visibility,'hidden');
+  assert.equal(target.windows.find((w:any)=>w.tabs.some((t:any)=>t.tabId===tabId)).focused,false);
+  await worker.evaluate(async id=>(globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>{
+    const state={click:0,mousemove:0,input:0,untrusted:0,visible:0};
+    (globalThis as any).fixtureEvents=state;
+    for(const name of ['click','mousemove','input'] as const)document.addEventListener(name,e=>{state[name]++;if(!e.isTrusted)state.untrusted++;});
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='hidden')state.visible++;});
+  }}),tabId);
   await assert.rejects(run('computer',{tabId,action:'click',x:10,y:10}),/pc_chrome_screenshot_required/);
+  const bench:Record<string,number[]>={click:[],hover:[],type:[],screenshot:[]};
+  const errors:string[]=[];
+  const currentVisibility=()=>worker.evaluate(async id=>{const [r]=await (globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>document.visibilityState});return r.result;},tabId);
+  const measure=async (name:string,fn:()=>Promise<any>)=>{
+    assert.equal(await currentVisibility(),'hidden');
+    const at=performance.now();
+    let result;
+    try{result=await fn();}catch(e){errors.push(name+': '+String(e));}finally{bench[name].push(Math.round(performance.now()-at));}
+    assert.equal(await currentVisibility(),'hidden');
+    return result;
+  };
+  let first;
+  for(let i=0;i<20&&!first;i++)first=await measure('screenshot',()=>run('computer',{tabId,action:'screenshot'}));
+  if(first){
+    const size=await worker.evaluate(async id=>{const [r]=await (globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>({w:innerWidth,h:innerHeight})});return r.result;},tabId);
+    const xy=(x:number,y:number)=>({x:Math.round(x*first.width/size.w),y:Math.round(y*first.height/size.h)});
+    for(let i=0;i<5;i++){
+      await measure('click',()=>run('computer',{tabId,action:'click',...xy(80,110)}));
+      await measure('hover',()=>run('computer',{tabId,action:'hover',...xy(100,120)}));
+      const found=await run('find',{tabId,query:'Write here'});
+      await measure('type',()=>run('type',{tabId,ref:found.nodes[0].ref,text:'x'}));
+    }
+  }
+  for(let i=bench.screenshot.length;i<20;i++)await measure('screenshot',()=>run('computer',{tabId,action:'screenshot'}));
+  const stats=Object.fromEntries(Object.entries(bench).map(([k,v])=>{const s=[...v].sort((a,b)=>a-b);return [k,{count:s.length,median:(s[Math.floor((s.length-1)/2)]+s[Math.floor(s.length/2)])/2,max:s.at(-1)??Infinity,values:v}];}));
+  const events=await worker.evaluate(async id=>{const [r]=await (globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>({...(globalThis as any).fixtureEvents,visibility:document.visibilityState})});return r.result;},tabId);
+  console.log('HIDDEN_CHROME_BENCH '+JSON.stringify({stats,errors,visibility,events}));
+  const sampled=readFileSync(join(root,'foreground.csv'),'utf8').trim().split(/\r?\n/).map(l=>l.split(',')).filter(r=>Number(r[0])>=start);
+  const expectedFocus=readFileSync(ready,'utf8').trim();
+  console.log('HIDDEN_CHROME_FOCUS '+JSON.stringify({samples:sampled.length,changes:sampled.filter(r=>r[1]!==expectedFocus).length,testChromePid:chromeProcess.pid,testChromeForeground:sampled.filter(r=>Number(r[2])===chromeProcess.pid).length}));
+  assert.ok(sampled.length>=5);assert.equal(sampled.filter(r=>r[1]!==expectedFocus).length,0);
+  if(process.env.FENO_BASELINE!=='1'){
+  assert.deepEqual(errors,[]);
+  assert.equal(events.untrusted,0);assert.equal(events.visibility,'hidden');
+  assert.ok(events.click>=10&&events.mousemove>=5&&events.input>=5,'trusted input missing');
+  for(const k of ['click','hover','type']){assert.ok(stats[k].median<=1000&&stats[k].max<=2000,k+' latency');}
+  assert.ok(stats.screenshot.count===20&&stats.screenshot.median<=1500&&stats.screenshot.max<=5000,'screenshot latency');
   const text=await run('read',{tabId,mode:'text'});assert.match(text.text,/Fixture PC2/);
   const shot=await run('computer',{tabId,action:'screenshot'});assert.ok(shot.width>300&&shot.height>300);
   const metrics=await worker.evaluate(async id=>{const [r]=await (globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>({w:innerWidth,h:innerHeight})});return r.result;},tabId);
@@ -54,8 +130,15 @@ try{
   const median=Object.fromEntries(Object.entries(durations).map(([key,values])=>[key,values.sort((a,b)=>a-b)[Math.floor(values.length/2)]]));
   console.log('OWN_CHROME_LATENCIES '+JSON.stringify({median,durations}));
   const nested=await computer('scroll',{...xy(80,380),delta:100});assert.equal(nested.scrollY,100);assert.equal(nested.pageY,0);
-  const rootScroll=await computer('scroll',{...xy(400,150),delta:600});assert.equal(rootScroll.pageY,600);
+  for(let i=1;i<=3;i++){const rootScroll=await computer('scroll',{...xy(400,150),delta:200});assert.equal(rootScroll.pageY,i*200);}
+  await computer('hover',xy(400,150));
   const scrollY=await worker.evaluate(async id=>{const [r]=await (globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>scrollY});return r.result;},tabId);assert.equal(scrollY,600);
+  await worker.evaluate(()=>{(globalThis as any).fixtureCaptureHang=true;});
+  const retryAt=performance.now();
+  const retryShot=await computer('screenshot');
+  const retryMs=Math.round(performance.now()-retryAt);
+  assert.ok(retryShot.width>300&&retryShot.height>300&&retryMs<=5000);
+  console.log('HIDDEN_CHROME_CAPTURE_RETRY '+JSON.stringify({ms:retryMs,width:retryShot.width,height:retryShot.height}));
   await worker.evaluate(()=>{(globalThis as any).fixtureHang=true;});
   await assert.rejects(computer('key',{key:'Enter',timeoutSeconds:1}),/pc_chrome_timeout/);
   await worker.evaluate(()=>{(globalThis as any).fixtureHang=false;});
@@ -71,7 +154,10 @@ try{
   assert.ok(samples.length>=5);assert.equal(samples.filter(r=>r[1]!==expected).length,0,'foreground changed');
   console.log(JSON.stringify({result:'OWN_CHROME_SMOKE_OK',samples:samples.length,foregroundChanges:0,cursor:true,canvas:true,typed:true,activeTabUnchanged:true,scrollY,timeoutRecovery:true,idleDetached:true,medianMs:median,durationsMs:durations,profile:root}));
   assert.ok(Object.values(median).every(ms=>ms<=1500),'median latency target exceeded: '+JSON.stringify(median));
+  }
 }finally{
   if(focus){writeFileSync(join(root,'foreground-stop'),'stop');await focus.exited;}
-  await context.close();server.stop();
+  if(socket){await Promise.race([cdp('Browser.close').catch(()=>{}),Bun.sleep(1500)]);socket.close();if(chromeProcess.exitCode===null)chromeProcess.kill();}
+  else chromeProcess.kill();
+  await chromeProcess.exited;server.stop();
 }

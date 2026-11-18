@@ -97,3 +97,48 @@ Gerçek Chrome for Testing (Chromium 1255), geçici profil ve pasif yerel test s
 - Chrome native host SHA-256: `332c22cb630347eb2e0dae952dc64fdf92d92d15365e51a558e9604c2667f6e2`.
 - Defender önce/sonra: AntivirusEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled dört değer de True. DEV kalıcı izin SHA-256 önce/sonra: `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`.
 - Canlı PC2 araçları kullanılmadı; ana Chrome profili, canlı köprü/izin/config/tüneller ve DEV ayarları değiştirilmedi. Kurucu çalıştırılmadı; paket ayrı test alanına açılıp doğrulandı. Bir sonraki canlı uçtan uca doğrulama kurulumdan sonra yapılmalıdır. Merge, etiket ve CI bekleme yok.
+
+## Devam: gizli sekme hızı (5.1.21)
+
+18.11.2026 — PR #97, `feat/normal-pc2-next-5.0.96`; karşılaştırma tabanı 5.1.20, `b4b0498`.
+
+Chrome for Testing (Chromium 1255), geçici profil, normal pencere ve iki sekme ile gerçek gizli sekme testi yapıldı. Test sekmesinde her işlem başlangıcında ve sonunda `document.visibilityState === 'hidden'` doğrulandı. Eski sürümde fare gecikmesi yeniden üretildi; son karşılaştırma aşağıdadır.
+
+| İşlem | Örnek | 5.1.20 ortanca / en kötü (ms) | 5.1.21 ortanca / en kötü (ms) | Hedef |
+| --- | ---: | ---: | ---: | --- |
+| Click | 5 | 5023 / 5990 | 64 / 366 | Geçti |
+| Hover | 5 | 5046 / 6349 | 43 / 168 | Geçti |
+| Ref ile type | 5 | 5160 / 17741 | 96 / 160 | Geçti |
+| Screenshot | 20 | 162,5 / 401 | 134 / 315 | 20/20, geçti |
+
+Eski sürümün 20 ekran görüntüsü de başarılıydı; canlı 5.1.20'deki 30 saniyelik aralıklı takılma doğal olarak yeniden oluşmadı. Yapay ilk yakalama takılması son sürümde ikinci denemeyle 1946 ms içinde aşıldı. Eski sürümün son ölçümünde 489 ön plan örneğinde 127 değişiklik görüldüğü için odak doğrulaması başarısız oldu; test Chrome PID'si hiçbir örnekte ön planda değildi. Son sürümün ölçümünde 32, bütün gerçek gizli sekme dumanında 141 örnekte 0 ön plan değişikliği oldu; etkin sekme değişmedi. 10 click, 5 input ve 15 mousemove olayının tamamı gerçek (isTrusted), sahte JS click yok.
+
+### Uygulama ve doğrulama
+
+- Geçici screencast tek başına fareyi hızlandırmadı; yalnız odak emülasyonu yaklaşık 1 saniye sürdü. İkisi birlikte hedefi karşıladı. Fare olayları sıralı gönderilip birlikte bekleniyor. Odak emülasyonu sırasında sayfa geçici olarak visible bildirdi (15 kez); işlem sonunda hidden geri geldi. OS pencere odağı ve etkin sekme değişmedi.
+- Screencast normal, hata ve iptal yolunda durdurulur; durdurma takılırsa debugger ayrılır. Odak emülasyonu da temizlenir.
+- Screenshot ilk yakalama için 1300 ms iç sınır kullanır; hata halinde sınırlı ikinci deneme yapılır. Chrome `fromSurface:false` seçeneğini reddettiği için güvenli yeniden denemede surface=true ve gizli sekmede geçici odak emülasyonu kullanıldı.
+- Sayfa kaydırması koordinat ref'ini eskitmez; belge, görünüm boyutu, ölçek veya DPR değişince eski ref reddedilir. Üç ardışık scroll ve ardından hover doğrulandı. Araç açıklamasına yeni ekran görüntüsü alma notu eklendi.
+- Gerçek duman: `OWN_CHROME_SMOKE_OK`; scrollY=600, imleç, canvas, yazma, zaman aşımı sonrası toparlanma, boşta debugger ayrılması ve etkin sekme korunması başarılı. Ölçüm uzantı engine üzerinden yapıldı; canlı MCP/native transport uçtan uca denenmedi.
+
+| Kapı | Sonuç |
+| --- | --- |
+| Odaklı Node | 7 başarılı, 0 hata |
+| Odaklı Bun | 14 başarılı, 0 hata; 172 doğrulama |
+| Kök Bun | 1230 başarılı, 5 atlanan, 0 hata; 7801 doğrulama |
+| Launcher (ayrı süreç) | Node 435 başarılı, 3 atlanan, 0 hata; Bun 43 başarılı, 0 hata |
+| Kök ve launcher typecheck | İkisi de exit 0 |
+| Sürüm | VERSION_SYNC_OK 5.1.21 bun@1.4.0; manifest dahil |
+| Paket | app:package exit 0 |
+| Gerçek paket açılışı | PACKAGED_LAUNCHER_SMOKE_OK 5.1.21 win32/x64; runtimeVerified=true, cdpStatus=200, runtimeStartupVerified=true, pcServiceStarted=true |
+| Paket uzantısı ve iki yardımcı | PACKAGED_CHROME_EXTENSION_OK 5.1.21; iki PACKAGED_HELPER_SHA256_OK |
+
+### Paket ve güvenlik
+
+`launcher/artifacts/feno-bridge-5.1.21-win-x64.exe` — 162.434.616 bayt.
+
+- Kurucu SHA-256: `c8471c936a20d36e5863b53182a6768b4226154d9ed3b883fb9a7f50c947d86e`; yanındaki `.exe.sha256` oluşturuldu ve eşleşme doğrulandı.
+- Windows yardımcı SHA-256: `39a62b39af00fc7a2208d4ade35ff32d66a9292421dde4389504757b5ac2ca81`.
+- Chrome native host SHA-256: `c28f1dc49a549d96a090a625b515d9d0c1efde85a73d680068b588cb187941cb`.
+- Defender önce/sonra dört koruma değeri True, imza 1.463.344.0. DEV kalıcı izin dosyası önce/sonra SHA-256: `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`.
+- Canlı PC2 araçları, kullanıcı Chrome profili, canlı kurulum, tüneller ve izin ayarları kullanılmadı/değiştirilmedi. Kurulum, merge, etiket ve CI bekleme yapılmadı.

@@ -9,7 +9,7 @@ export function allowedUrl(raw) {
   } catch { return false; }
 }
 const keyMap={ENTER:['Enter','Enter',13],ESC:['Escape','Escape',27],TAB:['Tab','Tab',9],SPACE:[' ','Space',32],BACKSPACE:['Backspace','Backspace',8],DELETE:['Delete','Delete',46],UP:['ArrowUp','ArrowUp',38],DOWN:['ArrowDown','ArrowDown',40],LEFT:['ArrowLeft','ArrowLeft',37],RIGHT:['ArrowRight','ArrowRight',39],HOME:['Home','Home',36],END:['End','End',35],PAGEUP:['PageUp','PageUp',33],PAGEDOWN:['PageDown','PageDown',34]};
-export function createChromeEngine(chrome,{idleMs=15000}={}) {
+export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300}={}) {
   const sessions=new Map(), shots=new Map(), refs=new Map(), cursors=new Map();
   let epoch=0;
   const invalidate=id=>{shots.delete(id);refs.delete(id);};
@@ -48,6 +48,48 @@ export function createChromeEngine(chrome,{idleMs=15000}={}) {
     await tab(id);
     const result=await wait(chrome.debugger.sendCommand({tabId:id},method,params));check();return result;
   }
+  async function deadline(promise,ms) {
+    let timer;
+    try {
+      return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('pc_chrome_timeout')),ms);})]);
+    } finally {clearTimeout(timer);}
+  }
+  const bounded=(id,method,params,ms)=>deadline(command(id,method,params),ms);
+  async function frames(id,fn) {
+    const hidden=await page(id,'visibility')==='hidden';
+    if(!hidden)return fn();
+    const session=sessions.get(id);
+    session.screencast=true;
+    try {
+      await bounded(id,'Page.startScreencast',{format:'jpeg',quality:20,maxWidth:160,maxHeight:120,everyNthFrame:1},600);
+      return await fn();
+    } finally {
+      // Cleanup must work even after the calling signal has been aborted.
+      // Detach the debugger if Chrome does not acknowledge stop.
+      if(sessions.get(id)===session){
+        try{await deadline(chrome.debugger.sendCommand({tabId:id},'Page.stopScreencast',{}),400);}
+        catch{await detach(id);}
+        finally{session.screencast=false;}
+        if(session.reset)await detach(id);
+      }
+    }
+  }
+  async function focused(id,fn) {
+    const session=sessions.get(id);
+    try{
+      await bounded(id,'Emulation.setFocusEmulationEnabled',{enabled:true},600);
+      return await fn();
+    }finally{
+      if(sessions.get(id)===session){
+        try{await deadline(chrome.debugger.sendCommand({tabId:id},'Emulation.setFocusEmulationEnabled',{enabled:false}),400);}
+        catch{if(session.screencast)session.reset=true;else await detach(id);}
+      }
+    }
+  }
+  async function mouseFrames(id,fn) {
+    if(await page(id,'visibility')!=='hidden')return fn();
+    return frames(id,()=>focused(id,fn));
+  }
   async function using(id,fn) {
     await tab(id);
     let s=sessions.get(id);
@@ -69,13 +111,25 @@ export function createChromeEngine(chrome,{idleMs=15000}={}) {
     cursors.set(id,p);
     await page(id,'cursor',{...p,click});
   }
-  const same=(a,b)=>a&&b&&a.id===b.id&&['width','height','pageX','pageY','scale','dpr'].every(k=>Math.abs(a[k]-b[k])<0.01);
+  const same=(a,b)=>a&&b&&a.id===b.id&&['width','height','scale','dpr'].every(k=>Math.abs(a[k]-b[k])<0.01);
   async function screenshot(id,includeCursor) {
     shots.delete(id);
     const v=await page(id,'viewport');
     if(!includeCursor&&cursors.has(id))await page(id,'cursor',{hide:true});
     let shot;
-    try{shot=await command(id,'Page.captureScreenshot',{format:'png',fromSurface:true,captureBeyondViewport:false});}
+    try{
+      const params={format:'png',fromSurface:true,captureBeyondViewport:false};
+      shot=await frames(id,async()=>{
+        try{return await bounded(id,'Page.captureScreenshot',params,captureMs);}
+        catch{
+          check();
+          const retry=()=>bounded(id,'Page.captureScreenshot',params,captureMs);
+          // All modern Chrome screenshots must come from the surface. Focus
+          // emulation briefly wakes a hidden renderer without selecting its tab.
+          return sessions.get(id)?.screencast?focused(id,retry):retry();
+        }
+      });
+    }
     finally{if(!includeCursor&&cursors.has(id))await page(id,'cursor',{restore:true}).catch(()=>{});}
     const bytes=Uint8Array.from(atob(shot.data.slice(0,32)),c=>c.charCodeAt(0));
     const view=new DataView(bytes.buffer),width=view.getUint32(16),height=view.getUint32(20);
@@ -97,11 +151,17 @@ export function createChromeEngine(chrome,{idleMs=15000}={}) {
   }
   const mouse=(id,type,p,extra={})=>command(id,'Input.dispatchMouseEvent',{type,...p,...extra});
   async function click(id,p,button='left',count=1) {
-    await cursor(id,p,true);await mouse(id,'mouseMoved',p);
-    for(let i=1;i<=count;i++) {
-      await mouse(id,'mousePressed',p,{button,buttons:button==='right'?2:1,clickCount:i});
-      await mouse(id,'mouseReleased',p,{button,buttons:0,clickCount:i});
-    }
+    await cursor(id,p,true);
+    await mouseFrames(id,async()=>{
+      await tab(id);
+      const events=[{type:'mouseMoved',...p}];
+      for(let i=1;i<=count;i++){
+        events.push({type:'mousePressed',...p,button,buttons:button==='right'?2:1,clickCount:i});
+        events.push({type:'mouseReleased',...p,button,buttons:0,clickCount:i});
+      }
+      // CDP sends events in order; allow their acknowledgements to overlap.
+      await wait(Promise.all(events.map(params=>chrome.debugger.sendCommand({tabId:id},'Input.dispatchMouseEvent',params))));
+    });
   }
   async function key(id,k) {
     k=String(k).toUpperCase();if(k==='ESCAPE')k='ESC';
@@ -117,14 +177,16 @@ export function createChromeEngine(chrome,{idleMs=15000}={}) {
     if(!p&&!['type','key'].includes(a.action))fail('pc_invalid_argument');
     let sensitive=p?await guard(id,p):false;
     if(['click','double_click','right_click'].includes(a.action))await click(id,p,a.action==='right_click'?'right':'left',a.action==='double_click'?2:1);
-    else if(a.action==='hover'){await cursor(id,p);await mouse(id,'mouseMoved',p);}
+    else if(a.action==='hover'){await cursor(id,p);await mouseFrames(id,()=>mouse(id,'mouseMoved',p));}
     else if(a.action==='scroll'){await cursor(id,p);return {ok:true,...await page(id,'scroll',{point:p,deltaX:a.deltaX??0,delta:a.delta??600})};}
     else if(a.action==='drag'){
       const end=await point(id,a.endX,a.endY);sensitive=(await guard(id,end))||sensitive;
-      await cursor(id,p,true);await mouse(id,'mouseMoved',p);await mouse(id,'mousePressed',p,{button:'left',buttons:1,clickCount:1});
+      await cursor(id,p,true);await mouseFrames(id,async()=>{
+      await mouse(id,'mouseMoved',p);await mouse(id,'mousePressed',p,{button:'left',buttons:1,clickCount:1});
       let last=p;
       try{for(let i=1;i<=12;i++){last={x:p.x+(end.x-p.x)*i/12,y:p.y+(end.y-p.y)*i/12};await cursor(id,last);await mouse(id,'mouseMoved',last,{button:'left',buttons:1});}}
       finally{await mouse(id,'mouseReleased',last,{button:'left',buttons:0,clickCount:1});}
+      });
     } else if(a.action==='type'||a.action==='key'){
       if(sensitive)return {ok:false,warning};
       if(p)await click(id,p);
@@ -177,6 +239,10 @@ export function createChromeEngine(chrome,{idleMs=15000}={}) {
   chrome.debugger.onDetach.addListener(({tabId:id})=>{
     const s=sessions.get(id);if(s)clearTimeout(s.timer);sessions.delete(id);
     void chrome.action.setBadgeText({tabId:id,text:''}).catch(()=>{});
+  });
+  chrome.debugger.onEvent?.addListener((source,method,params)=>{
+    if(method==='Page.screencastFrame'&&sessions.get(source.tabId)?.screencast)
+      void chrome.debugger.sendCommand(source,'Page.screencastFrameAck',{sessionId:params.sessionId}).catch(()=>{});
   });
   return {run,disconnect:async()=>{epoch++;shots.clear();refs.clear();cursors.clear();await Promise.all([...sessions.keys()].map(detach));}};
 }

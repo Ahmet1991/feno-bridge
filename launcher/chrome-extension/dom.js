@@ -17,6 +17,7 @@ export function pageOperation(action, args = {}) {
     return { id:state.id, width:v?.width || innerWidth, height:v?.height || innerHeight, pageX:v?.pageLeft ?? scrollX, pageY:v?.pageTop ?? scrollY, scale:v?.scale || 1, dpr: devicePixelRatio };
   }
   if (action === 'guard') return deep(args.point);
+  if (action === 'visibility') return document.visibilityState;
   if (action === 'scroll') {
     const root=document.scrollingElement;
     let e=document.elementFromPoint(args.point.x,args.point.y);
