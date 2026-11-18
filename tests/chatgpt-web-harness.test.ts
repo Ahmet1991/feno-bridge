@@ -2934,7 +2934,7 @@ describe("ChatGPT outer-native harness v4", () => {
         "pc_browser_screenshot", "pc_browser_scroll", "pc_browser_show", "pc_browser_tabs", "pc_browser_type",
         "pc_cancel_job",
         "pc_capture_full_screen", "pc_capture_screen",
-        "pc_chrome_click", "pc_chrome_computer", "pc_chrome_find", "pc_chrome_navigate", "pc_chrome_open", "pc_chrome_read", "pc_chrome_tabs", "pc_chrome_type",
+        "pc_chrome_click", "pc_chrome_close", "pc_chrome_computer", "pc_chrome_console", "pc_chrome_find", "pc_chrome_form", "pc_chrome_go", "pc_chrome_js", "pc_chrome_navigate", "pc_chrome_network", "pc_chrome_open", "pc_chrome_read", "pc_chrome_tabs", "pc_chrome_type", "pc_chrome_upload",
         "pc_clipboard_read", "pc_clipboard_write",
         "pc_create_directory", "pc_create_file",
         "pc_desktop_input", "pc_job_logs", "pc_job_status", "pc_launch_app",

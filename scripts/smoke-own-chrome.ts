@@ -149,6 +149,45 @@ try{
   await Bun.sleep(15500);
   const detached=await worker.evaluate(async id=>(globalThis as any).fixtureDetached.filter((d:any)=>d.tabId===id),tabId);
   assert.ok(detached.some((d:any)=>d.at>=idleStart+14500),'extension debugger detach did not complete after idle: '+JSON.stringify(detached));
+  // All seven new tools use the same temporary profile and foreground sampler.
+  const extra:Record<string,number[]>={};
+  const timed=async(name:string,args:any)=>{
+    assert.equal(await currentVisibility(),'hidden');const at=performance.now();
+    const result=await run(name,{tabId,...args});(extra[name]??=[]).push(Math.round(performance.now()-at));
+    assert.equal(await currentVisibility(),'hidden');return result;
+  };
+  const base='http://127.0.0.1:'+server.port+'/';
+  const ownedTab=await run('open',{url:base});await Bun.sleep(300);
+  await assert.rejects(run('go',{tabId:ownedTab.tabId,action:'back'}),/pc_chrome_rejected/);
+  const userTab=await worker.evaluate(async url=>(globalThis as any).chrome.tabs.create({url,active:false}),base);await Bun.sleep(300);
+  await assert.rejects(run('close',{tabId:userTab.id}),/pc_chrome_rejected/);
+  await timed('close',{tabId:ownedTab.tabId});await timed('close',{tabId:userTab.id,userTab:true});
+  assert.ok(!(await run('tabs')).windows.flatMap((w:any)=>w.tabs).some((t:any)=>[ownedTab.tabId,userTab.id].includes(t.tabId)));
+  await run('navigate',{tabId,url:base+'?history=2'});await Bun.sleep(500);
+  const pageUrl=async()=>worker.evaluate(async id=>{const [r]=await (globalThis as any).chrome.scripting.executeScript({target:{tabId:id},func:()=>location.href});return r.result;},tabId);
+  await timed('go',{action:'back'});await Bun.sleep(500);assert.equal(await pageUrl(),base);
+  await timed('go',{action:'forward'});await Bun.sleep(500);assert.equal(await pageUrl(),base+'?history=2');
+  await timed('js',{code:'globalThis.reloadProbe=123'});await timed('go',{action:'reload'});await Bun.sleep(500);
+  assert.equal(JSON.parse((await timed('js',{code:'typeof globalThis.reloadProbe'})).json),'undefined');
+  const fixtureHtml='<div style="position:absolute;top:450px;left:30px"><select aria-label="Choice"><option value="a">Alpha</option><option value="b">Beta</option></select><select aria-label="Multiple choices" multiple><option value="a">Alpha</option><option value="b">Beta</option></select><input type="checkbox" aria-label="Check me"><input type="radio" aria-label="Radio me"><input type="date" aria-label="Date me"><input type="file" aria-label="Direct file"><input id="hiddenFile" type="file" style="display:none"><button aria-label="Choose file" onclick="document.getElementById(\'hiddenFile\').click()">Choose file</button></div>';
+  await timed('js',{code:'document.body.insertAdjacentHTML("beforeend",'+JSON.stringify(fixtureHtml)+');globalThis.formEvents=[];for(const name of ["input","change"])document.addEventListener(name,e=>formEvents.push(name+":"+e.target.getAttribute("aria-label")));true'});
+  const findRef=async(query:string)=>(await run('find',{tabId,query})).nodes[0].ref;
+  for(const [name,value] of [['Choice','Beta'],['Multiple choices',['a','b']],['Check me',true],['Radio me',true],['Date me','2026-11-18']] as const)await timed('form',{ref:await findRef(name),value});
+  const formResult=JSON.parse((await timed('js',{code:'({values:[...document.querySelectorAll("select")].map(x=>[...x.selectedOptions].map(o=>o.value)),checked:document.querySelector("[type=checkbox]").checked,radio:document.querySelector("[type=radio]").checked,date:document.querySelector("[type=date]").value,events:formEvents})'})).json);
+  assert.deepEqual(formResult.values,[['b'],['a','b']]);assert.equal(formResult.checked,true);assert.equal(formResult.radio,true);assert.equal(formResult.date,'2026-11-18');assert.equal(formResult.events.length,10);
+  const file=join(root,'upload-fixture.txt');writeFileSync(file,'fixture upload');
+  for(const name of ['Direct file','Choose file']){
+    const uploaded=await timed('upload',{ref:await findRef(name),paths:[file]});assert.deepEqual(uploaded.files,[{name:'upload-fixture.txt',size:14}]);
+  }
+  const fileState=JSON.parse((await timed('js',{code:'[...document.querySelectorAll("input[type=file]")].map(e=>[...e.files].map(f=>({name:f.name,size:f.size})))'})).json);
+  assert.deepEqual(fileState,[[{name:'upload-fixture.txt',size:14}],[{name:'upload-fixture.txt',size:14}]]);
+  await timed('console',{clear:true});await timed('network',{});
+  await timed('js',{code:'console.error("fixture-console-error"); fetch("/?token=fixture-secret",{headers:{"X-Test-Token":"fixture-secret"}}).then(r=>r.text()).then(t=>t.length)'});
+  await Bun.sleep(300);
+  assert.ok((await timed('console',{onlyErrors:true,pattern:'fixture-console-error'})).entries.length>0);
+  const network=await timed('network',{urlPattern:'token='});assert.ok(network.entries.length>0);assert.match(JSON.stringify(network),/REDACTED/);assert.doesNotMatch(JSON.stringify(network),/fixture-secret/);
+  const response=await timed('network',{requestId:network.entries.at(-1).requestId});assert.match(response.body,/Fixture PC2/);
+  console.log('OWN_CHROME_EXTRA_OK '+JSON.stringify({durationsMs:extra,formResult,fileState,networkMasked:true}));
   const end=Date.now(),expected=readFileSync(ready,'utf8').trim();
   const samples=readFileSync(join(root,'foreground.csv'),'utf8').trim().split(/\r?\n/).map(l=>l.split(',')).filter(r=>Number(r[0])>=start&&Number(r[0])<=end);
   assert.ok(samples.length>=5);assert.equal(samples.filter(r=>r[1]!==expected).length,0,'foreground changed');

@@ -142,3 +142,60 @@ Eski sürümün 20 ekran görüntüsü de başarılıydı; canlı 5.1.20'deki 30
 - Chrome native host SHA-256: `c28f1dc49a549d96a090a625b515d9d0c1efde85a73d680068b588cb187941cb`.
 - Defender önce/sonra dört koruma değeri True, imza 1.463.344.0. DEV kalıcı izin dosyası önce/sonra SHA-256: `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`.
 - Canlı PC2 araçları, kullanıcı Chrome profili, canlı kurulum, tüneller ve izin ayarları kullanılmadı/değiştirilmedi. Kurulum, merge, etiket ve CI bekleme yapılmadı.
+
+## Devam: eksik Chrome araçları (5.1.22)
+
+18.11.2026 — PR #97, `feat/normal-pc2-next-5.0.96`; başlangıç tabanı `70b0289` (5.1.21), origin ile 0/0.
+
+Yedi araç uzantı engine/DOM/worker, native broker, PC istemcisi ve MCP şemalarına eklendi. Araç isimleri istenen biçimde korundu. `tools/list` sonucu `{tools}` JSON serileştirmesinde 49.247 UTF-8 bayt, 66 araç; bunların 15'i kendi Chrome araçları. `pc_chrome_computer` açıklamasında yeni araçlara yönlendirme bulunuyor.
+
+| Araç | İşlev | Gerçek test süresi (ms) |
+| --- | --- | --- |
+| `pc_chrome_close` | Sekme kapatma, sahiplik ve sabit/son sekme denetimi | 12, 14 |
+| `pc_chrome_go` | Geri, ileri, yenileme; eski ref ve ekran görüntüsünü geçersiz kılma | 3, 5, 5 |
+| `pc_chrome_form` | Tekli/çoklu seçim, checkbox, radyo, tarih ve diğer form değerleri | 3, 3, 3, 2, 3 |
+| `pc_chrome_upload` | Doğrudan dosya alanı ve yakalanan dosya seçicisi | 10, 55 |
+| `pc_chrome_js` | Beklenen Promise, JSON sonucu, istisna ve süre sınırı | 7, 6, 4, 3, 4, 30 |
+| `pc_chrome_console` | Filtrelenebilir konsol/istisna/kaynak hatası kaydı | 7, 1 |
+| `pc_chrome_network` | Ağ listesi, maskelenen üstbilgiler ve metin yanıtı | 2, 2, 2 |
+
+Chrome for Testing (Chromium 1255) normal pencere, ayrı geçici profil ve yerel test sayfasında `OWN_CHROME_EXTRA_OK` ve `OWN_CHROME_SMOKE_OK` elde edildi. Ön plan örnekleyicisinde 135 örnek, sıfır odak değişikliği; etkin sekme korunuyor. Ana ölçümde gizli sekme click/hover/ref type/screenshot ortancaları 26/31/34/97,5 ms (20 ekran görüntüsü, hata yok). Sonraki ölçümde click/hover/type/key/screenshot ortancaları 31/32/4/4/111 ms; yapay yakalama takılması 1394 ms'de aşıldı. Eski fare odak emülasyonu sırasında sayfa 15 kez geçici visible bildirdi; işlem sonunda hidden, OS odağı değişmedi.
+
+Formda tekli b, çoklu a/b, checkbox ve radyo true, 2026-11-18 tarihi ve on input/change olayı doğrulandı. İki yükleme yolunda da sayfa `upload-fixture.txt` adını ve 14 bayt boyutunu gördü; CDP yerel dosya seçicisini yakaladı, ön plan değişmedi. JS sonucu ve istisnası, ağdaki token maskelemesi ve metin yanıtı, konsol hatası, navigasyon/sekme kapatma ve geçmiş yok denetimi doğrulandı. Ölçümler geçici profilde uzantı engine üzerinden, canlı MCP uçtan uca gecikmesi değil.
+
+### Güvenlik ve sınırlar
+
+- Tam yetki, `pc2-normal` ve açık Chrome erişimi mevcut kuraldan gelir. Engelli adresler ve olmayan sekmeler hata döndürür. Odak değiştiren yasak API'ler kullanılmaz.
+- Açılan sekmelerin sahipliği uzantının yerel deposunda saklanır, worker yeniden başlatmada korunur; Chrome oturumu yeniden başladığında eski sekme kimlikleri temizlenir. Kullanıcı sekmesinde `userTab:true` gerekir. Sabit, son ve ayrıca etkin sekme kapatılmaz: son/etkin sekmenin kapanması pencereyi veya başka sekmeyi etkinleştirebilir.
+- Form işlemi şifre/ödeme guard'ını kullanır; seçenek yoksa seçenekler listelenir. JS sayfasında hassas alan kontrolü bulunur; keyfi JS'nin dinamik/özel alanları ve bütün siteleri kapsayan eksiksiz bir güvenlik sınırı olduğu iddia edilmez. Web içeriği güvenilmezdir ve sayfa metni komut değildir.
+- Yükleme için pc_read_file ile aynı native dosya oturumu/kök denetimi, normal dosya, 1–10 dosya, dosya başına en çok 100 MB, junction/hardlink ve kimlik/credential yolları/içerikleri denetimi uygulanır. Dosya tutamaçları CDP kabulüne kadar açık tutulur. Dosya seçici yakalama başlamadan düğmeye tıklanmaz; normal, hata ve iptal sonrasında yakalama kapatılır.
+- Konsol ve ağ sekme başına 500 kayıt, alan adı değişiminde temizleme, iki dakika boşta kalınca debugger ayrılması; bu süre/sınır sahte saatli birim testiyle denendi. Gerçek duman mevcut 15 saniye sıradan debugger ayrılmasını doğruladı. İstenen Authorization/Cookie/Set-Cookie/Proxy-Authorization/X-*-Token ve URL parametreleri REDACTED; keyfi konsol metni veya yanıt gövdesindeki tüm olası sırların otomatik maskelenmesi garanti edilmez.
+- JS süre aşımı ve CDP iptali sonrası kontrol devam eder, hassas alan kontrolü ve metin sınırı korunur. Kullanıcının gerçek Chrome profili ve canlı izin/kurulum/tüneller kullanılmadı. Canlı uçtan uca doğrulama kurulumdan sonra ayrı yapılabilir.
+
+### Test kapıları
+
+| Kapı | Sonuç |
+| --- | --- |
+| Kırmızı → yeşil, odaklı Node | İlk yeni testte 2 hata (`pc_invalid_argument`); son koşu 11 başarılı, 0 hata |
+| Odaklı Bun | 35 başarılı, 0 hata; 277 doğrulama |
+| Kök Bun | Son ayrı koşu 1231 başarılı, 5 atlanan, 0 hata; 7811 doğrulama, 313,86 sn, exit 0. İlk koşu 1230 başarılı, 5 atlanan, 1 hata (eski MCP araç listesi düzeltildi); ikinci koşu 1230 başarılı, 5 atlanan, 1 hata (eski ekran görüntüsü toplama testinde 12 yerine 4 çağrı) |
+| Launcher | Node 439 başarılı, 3 atlanan, 0 hata; Bun 43 başarılı, 0 hata; doğrudan komut exit 0 |
+| Kök/launcher typecheck | İkisi de exit 0 |
+| Sürüm | `VERSION_SYNC_OK 5.1.22 bun@1.4.0` |
+| `git diff --check` | Exit 0; LF/CRLF çalışma kopyası uyarıları |
+| Gizli sekme dumanı | `OWN_CHROME_EXTRA_OK`, `OWN_CHROME_SMOKE_OK` |
+| Paket | `bun run app:package`, exit 0 |
+| Paket açılışı | `PACKAGED_LAUNCHER_SMOKE_OK` 5.1.22 win32/x64, runtimeVerified=true, cdpStatus=200, runtimeStartupVerified=true, pcServiceStarted=true |
+| Paket uzantısı/yardımcıları | `PACKAGED_CHROME_EXTENSION_OK 5.1.22`, iki `PACKAGED_HELPER_SHA256_OK` |
+
+Launcher ilk günlük yönlendirmesi PowerShell NativeCommandError (exit 1) döndürdü, test sayıları sıfır hataydı; doğrudan ayrı koşu exit 0. Kök ikinci koşusundaki ekran görüntüsü testi tek başına tekrar edildi (1 başarılı, 0 hata); diğer testlerle ve paketleme ile zamanlama etkileşimi olası, kesin neden doğrulanmadı. Ürün kodunu veya bu eski testin beklentisini değiştirmeden, paketleme bittikten sonra kök test tek başına tekrar çalıştırıldı ve tamamı geçti.
+
+### Paket ve korunmuş durum
+
+`launcher/artifacts/feno-bridge-5.1.22-win-x64.exe` — 162.440.576 bayt.
+
+- Kurucu SHA-256: `5f6088d4637cc13dbb07f1977e6f4ea1cc989d0cd35ab96b2d072bbb5cb70226`; yanındaki `.exe.sha256` oluşturuldu, yeniden hesaplanan değer ile eşleşme True.
+- Windows yardımcısı SHA-256: `a9c642bbb0b58bee4e6a1e90c07aff3d5ea333dd27734cd2358ee29023acf5a1`.
+- Chrome native host SHA-256: `77440d5de69d12b3aefff130bbd2e34ff8517ae3d3fd7391020d3032d50d7256`.
+- Defender önce/sonra AntivirusEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled dört değer True; imza 1.463.344.0. DEV kalıcı izin SHA-256 önce/sonra `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`.
+- Kurucu çalıştırılmadı; paket geçici test alanında açılıp doğrulandı. Canlı PC2 araçları, ana Chrome, canlı köprü/config/izin, tüneller, DEV, Defender ayarları ve G: değiştirilmedi. Merge/etiket/CI bekleme yok.

@@ -1,5 +1,7 @@
 import {pageOperation} from './dom.js';
-const fail = code => { throw new Error(code); };
+import {createRecord,recordEvent,textualMime,boundedJson,consoleEntries,networkEntries} from './recording.js';
+const fail = (code,reason) => { throw Object.assign(new Error(code),reason?{reason}:{}); };
+const reject=reason=>fail('pc_chrome_rejected',reason);
 const warning = 'Şifre ve ödeme alanları için kullanıcı onayı gerekir.';
 export function allowedUrl(raw) {
   try {
@@ -9,8 +11,15 @@ export function allowedUrl(raw) {
   } catch { return false; }
 }
 const keyMap={ENTER:['Enter','Enter',13],ESC:['Escape','Escape',27],TAB:['Tab','Tab',9],SPACE:[' ','Space',32],BACKSPACE:['Backspace','Backspace',8],DELETE:['Delete','Delete',46],UP:['ArrowUp','ArrowUp',38],DOWN:['ArrowDown','ArrowDown',40],LEFT:['ArrowLeft','ArrowLeft',37],RIGHT:['ArrowRight','ArrowRight',39],HOME:['Home','Home',36],END:['End','End',35],PAGEUP:['PageUp','PageUp',33],PAGEDOWN:['PageDown','PageDown',34]};
-export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300}={}) {
-  const sessions=new Map(), shots=new Map(), refs=new Map(), cursors=new Map();
+export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdleMs=120000}={}) {
+  const sessions=new Map(), shots=new Map(), refs=new Map(), cursors=new Map(), records=new Map(), choosers=new Map();
+  const ownedKey='fenoOwnedTabs';
+  // Tab IDs are stable during a browser session, including an extension reload.
+  // Clear persisted ownership on a new browser startup to avoid reused tab IDs.
+  async function owned(){return (await chrome.storage.local.get(ownedKey))[ownedKey]||[];}
+  let storageQueue=Promise.resolve();
+  function changeOwned(id,add){const work=storageQueue.catch(()=>{}).then(async()=>{const ids=(await owned()).filter(x=>x!==id);if(add)ids.push(id);await chrome.storage.local.set({[ownedKey]:ids});});storageQueue=work;return work;}
+  function resetOwnership(){const work=storageQueue.catch(()=>{}).then(()=>chrome.storage.local.set({[ownedKey]:[]}));storageQueue=work;return work;}
   let epoch=0;
   const invalidate=id=>{shots.delete(id);refs.delete(id);};
   async function detach(id) {
@@ -104,7 +113,51 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300}={}) {
       check();
       return await fn();
     } finally {
-      if(sessions.get(id)===s){if(signal?.aborted||epoch!==runEpoch){invalidate(id);await detach(id);}else s.timer=setTimeout(()=>void detach(id),idleMs);}
+      if(sessions.get(id)===s){if(signal?.aborted||epoch!==runEpoch){invalidate(id);await detach(id);}else s.timer=setTimeout(()=>void detach(id),s.recording?recordIdleMs:idleMs);}
+    }
+  }
+  function touch(id){const s=sessions.get(id);if(s?.recording){clearTimeout(s.timer);s.timer=setTimeout(()=>void detach(id),recordIdleMs);}}
+  async function recording(id,domain){
+    let r=records.get(id);if(!r||r.domain!==domain){r=createRecord(domain);records.set(id,r);}
+    const s=sessions.get(id);if(!s.recording){
+      // Response handles belong to the previous debugger attachment.
+      for(const e of r.requests.values())e.finished=false;
+      s.recording=true;
+      try{await command(id,'Runtime.enable');await command(id,'Log.enable');await command(id,'Network.enable',{maxTotalBufferSize:8*1024*1024,maxResourceBufferSize:1024*1024});}
+      catch(e){await detach(id);throw e;}
+    }
+    return r;
+  }
+  async function upload(id,a){
+    const marker=crypto.randomUUID();
+    const target=await page(id,'uploadTarget',{ref:a.ref,documentId:refs.get(id),marker});
+    if(!target)fail('pc_chrome_ref_stale');
+    if(target.sensitive)reject(warning);
+    let node;
+    try{
+      if(target.direct){
+        const {root}=await command(id,'DOM.getDocument');
+        const found=await command(id,'DOM.querySelector',{nodeId:root.nodeId,selector:'input[data-feno-upload="'+marker+'"]'});
+        if(!found.nodeId)fail('pc_chrome_ref_stale');node={nodeId:found.nodeId};
+      }else{
+        let resolve;const opened=new Promise(r=>{resolve=r;});choosers.set(id,resolve);
+        // Do not click until the interception is acknowledged by Chrome.
+        await command(id,'Page.enable');
+        await command(id,'Page.setInterceptFileChooserDialog',{enabled:true});
+        const p=await page(id,'ref',{ref:a.ref,documentId:refs.get(id)});if(!p)fail('pc_chrome_ref_stale');
+        if(p.sensitive||await guard(id,p))reject(warning);
+        await click(id,{x:p.x,y:p.y});
+        const event=await wait(deadline(opened,Math.min(5000,Math.max(500,(a.timeoutSeconds||30)*1000-1000))));
+        if(!event.backendNodeId)reject('Dosya seçici girdisi bulunamadı.');node={backendNodeId:event.backendNodeId};
+      }
+      await command(id,'DOM.setFileInputFiles',{...node,files:a.paths});
+      const {object}=await command(id,'DOM.resolveNode',node);
+      try{const {result}=await command(id,'Runtime.callFunctionOn',{objectId:object.objectId,functionDeclaration:'function(){return Array.from(this.files||[],f=>({name:f.name,size:f.size}));}',returnByValue:true});return {files:result.value};}
+      finally{await command(id,'Runtime.releaseObject',{objectId:object.objectId}).catch(()=>{});}
+    }finally{
+      choosers.delete(id);
+      if(target.direct)await deadline(chrome.scripting.executeScript({target:{tabId:id},func:pageOperation,args:['uploadCleanup',{marker}],world:'ISOLATED'}),600).catch(()=>{});
+      else if(sessions.has(id))try{await deadline(chrome.debugger.sendCommand({tabId:id},'Page.setInterceptFileChooserDialog',{enabled:false}),600);}catch{await detach(id);}
     }
   }
   async function cursor(id,p,click=false) {
@@ -202,21 +255,58 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300}={}) {
     }
     if(action==='open'){
       if(!allowedUrl(a.url))fail('pc_chrome_blocked_page');
-      const t=await wait(chrome.tabs.create({url:a.url,active:false}));check();return {tabId:t.id,domain:new URL(a.url).hostname};
+      const t=await wait(chrome.tabs.create({url:a.url,active:false}));check();await changeOwned(t.id,true);return {tabId:t.id,domain:new URL(a.url).hostname};
     }
     const id=a.tabId,t=await tab(id),domain=new URL(t.url).hostname;
+    touch(id);
+    if(action==='close'){
+      const canClose=async t=>{if(t.pinned)reject('Sabitlenmiş sekme kapatılamaz.');
+        if((await wait(chrome.tabs.query({windowId:t.windowId}))).length<=1)reject('Pencerenin son sekmesi kapatılamaz.');
+        if(t.active)reject('Etkin sekme kapatılamaz; arka plandaki sekmeyi seçin.');};
+      await canClose(t);await storageQueue;
+      if(a.userTab!==true&&!(await owned()).includes(id))reject('Kullanıcı sekmesi için userTab:true gerekir.');
+      await canClose(await tab(id));await wait(chrome.tabs.remove(id));await changeOwned(id,false);return {ok:true,domain};
+    }
+    if(action==='go'){
+      invalidate(id);
+      try{if(a.action==='back')await wait(chrome.tabs.goBack(id));else if(a.action==='forward')await wait(chrome.tabs.goForward(id));else if(a.action==='reload')await wait(chrome.tabs.reload(id));else fail('pc_invalid_argument');}
+      catch(e){check();if(e.message==='pc_invalid_argument')throw e;reject('Bu yönde geçmiş yok veya sayfa yenilenemedi.');}
+      return {ok:true,domain};
+    }
     if(action==='navigate'){
       if(!allowedUrl(a.url))fail('pc_chrome_blocked_page');
-      invalidate(id);await detach(id);check();await chrome.tabs.update(id,{url:a.url});return {ok:true,domain:new URL(a.url).hostname};
+      invalidate(id);if(!sessions.get(id)?.recording)await detach(id);check();await chrome.tabs.update(id,{url:a.url});return {ok:true,domain:new URL(a.url).hostname};
     }
     if(action==='read'||action==='find'){
       const result=await page(id,action,a);refs.set(id,result.documentId);delete result.documentId;
       return {...result,domain};
     }
+    if(action==='form'){
+      const result=await page(id,'form',{ref:a.ref,documentId:refs.get(id),value:a.value});
+      if(!result)fail('pc_chrome_ref_stale');if(!result.ok)reject(result.reason||warning);return {...result,domain};
+    }
     // DOM scrolling does not need a debugger attachment.
     if(action==='computer'&&a.x!==undefined&&!shots.has(id))fail('pc_chrome_screenshot_required');
     if(action==='computer'&&a.action==='scroll'&&!sessions.has(id))return {...await computer(id,a),domain};
     const result=await using(id,async()=>{
+      if(action==='upload')return upload(id,a);
+      if(action==='js'){
+        if(await page(id,'sensitivePage')===true||await guard(id))reject(warning);
+        let r;
+        try{r=await bounded(id,'Runtime.evaluate',{expression:a.code,awaitPromise:true,returnByValue:true,timeout:Math.max(100,(a.timeoutSeconds||30)*1000-500)},Math.max(100,(a.timeoutSeconds||30)*1000-250));}
+        catch(e){if(e.message==='pc_chrome_timeout'||/timed out|timeout|terminated/i.test(e.message)){await detach(id);fail('pc_chrome_timeout');}throw e;}
+        if(r.exceptionDetails){const e=r.exceptionDetails;fail('pc_chrome_js_exception','Satır '+((e.lineNumber??0)+1)+': '+String(e.exception?.description||e.text).slice(0,3000));}
+        return boundedJson(r.result?.value??r.result?.unserializableValue??null,a.maxChars);
+      }
+      if(action==='console'||action==='network'){
+        const r=await recording(id,domain);
+        if(action==='console'){if(a.clear)r.entries.length=0;return {entries:consoleEntries(r,a),...(r.entries.length?{}:{hint:'Kayıt başladı; sayfayı yenileyip tekrar çağır'})};}
+        if(a.requestId){const e=r.requests.get(a.requestId);if(!e?.finished||!textualMime(e.mimeType))reject('Metin yanıtı bulunamadı veya kayıt süresi doldu.');
+          let body;try{body=await command(id,'Network.getResponseBody',{requestId:a.requestId});}catch{check();reject('Metin yanıtı artık Chrome tamponunda bulunmuyor.');}
+          const value=body.base64Encoded?new TextDecoder().decode(Uint8Array.from(atob(body.body),s=>s.charCodeAt(0))):body.body;
+          const max=a.maxChars||20000;return {requestId:a.requestId,body:value.slice(0,max),truncated:value.length>max};}
+        return {entries:networkEntries(r,a),...(r.requests.size?{}:{hint:'Kayıt başladı; sayfayı yenileyip tekrar çağır'})};
+      }
       if(action==='computer')return computer(id,a);
       if(!['click','type'].includes(action))fail('pc_invalid_argument');
       const p=await page(id,'ref',{ref:a.ref,documentId:refs.get(id)});
@@ -233,16 +323,19 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300}={}) {
   }
   chrome.tabs.onUpdated.addListener((id,change)=>{
     if(change.status==='loading'||change.url)invalidate(id);
+    if(change.url){if(!allowedUrl(change.url)){records.delete(id);void detach(id);}else{const r=records.get(id);if(r&&r.domain!==new URL(change.url).hostname)records.set(id,createRecord(new URL(change.url).hostname));}}
     if(change.status==='complete')cursors.delete(id);
   });
-  chrome.tabs.onRemoved.addListener(id=>{invalidate(id);cursors.delete(id);void detach(id);});
+  chrome.tabs.onRemoved.addListener(id=>{invalidate(id);cursors.delete(id);records.delete(id);void changeOwned(id,false).catch(()=>{});void detach(id);});
   chrome.debugger.onDetach.addListener(({tabId:id})=>{
     const s=sessions.get(id);if(s)clearTimeout(s.timer);sessions.delete(id);
     void chrome.action.setBadgeText({tabId:id,text:''}).catch(()=>{});
   });
   chrome.debugger.onEvent?.addListener((source,method,params)=>{
+    if(method==='Page.fileChooserOpened')choosers.get(source.tabId)?.(params);
+    const r=records.get(source.tabId);if(r&&sessions.get(source.tabId)?.recording)recordEvent(r,method,params);
     if(method==='Page.screencastFrame'&&sessions.get(source.tabId)?.screencast)
       void chrome.debugger.sendCommand(source,'Page.screencastFrameAck',{sessionId:params.sessionId}).catch(()=>{});
   });
-  return {run,disconnect:async()=>{epoch++;shots.clear();refs.clear();cursors.clear();await Promise.all([...sessions.keys()].map(detach));}};
+  return {run,resetOwnership,disconnect:async()=>{epoch++;shots.clear();refs.clear();cursors.clear();records.clear();choosers.clear();await Promise.all([...sessions.keys()].map(detach));}};
 }

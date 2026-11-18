@@ -28,12 +28,12 @@ function connect() {
         let result;
         const badge=Number.isSafeInteger(message.args?.tabId)?{tabId:message.args.tabId}:{};
         try {
-          if(!['computer','click','type'].includes(message.action))await chrome.action.setBadgeText({...badge,text:'PC2'}).catch(()=>{});
+          if(!['computer','click','type','upload','js','console','network'].includes(message.action))await chrome.action.setBadgeText({...badge,text:'PC2'}).catch(()=>{});
           if(port!==current)return;
           result={ok:true,data:await engine.run(message.action,message.args||{},controller.signal)};
         }
-        catch(error){const code=String(error?.message);result={ok:false,code:/^pc_(chrome_[a-z_]+|invalid_argument)$/.test(code)?code:'pc_chrome_operation_failed'};}
-        finally{clearTimeout(timer);operations.delete(message.id);if(!['computer','click','type'].includes(message.action))await chrome.action.setBadgeText({...badge,text:''}).catch(()=>{});}
+        catch(error){const code=String(error?.message);result={ok:false,code:/^pc_(chrome_[a-z_]+|invalid_argument)$/.test(code)?code:'pc_chrome_operation_failed',...(typeof error?.reason==='string'?{reason:error.reason.slice(0,4000)}:{})};}
+        finally{clearTimeout(timer);operations.delete(message.id);if(!['computer','click','type','upload','js','console','network'].includes(message.action))await chrome.action.setBadgeText({...badge,text:''}).catch(()=>{});}
         if(port===current)current.postMessage({type:'result',id:message.id,...result});
       });
     });
@@ -42,6 +42,6 @@ function connect() {
 }
 chrome.alarms.create('feno-reconnect',{periodInMinutes:0.5});
 chrome.alarms.onAlarm.addListener(a=>{if(a.name==='feno-reconnect')connect();});
-chrome.runtime.onStartup.addListener(connect);
+chrome.runtime.onStartup.addListener(()=>{void engine.resetOwnership().then(connect,connect);});
 chrome.runtime.onInstalled.addListener(connect);
 connect();

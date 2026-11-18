@@ -67,7 +67,7 @@ function createChromeBroker({version,directory,files,isAuthorized,audit=()=>{},c
         if(client?.session===b.session&&pending?.id===b.id&&pending.sent){
           const code=gate();if(code)revoke(code);
           else if(b.ok===true&&b.data&&typeof b.data==='object')finish({ok:true,data:b.data});
-          else finish(error(typeof b.code==='string'&&/^pc_(chrome_[a-z_]+|invalid_argument)$/.test(b.code)?b.code:'pc_chrome_operation_failed'));
+          else finish({...error(typeof b.code==='string'&&/^pc_(chrome_[a-z_]+|invalid_argument)$/.test(b.code)?b.code:'pc_chrome_operation_failed'),...(typeof b.reason==='string'?{reason:b.reason.slice(0,4000)}:{})});
         }
         reply(res,{ok:true});return;
       }
@@ -78,7 +78,7 @@ function createChromeBroker({version,directory,files,isAuthorized,audit=()=>{},c
       if(req.url==='/command'){
         const code=gate();if(code){reply(res,error(code));return;}
         if(pending){reply(res,error('pc_chrome_busy'));return;}
-        if(!['tabs','open','navigate','read','find','computer','click','type'].includes(b.action)||!b.args||typeof b.args!=='object'||Array.isArray(b.args)){
+        if(!['tabs','open','navigate','read','find','computer','click','type','close','go','form','upload','js','console','network'].includes(b.action)||!b.args||typeof b.args!=='object'||Array.isArray(b.args)){
           reply(res,error('pc_invalid_argument'));return;
         }
         const timeout=Math.min(60,Math.max(1,Number(b.args.timeoutSeconds)||30))*1000;

@@ -60,6 +60,15 @@ windowsTest('missing authorized leaf is classified without revealing outside pat
   await expect(files.readPcFile(join(root,'missing.txt'),auth)).rejects.toMatchObject({code:'pc_file_not_found'});
   await expect(files.readPcFile(join(base,'missing.txt'),auth)).rejects.toMatchObject({code:'pc_access_denied'});
 });
+windowsTest('Chrome upload holds native read boundaries, limits files and rejects credentials',async()=>{
+  const files=implementation(),{root,base,auth}=fixture(),file=join(root,'upload.bin');writeFileSync(file,Buffer.from([0,1,2,3]));
+  let sent=0;const send=async(paths:string[])=>{sent++;expect(paths).toEqual([file]);return true;};
+  expect(await files.withPcUploadFiles([file],auth,send)).toBe(true);
+  for(const [p,code] of [[join(base,'outside.txt'),'pc_access_denied'],[join(root,'absent.txt'),'pc_file_not_found'],[join(root,'.ssh','id_ed25519'),'pc_sensitive_path'],[join(root,'token.json'),'pc_sensitive_path']])await expect(files.withPcUploadFiles([p],auth,send)).rejects.toThrow(code!);
+  const big=join(root,'big.bin');writeFileSync(big,Buffer.alloc(100*1024*1024+1));await expect(files.withPcUploadFiles([big],auth,send)).rejects.toThrow('pc_file_too_large');
+  const secret=join(root,'ordinary.txt');writeFileSync(secret,'password=fixture');await expect(files.withPcUploadFiles([secret],auth,send)).rejects.toThrow('pc_sensitive_path');
+  expect(sent).toBe(1);
+});
 windowsTest('sensitive names and content are rejected for reads, creates and patches',async()=>{
   const files=implementation(),{root,auth}=fixture();
   for(const name of ['.env','.env.local','.npmrc','id_rsa','credentials.json','secret.txt','private.pem','.git/config','CON','aux.txt','trailing.','stream.txt:secret']){

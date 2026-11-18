@@ -3,7 +3,7 @@ import {PcOperationError} from './errors';
 import {PcAccessDeniedError} from './authorization';
 import type {PcPrivateFileReader} from './types';
 
-const codes = ['pc_chrome_disabled','pc_chrome_not_connected','pc_chrome_tab_not_found','pc_chrome_ref_stale','pc_chrome_screenshot_required','pc_chrome_timeout','pc_chrome_blocked_page','pc_chrome_busy','pc_chrome_operation_failed','pc_invalid_argument'] as const;
+const codes = ['pc_chrome_disabled','pc_chrome_not_connected','pc_chrome_tab_not_found','pc_chrome_ref_stale','pc_chrome_screenshot_required','pc_chrome_timeout','pc_chrome_blocked_page','pc_chrome_busy','pc_chrome_operation_failed','pc_chrome_rejected','pc_chrome_js_exception','pc_invalid_argument'] as const;
 export function createUserChromeClient(files:PcPrivateFileReader,localAppData=process.env.LOCALAPPDATA){
   return async(action:string,args:Record<string,unknown>,signal:AbortSignal):Promise<any>=>{
     if(process.platform!=='win32'||!localAppData||!isAbsolute(localAppData))throw new PcOperationError('pc_chrome_not_connected');
@@ -25,7 +25,7 @@ export function createUserChromeClient(files:PcPrivateFileReader,localAppData=pr
     if(result?.ok!==true){
       if(result?.code==='pc_access_denied')throw new PcAccessDeniedError();
       const code=codes.find(c=>c===result?.code);
-      const reason=code==='pc_chrome_disabled'?'Feno Bridge → Ayarlar → Chrome uzantısı → Chrome erişimini aç':code==='pc_chrome_screenshot_required'?'Önce screenshot al':undefined;
+      const reason=code==='pc_chrome_disabled'?'Feno Bridge → Ayarlar → Chrome uzantısı → Chrome erişimini aç':code==='pc_chrome_screenshot_required'?'Önce screenshot al':(code==='pc_chrome_rejected'||code==='pc_chrome_js_exception')&&typeof result.reason==='string'?result.reason.slice(0,4000):undefined;
       throw new PcOperationError(code??'pc_chrome_operation_failed',reason?{reason}:undefined);
     }
     const value=result.data;

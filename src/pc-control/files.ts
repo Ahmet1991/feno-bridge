@@ -44,6 +44,26 @@ export async function listPcFiles(root:string,relative:string,authorizer:PcAutho
   }finally{hold.close();}});
 }
 export type PcReadOptions={offset?:number;length?:number;tailLines?:number};
+// Reuse the native read session: pinned ancestors, no junctions, hardlinks,
+// device paths or shared writes. Keep handles open until Chrome has accepted the files.
+const uploadSensitive=/^(?:\.ssh|\.codex.*|\.aws|\.azure|\.gnupg|\.git|chrome|chromium|ms-playwright|edge|brave-browser|firefox|mozilla|opera(?: software)?|vivaldi|user data|profiles?|feno bridge(?:.*)?|login data|cookies|local state|web data|auth\.json|.*(?:token|credential|identity|password|secret)(?:[-_.].*)?|.*\.kdbx)$/i;
+export async function withPcUploadFiles<T>(paths:unknown,authorizer:PcAuthorizer,send:(paths:string[])=>Promise<T>):Promise<T>{
+  const grant=authorizer.assert('files.read'),holds:ProjectFileSession[]=[];
+  if(!Array.isArray(paths)||paths.length<1||paths.length>10||paths.some(p=>typeof p!=='string'))throw invalidPcArgument('paths','1–10 dosya yolu gerekli.');
+  const check=(p:string)=>{safeName(p);if(p.split(/[\\/]+/).some(s=>uploadSensitive.test(s)))throw new PcOperationError('pc_sensitive_path');};
+  try{
+    for(const p of paths){
+      const hold=operation(()=>{check(p);return session(p,grant.roots,'file',false,grant.fullAccess);});holds.push(hold);check(hold.path);
+      const size=hold.size(),limit=100*1024*1024;
+      if(size>limit)throw new PcOperationError('pc_file_too_large',{limitBytes:limit,sizeBytes:size});
+      // Match the text read credential guard, including patterns crossing a chunk boundary.
+      let tail='';for(let offset=0;offset<size;offset+=1024*1024){const value=tail+hold.read(undefined,offset,1024*1024).toString('utf8');if(SENSITIVE_CONTENT.test(value))throw new PcOperationError('pc_sensitive_path');tail=value.slice(-4096);}
+      hold.verifyLeaf();
+    }
+    sameGrant(authorizer,'files.read',grant.id);
+    const result=await send(holds.map(h=>h.path));sameGrant(authorizer,'files.read',grant.id);return result;
+  }finally{for(const hold of holds.reverse())hold.close();}
+}
 /** Read image bytes through the same native path/junction checks as pc_read_file. */
 export async function readPcImage(file:string,authorizer:PcAuthorizer):Promise<{
   mimeType:'image/png'|'image/jpeg'|'image/webp';data:Uint8Array
