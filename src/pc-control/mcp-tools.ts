@@ -270,8 +270,10 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   registerBrowser('find','Web öğesi bul','Erişilebilir ad veya rol ile eşleşen öğeleri ve ref kimliklerini bulur.',{tabId,query:z.string().min(1).max(1000),maxChars,offset},true);
   registerBrowser('click','Web öğesine tıkla','Güncel ref kimliğiyle tıkla. Ödeme ve şifre işlemleri kullanıcı onayı gerektirir.',{tabId,ref});
   registerBrowser('type','Web öğesine yaz','Güncel ref kimliğiyle yaz; şifre ve ödeme alanları kullanıcı onayı gerektirir.',{tabId,ref,text:z.string().max(50000),submit:z.boolean().optional()});
-  const browserKey=z.enum(['ENTER','ESC','TAB','SPACE','BACKSPACE','DELETE','UP','DOWN','LEFT','RIGHT','HOME','END','PAGEUP','PAGEDOWN']);
-  registerBrowser('key','Tarayıcı tuşu gönder','ENTER, ESC, TAB, SPACE, BACKSPACE, DELETE, UP, DOWN, LEFT, RIGHT, HOME, END, PAGEUP veya PAGEDOWN.',{tabId,key:browserKey});
+  const browserKeys=['ENTER','ESC','TAB','SPACE','BACKSPACE','DELETE','UP','DOWN','LEFT','RIGHT','HOME','END','PAGEUP','PAGEDOWN'];
+  const keyHint='Tuşlar büyük/küçük harfe duyarsız: '+browserKeys.join(', ')+', Esc/Escape.';
+  const browserKey=z.string().max(24).refine(v=>browserKeys.includes(v.toUpperCase())||v.toUpperCase()==='ESCAPE').describe(keyHint);
+  registerBrowser('key','Tarayıcı tuşu gönder',keyHint,{tabId,key:browserKey});
   const scrollSchema=z.object({tabId,direction:z.enum(['up','down']).optional(),ref:ref.optional(),timeoutSeconds}).strict().refine(v=>!!v.direction!==!!v.ref);
   server.registerTool('pc_browser_scroll',{title:'Web sayfasını kaydır',description:browserHint+'Yön veya öğe ref kimliği kullan.',inputSchema:scrollSchema,annotations:{...write,openWorldHint:true}},
     args=>run(()=>browserAction('scroll',args),false,'pc_browser_scroll',Object.keys(args).sort()));

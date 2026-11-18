@@ -14,12 +14,12 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
     await client.connect(transport);const {tools}=await client.listTools();
     expect(tools.filter(t=>t.name.startsWith('pc_')).map(t=>t.name).sort()).toEqual(pcNames);
     const resources=await client.listResources();
-    expect(resources.resources.some(r=>r.uri==='ui://widget/pc-screenshot-v5.1.19.html')).toBe(true);
-    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-mcpapp-v5.1.19.html')).toBe(true);
-    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-skybridge-v5.1.19.html')).toBe(true);
+    expect(resources.resources.some(r=>r.uri==='ui://widget/pc-screenshot-v5.1.20.html')).toBe(true);
+    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-mcpapp-v5.1.20.html')).toBe(true);
+    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-skybridge-v5.1.20.html')).toBe(true);
     for(const name of ['pc_capture_screen','pc_capture_full_screen','pc_adb_screencap','pc_show_image','pc_browser_screenshot','pc_browser_computer','pc_chrome_computer']){
-      expect(tools.find(t=>t.name===name)?._meta?.['openai/outputTemplate']).toBe('ui://widget/pc-screenshot-skybridge-v5.1.19.html');
-      expect(tools.find(t=>t.name===name)?._meta?.ui).toMatchObject({resourceUri:'ui://widget/pc-screenshot-v5.1.19.html'});
+      expect(tools.find(t=>t.name===name)?._meta?.['openai/outputTemplate']).toBe('ui://widget/pc-screenshot-skybridge-v5.1.20.html');
+      expect(tools.find(t=>t.name===name)?._meta?.ui).toMatchObject({resourceUri:'ui://widget/pc-screenshot-v5.1.20.html'});
     }
     const schema=(name:string)=>tools.find(t=>t.name===name)!.inputSchema;
     expect(Object.keys(schema('pc_launch_app').properties??{})).toContain('filePath');
@@ -39,6 +39,11 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
     expect(browserDenied.structuredContent).toMatchObject({ok:false,code:'pc_access_denied'});
     const computerDenied=await client.callTool({name:'pc_browser_computer',arguments:{tabId:'t1',action:'click',x:0,y:0}});
     expect(computerDenied.structuredContent).toMatchObject({ok:false,code:'pc_access_denied'});
+    for(const key of ['Enter','enter','Esc','Escape','eScApE']){
+      for(const [name,args] of [['pc_browser_key',{tabId:'t1',key}],['pc_browser_computer',{tabId:'t1',action:'key',key}],['pc_chrome_computer',{tabId:1,action:'key',key}]] as const){
+        expect((await client.callTool({name,arguments:args})).structuredContent).toMatchObject({code:'pc_access_denied'});
+      }
+    }
     expect((await client.callTool({name:'pc_browser_computer',arguments:{tabId:'t1',action:'drag',x:0,y:0}})).isError).toBe(true);
   }finally{await client.close();}
 },15000);

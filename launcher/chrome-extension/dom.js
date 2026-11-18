@@ -17,6 +17,25 @@ export function pageOperation(action, args = {}) {
     return { id:state.id, width:v?.width || innerWidth, height:v?.height || innerHeight, pageX:v?.pageLeft ?? scrollX, pageY:v?.pageTop ?? scrollY, scale:v?.scale || 1, dpr: devicePixelRatio };
   }
   if (action === 'guard') return deep(args.point);
+  if (action === 'scroll') {
+    const root=document.scrollingElement;
+    let e=document.elementFromPoint(args.point.x,args.point.y);
+    for(let i=0;i<16&&e?.shadowRoot;i++){
+      const inner=e.shadowRoot.elementFromPoint(args.point.x,args.point.y);
+      if(!inner||inner===e)break;e=inner;
+    }
+    while(e&&e!==root){
+      const style=getComputedStyle(e);
+      const vertical=args.delta&&e.scrollHeight>e.clientHeight&&/^(auto|scroll|overlay)$/.test(style.overflowY);
+      const horizontal=args.deltaX&&e.scrollWidth>e.clientWidth&&/^(auto|scroll|overlay)$/.test(style.overflowX);
+      if(vertical||horizontal)break;
+      e=e.parentElement||e.getRootNode()?.host;
+    }
+    e=e||root;
+    if(!e)return {scrollX:0,scrollY:0};
+    e.scrollBy({top:args.delta,left:args.deltaX,behavior:'instant'});
+    return {scrollX:e.scrollLeft,scrollY:e.scrollTop,pageX:window.scrollX,pageY:window.scrollY};
+  }
   if (action === 'cursor') {
     if (args.hide) { if (state.cursor) state.cursor.style.visibility = 'hidden'; return true; }
     if (args.restore) { if (state.cursor) state.cursor.style.visibility = 'visible'; return true; }

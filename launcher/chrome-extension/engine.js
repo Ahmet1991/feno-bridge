@@ -9,15 +9,30 @@ export function allowedUrl(raw) {
   } catch { return false; }
 }
 const keyMap={ENTER:['Enter','Enter',13],ESC:['Escape','Escape',27],TAB:['Tab','Tab',9],SPACE:[' ','Space',32],BACKSPACE:['Backspace','Backspace',8],DELETE:['Delete','Delete',46],UP:['ArrowUp','ArrowUp',38],DOWN:['ArrowDown','ArrowDown',40],LEFT:['ArrowLeft','ArrowLeft',37],RIGHT:['ArrowRight','ArrowRight',39],HOME:['Home','Home',36],END:['End','End',35],PAGEUP:['PageUp','PageUp',33],PAGEDOWN:['PageDown','PageDown',34]};
-export function createChromeEngine(chrome) {
+export function createChromeEngine(chrome,{idleMs=15000}={}) {
   const sessions=new Map(), shots=new Map(), refs=new Map(), cursors=new Map();
-  let epoch=0,activeEpoch=0;
-  const check=()=>{if(epoch!==activeEpoch)fail('pc_chrome_not_connected');};
+  let epoch=0;
   const invalidate=id=>{shots.delete(id);refs.delete(id);};
+  async function detach(id) {
+    const s=sessions.get(id); if(!s)return;
+    clearTimeout(s.timer);sessions.delete(id);
+    try { await chrome.debugger.detach({tabId:id}); } catch {}
+    await chrome.action.setBadgeText({tabId:id,text:''}).catch(()=>{});
+  }
+  async function run(action,a,signal) {
+  const runEpoch=epoch;
+  const check=()=>{if(signal?.aborted)fail('pc_chrome_timeout');if(epoch!==runEpoch)fail('pc_chrome_not_connected');};
+  async function wait(promise) {
+    check();
+    if(!signal)return promise;
+    let abort;
+    try{return await Promise.race([promise,new Promise((_,reject)=>{abort=()=>reject(new Error('pc_chrome_timeout'));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();})]);}
+    finally{signal.removeEventListener('abort',abort);}
+  }
   async function tab(id) {
     check();
     if (!Number.isSafeInteger(id)||id<0) fail('pc_chrome_tab_not_found');
-    let t; try { t=await chrome.tabs.get(id); } catch { fail('pc_chrome_tab_not_found'); }
+    let t; try { t=await wait(chrome.tabs.get(id)); } catch { check();fail('pc_chrome_tab_not_found'); }
     check();
     if (t.incognito || !allowedUrl(t.url) || (t.pendingUrl && !allowedUrl(t.pendingUrl))) fail('pc_chrome_blocked_page');
     return t;
@@ -25,19 +40,13 @@ export function createChromeEngine(chrome) {
   async function page(id,action,args) {
     await tab(id);
     try {
-      const [v]=await chrome.scripting.executeScript({target:{tabId:id},func:pageOperation,args:[action,args||{}],world:'ISOLATED'});
+      const [v]=await wait(chrome.scripting.executeScript({target:{tabId:id},func:pageOperation,args:[action,args||{}],world:'ISOLATED'}));
       check();return v?.result;
-    } catch { fail('pc_chrome_blocked_page'); }
-  }
-  async function detach(id) {
-    const s=sessions.get(id); if(!s)return;
-    clearTimeout(s.timer);sessions.delete(id);
-    try { await chrome.debugger.detach({tabId:id}); } catch {}
-    await chrome.action.setBadgeText({tabId:id,text:''}).catch(()=>{});
+    } catch { check();fail('pc_chrome_blocked_page'); }
   }
   async function command(id,method,params={}) {
     await tab(id);
-    return chrome.debugger.sendCommand({tabId:id},method,params);
+    const result=await wait(chrome.debugger.sendCommand({tabId:id},method,params));check();return result;
   }
   async function using(id,fn) {
     await tab(id);
@@ -45,14 +54,15 @@ export function createChromeEngine(chrome) {
     if(!s) {
       await chrome.debugger.attach({tabId:id},'1.3');
       s={};sessions.set(id,s);
-      if(epoch!==activeEpoch){await detach(id);check();}
+      if(epoch!==runEpoch||signal?.aborted){await detach(id);check();}
+      await chrome.action.setBadgeText({tabId:id,text:'PC2'});
     }
     clearTimeout(s.timer);
     try {
-      await chrome.action.setBadgeText({tabId:id,text:'PC2'});
+      check();
       return await fn();
     } finally {
-      if(sessions.get(id)===s)s.timer=setTimeout(()=>void detach(id),2500);
+      if(sessions.get(id)===s){if(signal?.aborted||epoch!==runEpoch){invalidate(id);await detach(id);}else s.timer=setTimeout(()=>void detach(id),idleMs);}
     }
   }
   async function cursor(id,p,click=false) {
@@ -63,10 +73,10 @@ export function createChromeEngine(chrome) {
   async function screenshot(id,includeCursor) {
     shots.delete(id);
     const v=await page(id,'viewport');
-    if(!includeCursor)await page(id,'cursor',{hide:true});
+    if(!includeCursor&&cursors.has(id))await page(id,'cursor',{hide:true});
     let shot;
     try{shot=await command(id,'Page.captureScreenshot',{format:'png',fromSurface:true,captureBeyondViewport:false});}
-    finally{if(!includeCursor)await page(id,'cursor',{restore:true}).catch(()=>{});}
+    finally{if(!includeCursor&&cursors.has(id))await page(id,'cursor',{restore:true}).catch(()=>{});}
     const bytes=Uint8Array.from(atob(shot.data.slice(0,32)),c=>c.charCodeAt(0));
     const view=new DataView(bytes.buffer),width=view.getUint32(16),height=view.getUint32(20);
     if(!width||!height||!same(v,await page(id,'viewport'))) fail('pc_chrome_ref_stale');
@@ -75,7 +85,8 @@ export function createChromeEngine(chrome) {
   }
   async function point(id,x,y) {
     const s=shots.get(id);
-    if(!s||!same(s.v,await page(id,'viewport'))) fail('pc_chrome_ref_stale');
+    if(!s)fail('pc_chrome_screenshot_required');
+    if(!same(s.v,await page(id,'viewport'))) fail('pc_chrome_ref_stale');
     if(!Number.isInteger(x)||!Number.isInteger(y)||x<0||y<0||x>=s.width||y>=s.height)fail('pc_invalid_argument');
     return {x:x*s.v.width/s.width,y:y*s.v.height/s.height};
   }
@@ -93,6 +104,7 @@ export function createChromeEngine(chrome) {
     }
   }
   async function key(id,k) {
+    k=String(k).toUpperCase();if(k==='ESCAPE')k='ESC';
     const item=keyMap[k];if(!item)fail('pc_invalid_argument');
     const [key,code,windowsVirtualKeyCode]=item;
     const params={key,code,windowsVirtualKeyCode};
@@ -106,7 +118,7 @@ export function createChromeEngine(chrome) {
     let sensitive=p?await guard(id,p):false;
     if(['click','double_click','right_click'].includes(a.action))await click(id,p,a.action==='right_click'?'right':'left',a.action==='double_click'?2:1);
     else if(a.action==='hover'){await cursor(id,p);await mouse(id,'mouseMoved',p);}
-    else if(a.action==='scroll'){await cursor(id,p);await mouse(id,'mouseWheel',p,{deltaX:a.deltaX??0,deltaY:a.delta??600});}
+    else if(a.action==='scroll'){await cursor(id,p);return {ok:true,...await page(id,'scroll',{point:p,deltaX:a.deltaX??0,delta:a.delta??600})};}
     else if(a.action==='drag'){
       const end=await point(id,a.endX,a.endY);sensitive=(await guard(id,end))||sensitive;
       await cursor(id,p,true);await mouse(id,'mouseMoved',p);await mouse(id,'mousePressed',p,{button:'left',buttons:1,clickCount:1});
@@ -121,24 +133,14 @@ export function createChromeEngine(chrome) {
     } else fail('pc_invalid_argument');
     return {ok:true,...(sensitive?{warning}:{})};
   }
-  chrome.tabs.onUpdated.addListener((id,change)=>{
-    if(change.status==='loading'||change.url)invalidate(id);
-    if(change.status==='complete'&&cursors.has(id))void cursor(id,cursors.get(id)).catch(()=>{});
-  });
-  chrome.tabs.onRemoved.addListener(id=>{invalidate(id);cursors.delete(id);void detach(id);});
-  chrome.debugger.onDetach.addListener(({tabId:id})=>{
-    const s=sessions.get(id);if(s)clearTimeout(s.timer);sessions.delete(id);
-    void chrome.action.setBadgeText({tabId:id,text:''}).catch(()=>{});
-  });
-  async function run(action,a) {
-    activeEpoch=epoch;
+    check();
     if(action==='tabs'){
-      const windows=await chrome.windows.getAll({populate:true,windowTypes:['normal']});
+      const windows=await wait(chrome.windows.getAll({populate:true,windowTypes:['normal']}));check();
       return {windows:windows.filter(w=>!w.incognito).map(w=>({windowId:w.id,focused:w.focused,tabs:(w.tabs||[]).filter(t=>!t.incognito&&allowedUrl(t.url)).map(t=>({tabId:t.id,title:t.title||'',domain:new URL(t.url).hostname,active:t.active}))}))};
     }
     if(action==='open'){
       if(!allowedUrl(a.url))fail('pc_chrome_blocked_page');
-      const t=await chrome.tabs.create({url:a.url,active:false});return {tabId:t.id,domain:new URL(a.url).hostname};
+      const t=await wait(chrome.tabs.create({url:a.url,active:false}));check();return {tabId:t.id,domain:new URL(a.url).hostname};
     }
     const id=a.tabId,t=await tab(id),domain=new URL(t.url).hostname;
     if(action==='navigate'){
@@ -149,6 +151,9 @@ export function createChromeEngine(chrome) {
       const result=await page(id,action,a);refs.set(id,result.documentId);delete result.documentId;
       return {...result,domain};
     }
+    // DOM scrolling does not need a debugger attachment.
+    if(action==='computer'&&a.x!==undefined&&!shots.has(id))fail('pc_chrome_screenshot_required');
+    if(action==='computer'&&a.action==='scroll'&&!sessions.has(id))return {...await computer(id,a),domain};
     const result=await using(id,async()=>{
       if(action==='computer')return computer(id,a);
       if(!['click','type'].includes(action))fail('pc_invalid_argument');
@@ -164,5 +169,14 @@ export function createChromeEngine(chrome) {
     });
     return {...result,domain};
   }
+  chrome.tabs.onUpdated.addListener((id,change)=>{
+    if(change.status==='loading'||change.url)invalidate(id);
+    if(change.status==='complete')cursors.delete(id);
+  });
+  chrome.tabs.onRemoved.addListener(id=>{invalidate(id);cursors.delete(id);void detach(id);});
+  chrome.debugger.onDetach.addListener(({tabId:id})=>{
+    const s=sessions.get(id);if(s)clearTimeout(s.timer);sessions.delete(id);
+    void chrome.action.setBadgeText({tabId:id,text:''}).catch(()=>{});
+  });
   return {run,disconnect:async()=>{epoch++;shots.clear();refs.clear();cursors.clear();await Promise.all([...sessions.keys()].map(detach));}};
 }

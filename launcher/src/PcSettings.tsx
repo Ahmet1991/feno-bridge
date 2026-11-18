@@ -52,7 +52,7 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
         onChange={event=>{const enabled=event.target.checked;void action(async()=>{await api!.pcChromeToggle(enabled);});}}/> Chrome erişimini aç / kapat</label>
       <button type="button" disabled={busy} onClick={()=>void action(async()=>{await api!.pcChromeFolder();})}>Uzantı klasörünü aç</button>
       <button type="button" disabled={busy} onClick={()=>void action(async()=>{await api!.pcChromeExtensions();})}>Chrome uzantılar sayfasını aç</button>
-      <ol><li>Chrome uzantılar sayfasını açın ve Geliştirici modu'nu etkinleştirin.</li><li>Paketlenmemiş öğe yükle düğmesine basıp Feno Bridge uzantı klasörünü seçin.</li><li>Bu ekranda bağlı durumunu kontrol edin ve Chrome erişimini açın.</li></ol>
+      <ol><li>Chrome uzantılar sayfasını açın ve Geliştirici modu'nu etkinleştirin.</li><li>Paketlenmemiş öğe yükle düğmesine basıp Feno Bridge uzantı klasörünü seçin.</li><li>Bağlantıyı kontrol edin. Tam yetkide ilk bağlantıda erişim açılır; daha önce kapattıysanız bu ayar korunur.</li></ol>
     </div>:null}
     {platform!=='win32'||!status?.available?<p>PC güvenlik altyapısı hazır değil. Erişim kapalı tutuluyor.</p>:null}
     {status?.persistentRevocationPending?<p role="alert">Kalıcı iptal diske yazılamadı. Erişim kapalı. Depolama erişimini onarın.</p>:null}

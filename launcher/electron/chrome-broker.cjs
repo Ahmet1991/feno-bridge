@@ -1,5 +1,5 @@
 "use strict";
-const http = require('node:http'), crypto = require('node:crypto'), path = require('node:path');
+const http = require('node:http'), crypto = require('node:crypto'), path = require('node:path'), fs=require('node:fs');
 const MAX_BODY=32*1024*1024, TTL=8000;
 const error=code=>({ok:false,code});
 const hostName='com.feno.bridge.pc2';
@@ -11,16 +11,17 @@ function chromeDirectory(env=process.env) {
 }
 function createChromeBroker({version,directory,files,isAuthorized,audit=()=>{},clock=Date.now}) {
   const token=crypto.randomBytes(32).toString('hex'), descriptor=path.join(directory,descriptorName);
-  let enabled=false, client, pending, reloadVersion, closed=false;
+  let enabled=false, defaultPending=false, client, pending, reloadVersion, closed=false;
+  const saved=path.join(directory,'enabled.json');
   const validClient=()=>client&&clock()-client.seen<TTL&&client.version===version;
   function finish(result) {
     if(!pending)return;
     const p=pending;pending=undefined;clearTimeout(p.timer);p.resolve(result);
   }
   function permitted(){try{return isAuthorized()===true;}catch{return false;}}
-  function gate(){if(!enabled)return 'pc_chrome_disabled';if(!permitted())return 'pc_access_denied';if(!validClient())return 'pc_chrome_not_connected';}
+  function gate(){if(!permitted())return 'pc_access_denied';if(!enabled)return 'pc_chrome_disabled';if(!validClient())return 'pc_chrome_not_connected';}
   function revoke(code){finish(error(code));}
-  function setEnabled(value){if(typeof value!=='boolean')throw Error('pc_invalid_argument');enabled=value;if(!value)revoke('pc_chrome_disabled');return status();}
+  function setEnabled(value){if(typeof value!=='boolean')throw Error('pc_invalid_argument');defaultPending=false;enabled=value;if(!value)revoke('pc_chrome_disabled');return status();}
   function status(){return {enabled,connected:!!validClient(),version:client&&clock()-client.seen<TTL?client.version:null};}
   async function read(req){
     const chunks=[];let n=0;
@@ -47,12 +48,16 @@ function createChromeBroker({version,directory,files,isAuthorized,audit=()=>{},c
           return;
         }
         reloadVersion=undefined;
+        if(defaultPending&&permitted()){
+          files.writePrivateAtomic(saved,Buffer.from(JSON.stringify({enabled:true})));setEnabled(true);
+        }
         const code=gate();if(code){revoke(code);reply(res,{type:'idle'});return;}
         if(pending&&!pending.sent){pending.sent=true;reply(res,{type:'command',id:pending.id,action:pending.action,args:pending.args});}
         else reply(res,{type:'idle'});
         return;
       }
       if(req.url==='/heartbeat'){
+        if(client?.session===b.session)client.seen=clock();
         if(client?.session===b.session&&pending?.id===b.id&&pending.sent&&enabled&&permitted()){
           client.seen=clock();reply(res,{type:'continue'});return;
         }
@@ -95,8 +100,7 @@ function createChromeBroker({version,directory,files,isAuthorized,audit=()=>{},c
     status,setEnabled,
     async start(){
       files.ensurePrivateDirectory(directory);
-      const saved=path.join(directory,'enabled.json');
-      try{enabled=JSON.parse(files.readPrivateFile(saved,1024).toString('utf8')).enabled===true;}catch{enabled=false;}
+      try{enabled=JSON.parse(files.readPrivateFile(saved,1024).toString('utf8')).enabled===true;}catch{enabled=false;try{fs.lstatSync(saved);}catch(e){defaultPending=e.code==='ENOENT';}}
       await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
       if(closed){server.close();throw Error('pc_chrome_not_connected');}
       try{files.writePrivateAtomic(descriptor,Buffer.from(JSON.stringify({port:server.address().port,token})));}catch(e){server.close();throw e;}

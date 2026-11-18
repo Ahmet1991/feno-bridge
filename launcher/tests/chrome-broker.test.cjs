@@ -21,8 +21,10 @@ test('native port protocol enforces authorization, session ownership, cancellati
     const session=crypto.randomUUID(),version='5.1.19',poll=()=>post('/poll',{session,version});
     assert.equal((await post('/command',{action:'tabs',args:{}},'invalid')).code,'pc_access_denied');
     assert.equal((await post('/command',{action:'tabs',args:{}})).code,'pc_chrome_disabled');
-    b.toggle(true);assert.equal((await post('/command',{action:'tabs',args:{}})).code,'pc_chrome_not_connected');
-    await poll();assert.equal(b.status().connected,true);
+    authorized=false;await poll();assert.equal(b.status().enabled,false);
+    assert.equal((await post('/command',{action:'tabs',args:{}})).code,'pc_access_denied');
+    authorized=true;await poll();assert.equal(b.status().connected,true);assert.equal(b.status().enabled,true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'enabled.json'),'utf8')).enabled,true);
     const pending=post('/command',{action:'type',args:{text:'private-fixture'}});
     let command;for(let i=0;i<20;i++){command=await poll();if(command.type==='command')break;await new Promise(r=>setTimeout(r,10));}
     assert.equal(command.action,'type');
@@ -31,10 +33,22 @@ test('native port protocol enforces authorization, session ownership, cancellati
     await post('/result',{session:crypto.randomUUID(),id:command.id,ok:true,data:{domain:'wrong.example'}});
     await post('/result',{session,id:command.id,ok:true,data:{domain:'fixture.example',text:'private-fixture'}});
     assert.equal((await pending).data.domain,'fixture.example');assert.deepEqual(logs,[{tool:'pc_chrome_type',outcome:'ok',domain:'fixture.example'}]);
+    const timed=post('/command',{action:'tabs',args:{timeoutSeconds:1}});
+    for(let i=0;i<20;i++){command=await poll();if(command.type==='command')break;await new Promise(r=>setTimeout(r,10));}
+    assert.equal((await timed).code,'pc_chrome_timeout');
+    assert.equal((await post('/heartbeat',{session,id:command.id})).type,'cancel');
+    assert.equal(b.status().connected,true);
+    const next=post('/command',{action:'tabs',args:{}});
+    for(let i=0;i<20;i++){command=await poll();if(command.type==='command')break;await new Promise(r=>setTimeout(r,10));}
+    await post('/result',{session,id:command.id,ok:true,data:{windows:[]}});assert.equal((await next).ok,true);
     authorized=false;assert.equal((await post('/command',{action:'tabs',args:{}})).code,'pc_access_denied');
     authorized=true;const canceled=post('/command',{action:'tabs',args:{}});
     for(let i=0;i<20;i++){command=await poll();if(command.type==='command')break;await new Promise(r=>setTimeout(r,10));}
     b.toggle(false);assert.equal((await canceled).code,'pc_chrome_disabled');assert.equal((await post('/heartbeat',{session,id:command.id})).type,'cancel');
+    await poll();assert.equal(b.status().enabled,false);
+    b.close();
+    const again=createChromeBroker({version,directory,files,isAuthorized:()=>true});
+    try{await again.start();const fresh=JSON.parse(fs.readFileSync(path.join(directory,descriptorName),'utf8'));await fetch('http://127.0.0.1:'+fresh.port+'/poll',{method:'POST',headers:{authorization:'Bearer '+fresh.token},body:JSON.stringify({session,version})});assert.equal(again.status().enabled,false);}finally{again.close();}
   }finally{b.close();}
 });
 test('compiled native executable handles framed messages and creates a restricted manifest without registry changes',{skip:process.platform!=='win32',timeout:30000},async()=>{
@@ -59,12 +73,15 @@ test('compiled native executable handles framed messages and creates a restricte
     const {port,token}=JSON.parse(fs.readFileSync(descriptor,'utf8'));
     host=cp.spawn(exe,['chrome-extension://'+extensionId+'/'],{windowsHide:true,env:{...process.env,FENO_CHROME_TEST_DESCRIPTOR:descriptor},stdio:['pipe','pipe','pipe']});
     const send=m=>{const body=Buffer.from(JSON.stringify(m)),len=Buffer.alloc(4);len.writeUInt32LE(body.length);host.stdin.write(Buffer.concat([len,body]));};
-    let chunks=Buffer.alloc(0);
-    host.stdout.on('data',part=>{chunks=Buffer.concat([chunks,part]);while(chunks.length>=4&&chunks.length>=4+chunks.readUInt32LE(0)){const len=chunks.readUInt32LE(0),msg=JSON.parse(chunks.subarray(4,4+len));chunks=chunks.subarray(4+len);if(msg.type==='command')send({type:'result',id:msg.id,ok:true,data:{domain:'fixture.example',response:'framed'}});}});
+    let chunks=Buffer.alloc(0),canceledId;
+    host.stdout.on('data',part=>{chunks=Buffer.concat([chunks,part]);while(chunks.length>=4&&chunks.length>=4+chunks.readUInt32LE(0)){const len=chunks.readUInt32LE(0),msg=JSON.parse(chunks.subarray(4,4+len));chunks=chunks.subarray(4+len);if(msg.type==='cancel'){canceledId=msg.id;send({type:'result',id:msg.id,ok:false,code:'pc_chrome_timeout'});}else if(msg.type==='command'&&msg.args.timeoutSeconds!==1)send({type:'result',id:msg.id,ok:true,data:{domain:'fixture.example',response:'framed'}});}});
     send({type:'hello',version:'5.1.19'});
     for(let i=0;!broker.status().connected&&i<100;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(broker.status().connected,true);
+    const timeout=await fetch('http://127.0.0.1:'+port+'/command',{method:'POST',headers:{authorization:'Bearer '+token},body:JSON.stringify({action:'tabs',args:{timeoutSeconds:1}})}).then(r=>r.json());
+    assert.equal(timeout.code,'pc_chrome_timeout');
     const result=await fetch('http://127.0.0.1:'+port+'/command',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({action:'tabs',args:{timeoutSeconds:5}})}).then(r=>r.json());
     assert.deepEqual(result,{ok:true,data:{domain:'fixture.example',response:'framed'}});
+    assert.ok(canceledId);assert.equal(host.exitCode,null);assert.equal(broker.status().connected,true);
   }finally{if(host){host.stdin.end();await new Promise(resolve=>{if(host.exitCode!==null)resolve();else{host.once('exit',resolve);setTimeout(()=>host.kill(),1500).unref();}});}broker.close();}
 });

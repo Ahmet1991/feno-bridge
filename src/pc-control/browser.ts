@@ -461,7 +461,7 @@ export function createPcBrowser(options:BrowserOptions){
       BACKSPACE:['Backspace','Backspace',8],DELETE:['Delete','Delete',46],UP:['ArrowUp','ArrowUp',38],DOWN:['ArrowDown','ArrowDown',40],
       LEFT:['ArrowLeft','ArrowLeft',37],RIGHT:['ArrowRight','ArrowRight',39],HOME:['Home','Home',36],END:['End','End',35],
       PAGEUP:['PageUp','PageUp',33],PAGEDOWN:['PageDown','PageDown',34]};
-    const k=keys[key.toUpperCase()];if(!k)throw fail('pc_invalid_argument');
+    const normalized=key.toUpperCase();const k=keys[normalized==='ESCAPE'?'ESC':normalized];if(!k)throw fail('pc_invalid_argument');
     for(const type of ['keyDown','keyUp'])await c.call('Input.dispatchKeyEvent',{type,key:k[0],code:k[1],windowsVirtualKeyCode:k[2],...(type==='keyDown'&&k[0]==='Enter'?{text:'\r'}:{})},tab.session);
   }
   async function execute(action:string,args:Params,signal:AbortSignal):Promise<any>{

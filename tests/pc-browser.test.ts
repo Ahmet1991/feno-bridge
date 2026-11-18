@@ -68,6 +68,7 @@ test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref
     expect(calls.filter(c=>c.method==='Input.dispatchMouseEvent').at(-1)?.params).toMatchObject({type:'mouseWheel',x:5,y:5,deltaX:20,deltaY:100});
     await computer('type',{x:5,y:9,text:'coordinate'});expect(typed).toBe('coordinate');
     await computer('key',{key:'ENTER'});expect(calls.filter(c=>c.method==='Input.dispatchKeyEvent').at(-1)?.params).toMatchObject({type:'keyUp',key:'Enter'});
+    await run('key',{tabId,key:'Escape'});expect(calls.filter(c=>c.method==='Input.dispatchKeyEvent').at(-1)?.params).toMatchObject({type:'keyUp',key:'Escape'});
     scrollY=20;await expect(computer('click',{x:1,y:1})).rejects.toMatchObject({code:'pc_browser_screenshot_stale'});
     await computer('screenshot',{includeCursor:true});await computer('click',{x:1,y:1});
     await run('reload',{tabId});await expect(run('click',{tabId,ref})).rejects.toMatchObject({code:'pc_browser_ref_stale'});

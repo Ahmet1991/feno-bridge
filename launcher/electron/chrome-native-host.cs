@@ -92,17 +92,22 @@ internal static class ChromeNativeHost {
                 string id=Field(command,"id");if(id==null)continue;
                 Send(command);
                 var deadline=DateTime.UtcNow.AddSeconds(65);
-                while(!Inbox.TryTake(out raw,500)){
-                    if(Closed||DateTime.UtcNow>=deadline)return 1;
+                while(!Closed){
+                    if(Inbox.TryTake(out raw,250)){
+                        var result=Parse(raw);
+                        // A canceled operation may report late; never deliver it to a new request.
+                        if(Field(result,"type")!="result"||Field(result,"id")!=id)continue;
+                        result["session"]=session;
+                        try{Request("/result",result);}catch{}
+                        break;
+                    }
                     try{
                         var heartbeat=Request("/heartbeat",new{session,id});
-                        if(Field(heartbeat,"type")!="continue")return 1;
-                    }catch{return 1;}
+                        if(Field(heartbeat,"type")=="continue"&&DateTime.UtcNow<deadline)continue;
+                    }catch{}
+                    Send(new{type="cancel",id});
+                    break;
                 }
-                var result=Parse(raw);
-                if(Field(result,"type")!="result"||Field(result,"id")!=id)return 1;
-                result["session"]=session;
-                try{Request("/result",result);}catch{/* A lost broker is never retried with a previous command. */}
             }
         }catch{return 1;}
         finally{try{Request("/disconnect",new{session});}catch{}}

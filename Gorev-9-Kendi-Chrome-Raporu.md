@@ -49,3 +49,51 @@ Kısıtlar: iframe içi koordinat eylemleri güvenlik nedeniyle engellenir; şif
 1. Feno Bridge → Ayarlar → Chrome uzantısı: **Uzantı klasörünü aç** ve **Chrome uzantılar sayfasını aç** düğmelerine bas.
 2. Chrome'da **Geliştirici modu**nu aç, **Paketlenmemiş öğe yükle** ile açılan uzantı klasörünü seç.
 3. Feno Bridge'de Chrome uzantısını etkinleştir; bağlantı durumunun bağlı ve sürümün 5.1.19 olduğunu kontrol et.
+
+## Devam: canlı deneme düzeltmeleri (5.1.20)
+
+Tarih: 18.11.2026. PR #97, `feat/normal-pc2-next-5.0.96`; başlangıç HEAD `b0d776d`, origin ile fark 0/0.
+
+- Arka plan kaydırması CDP mouseWheel beklemesi yerine koordinattaki öğenin en yakın kaydırılabilir atasına, bulunamazsa document.scrollingElement'e DOM scrollBy uygular. İmleç ve yeni öğe/sayfa kaydırma konumları döner.
+- Komut zaman aşımı worker'da AbortController ve native host'ta komut kimlikli iptal ile ele alınır; geç gelen sonuç atlanır, port korunur ve yalnız etkilenen sekmenin debugger oturumu sıfırlanır. Debugger yeniden kullanılır ve 15 saniye boşta kalınca ayrılır; mevcut imleç kaplaması tekrar eklenmez.
+- İlk ekran görüntüsü yoksa `pc_chrome_screenshot_required` (Önce screenshot al), eski görüntü/ref için `pc_chrome_ref_stale`. Chrome ve ayrı tarayıcı tuşları büyük/küçük harfe duyarsız; Esc/Escape eşdeğer.
+- Tam yetki ve eşleşen uzantı sürümüyle ilk bağlantıda, yalnız ayar dosyası yoksa erişim açılır. Kullanıcının açıkça kapattığı ayar korunur; tam yetki yoksa `pc_access_denied`. Kapalı erişim ipucu: Feno Bridge → Ayarlar → Chrome uzantısı → Chrome erişimini aç.
+
+### Test kapıları
+
+| Kapı | Sonuç |
+| --- | --- |
+| Odaklı Node (engine, worker, broker ve gerçek derlenmiş host/sahte port) | 6 başarılı, 0 hata |
+| Odaklı Bun (Chrome client, browser, MCP, tam yetki) | 14 başarılı, 0 hata; 172 doğrulama |
+| `bun test ./tests` | 1230 başarılı, 5 atlanan, 0 hata; 7801 doğrulama |
+| Launcher `bun run scripts/test-launcher.cjs` | Node 434 başarılı, 3 atlanan, 0 hata; Bun 43 başarılı, 0 hata |
+| `bun run typecheck` | Exit 0 |
+| `bun run launcher:typecheck` | Exit 0 |
+| `bun run check-version` | VERSION_SYNC_OK 5.1.20 bun@1.4.0 |
+| `git diff --check` | Exit 0; çalışma kopyası LF/CRLF uyarıları |
+| Gerçek Chromium, geçici profil | OWN_CHROME_SMOKE_OK |
+| `bun run app:package` | Exit 0 |
+| `bun run app:smoke` | PACKAGED_LAUNCHER_SMOKE_OK, 5.1.20 win32/x64, runtimeVerified=true, cdpStatus=200, runtimeStartupVerified=true, pcServiceStarted=true |
+| Paket uzantısı ve iki yardımcı SHA | PACKAGED_CHROME_EXTENSION_OK 5.1.20; iki PACKAGED_HELPER_SHA256_OK |
+
+Gerçek Chrome for Testing (Chromium 1255), geçici profil ve pasif yerel test sekmesi: iç kaydırma 100 piksel (sayfa 0), sayfa kaydırması 600 piksel; imleç, canvas tıklaması ve yazma doğrulandı. Takılan CDP komutu zaman aşımına uğradı, sonraki ekran görüntüsü başarılı; 15 saniyelik boşta ayrılma doğrulandı. Ayrı ön plan örnekleyicisinde 112 örnek, 0 odak değişimi; etkin sekme değişmedi.
+
+| İşlem | Ortanca (ms) | Hedef |
+| --- | ---: | ---: |
+| Click | 20 | ≤1500 |
+| Hover | 15 | ≤1500 |
+| Type | 4 | ≤1500 |
+| Key | 4 | ≤1500 |
+| Screenshot | 32 | ≤1500 |
+
+Ölçümler test çalışanı/Playwright üzerinden engine çağrılarıdır; canlı MCP/native transport uçtan uca gecikmesi ölçülmedi. Click 10 örnek, diğerleri 5'er örnek; en yavaş click 1020 ms, hover 1014 ms. İlk gerçek dumanın debugger ayrılma kontrolü Playwright'ın kendi bağlantısı nedeniyle başarısız oldu; uzantının gerçek detach tamamlanmasını ölçen kontrolle son duman geçti. Önceki canlı hata kayıtları kırmızı kanıtıdır; eski sürümde yeni birim testlerinin ayrı kırmızı koşusu yapılmadı. Takılan CDP sendCommand sınandı; attach/detach çağrılarının kendilerinin takılması ayrı sınanmadı.
+
+### Paket ve korunmuş sınırlar
+
+`launcher/artifacts/feno-bridge-5.1.20-win-x64.exe` — 162.433.797 bayt.
+
+- Kurucu SHA-256: `79d42f0e6fd02af751fda88cfaad26933333235f0669a7835d6a86395f8012a0`; yanındaki `.exe.sha256` ile eşleşiyor.
+- Windows yardımcı SHA-256: `76b65d98489ef8d20ef9f8df3e5a60d13b36cfbc345f2609fc7a4eaa12ea9f63`.
+- Chrome native host SHA-256: `332c22cb630347eb2e0dae952dc64fdf92d92d15365e51a558e9604c2667f6e2`.
+- Defender önce/sonra: AntivirusEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled dört değer de True. DEV kalıcı izin SHA-256 önce/sonra: `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`.
+- Canlı PC2 araçları kullanılmadı; ana Chrome profili, canlı köprü/izin/config/tüneller ve DEV ayarları değiştirilmedi. Kurucu çalıştırılmadı; paket ayrı test alanına açılıp doğrulandı. Bir sonraki canlı uçtan uca doğrulama kurulumdan sonra yapılmalıdır. Merge, etiket ve CI bekleme yok.
