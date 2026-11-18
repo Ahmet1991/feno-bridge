@@ -1241,10 +1241,12 @@ async function start() {
     ?createRuntimeReceipt({filePath:path.join(launcherUserData,'runtime-install.receipt'),protection:safeStorage}):null;
   const sourceDone=bootReporter.begin('runtime_source');
   const previousReceipt=await receipt?.read();
-  const sourceBundle=await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, returnBundle:true,
-    inspect:async(root,identity)=>{const phase=bootReporter.begin(receipt?'runtime_source_metadata':'runtime_source_hash');try{return await (receipt?inspectRuntimeMetadata:inspectRuntimeSource)(root,identity);}finally{phase();}},
-    onWait:waitMs=>bootReporter.wait('runtime_source','source_materializing',waitMs) });
-  sourceDone();
+  let sourceBundle;
+  try{
+    sourceBundle=await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, returnBundle:true,
+      inspect:receipt?inspectRuntimeMetadata:inspectRuntimeSource,
+      onWait:waitMs=>bootReporter.wait('runtime_source','source_materializing',waitMs) });
+  }finally{sourceDone();}
   let installedRuntimeRoot = null;
   let runtimeIntegrityFailed = false;
   const runtimeDone=bootReporter.begin('runtime_install');

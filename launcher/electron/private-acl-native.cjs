@@ -1,6 +1,7 @@
 "use strict";
 // Bun-only Windows backend. No shell, privilege elevation, or execution-policy changes.
 const path=require('node:path');
+const fs=require('node:fs');
 const {randomUUID}=require('node:crypto');
 const {retrySharingViolation}=require('./private-atomic-retry.cjs');
 if(process.platform!=='win32' || !process.versions.bun) throw new Error('pc_private_storage');
@@ -22,6 +23,7 @@ const k=dlopen(path.join(root,'System32/kernel32.dll'),{
   ReadFile:{args:['u64','ptr','u32','ptr','ptr'],returns:'bool'},
   WriteFile:{args:['u64','ptr','u32','ptr','ptr'],returns:'bool'}, FlushFileBuffers:{args:['u64'],returns:'bool'},
   MoveFileExW:{args:['ptr','ptr','u32'],returns:'bool'}, DeleteFileW:{args:['ptr'],returns:'bool'},
+  SetFileInformationByHandle:{args:['u64','u32','ptr','u32'],returns:'bool'},
 }).symbols;
 const nt=dlopen(path.join(root,'System32/ntdll.dll'),{
   NtQueryInformationProcess:{args:['u64','u32','ptr','u32','ptr'],returns:'i32'},
@@ -149,7 +151,33 @@ function writePrivateAtomic(p,bytes,sid){
       if(!k.MoveFileExW(wide(temp),wide(p),9))throw Object.assign(deny(),{nativeCode:k.GetLastError()});
     });created=false;
     h=open(p,0x20080);assertAcl(h,false);
-  }finally{if(h)k.CloseHandle(h);if(created)k.DeleteFileW(wide(temp));release();}
+  }finally{
+    if(h)k.CloseHandle(h);
+    if(created)try{retrySharingViolation(()=>{if(!k.DeleteFileW(wide(temp))){const nativeCode=k.GetLastError();if(nativeCode!==2)throw Object.assign(deny(),{nativeCode});}});}catch{/* startup sweep retries abandoned stages */}
+    release();
+  }
+}
+function cleanupPrivateTemps(directory,sid,now=Date.now()){
+  assertUser(sid);directory=validPath(directory);
+  const release=privateParent(path.win32.join(directory,'unused'));
+  let removed=0;
+  try{
+    for(const name of fs.readdirSync(directory)){
+      if(!/^\.pc-private-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/i.test(name))continue;
+      let h;
+      try{
+        // Exclusive handle, verified ACL, no reparse point; delete by handle
+        // so a concurrent replacement or writer cannot be removed.
+        h=open(path.win32.join(directory,name),0x30080,0);assertAcl(h,false);
+        const info=Buffer.alloc(40);checked(k.GetFileInformationByHandleEx(h,0,info,40));
+        const cutoff=BigInt(Math.floor(now-3600000))*10000n+116444736000000000n;
+        if(info.readBigInt64LE(0)>=cutoff||info.readBigInt64LE(16)>=cutoff)continue;
+        checked(k.SetFileInformationByHandle(h,4,Buffer.from([1]),1));removed++;
+      }catch{/* skip inaccessible or active stages */}
+      finally{if(h)k.CloseHandle(h);}
+    }
+  }finally{release();}
+  return removed;
 }
 function removePrivateFile(p,sid){
   assertUser(sid);p=validPath(p);const release=privateParent(p);let h;
@@ -193,6 +221,26 @@ function inspectProcess(pid){
     const wait=k.WaitForSingleObject(h,0);
     return {state:wait===0?'dead':wait===258?'alive':'unknown',pid,startTime:created.readBigUInt64LE().toString()};
   }finally{k.CloseHandle(h);}
+}
+function inputHelpersAbsent(operation,ownerStartTime){
+  const name=operation==='desktop-input'?'pc-windows-helper.exe':operation==='adb'?'adb.exe':null;
+  if(!name)return false;
+  const snapshot=k.CreateToolhelp32Snapshot(2,0);
+  if(!snapshot||snapshot===INVALID)return false;
+  const entry=Buffer.alloc(568);entry.writeUInt32LE(entry.length);
+  try{
+    if(!k.Process32FirstW(snapshot,entry))return false;
+    do{
+      if(entry.subarray(44,564).toString('utf16le').split('\0')[0].toLowerCase()!==name)continue;
+      const candidate=inspectProcess(entry.readUInt32LE(8));
+      if(candidate.state==='dead')continue;
+      // A helper predating the old owner cannot be its child (e.g. an
+      // already running ADB server). Any newer or unreadable helper is
+      // uncertain; do not recover the lease.
+      if(candidate.state!=='alive'||!candidate.startTime||BigInt(candidate.startTime)>=BigInt(ownerStartTime))return false;
+    }while(k.Process32NextW(snapshot,entry));
+    return k.GetLastError()===18; // ERROR_NO_MORE_FILES, not an incomplete snapshot
+  }finally{k.CloseHandle(snapshot);}
 }
 /** All bridge launcher main processes, including a DEV whose profile home vanished.
  * A failed native snapshot or unreadable candidate command line is UNKNOWN, never ABSENT. */
@@ -248,7 +296,8 @@ function handleRequest(req){
   else if(req.action==='write')writePrivateAtomic(p,Buffer.from(req.data,'base64'),sid);
   else if(req.action==='read')return {ok:true,data:readPrivateFile(p,sid,req.maxBytes).toString('base64')};
   else if(req.action==='remove')removePrivateFile(p,sid);
+  else if(req.action==='cleanup-temps')return {ok:true,removed:cleanupPrivateTemps(p,sid)};
   else if(req.action==='quarantine')return {ok:true,path:quarantinePrivateFile(p,sid)};
   else throw deny();return {ok:true};
 }
-module.exports={getCurrentUserSid:()=>USER_SID,inspectProcess,inspectDevLauncherProcesses,ensurePrivateDirectory,assertPrivatePath,readPrivateFile,writePrivateAtomic,removePrivateFile,quarantinePrivateFile,acquireExclusivePrivateFile,handleRequest};
+module.exports={getCurrentUserSid:()=>USER_SID,inspectProcess,inputHelpersAbsent,inspectDevLauncherProcesses,ensurePrivateDirectory,assertPrivatePath,readPrivateFile,writePrivateAtomic,cleanupPrivateTemps,removePrivateFile,quarantinePrivateFile,acquireExclusivePrivateFile,handleRequest};

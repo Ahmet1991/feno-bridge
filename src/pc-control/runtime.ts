@@ -4,7 +4,7 @@ import {getConfigDir,loadConfig} from '../config';
 import {PcAccessDeniedError,PcAuthorizer} from './authorization';
 import {createPcPolicySync} from './consent-sync';
 import {createLocalPcHost} from './mcp-tools';
-import {acquirePcHostLease} from './resource-locks';
+import {acquirePcHostLease,recoverAbandonedPcResources} from './resource-locks';
 import {assertCompatiblePcResourcePeers} from './resource-protocol';
 import {createPcPeerRegistry} from './resource-peers';
 import type {PcProfileId} from './types';
@@ -31,12 +31,16 @@ export function createDefaultPcRuntime(){
   }
   const registry=files?createPcPeerRegistry({directory:layout.sharedDirectory,files,legacyHomes:layout.legacyHomes,devInstallPaths:layout.devInstallPaths,retirementStore}):undefined;
   const coordinationReady=()=>{try{assertCompatiblePcResourcePeers(registry?.observe());return true;}catch{return false;}};
-  function writeAudit(name:string,record:object){
+  function writeAudit(name:string,record:object,includeProfile=true){
     if(!files)throw new PcAccessDeniedError();
     const target=join(layout.directory,name);let previous=Buffer.alloc(0);
     if(existsSync(target))previous=files.readPrivateFile(target,1024*1024);
-    const next=Buffer.from(JSON.stringify({...record,profileId})+'\n');
+    const next=Buffer.from(JSON.stringify(includeProfile?{...record,profileId}:record)+'\n');
     files.writePrivateAtomic(target,Buffer.concat([previous.length+next.length>1024*1024?Buffer.alloc(0):previous,next]));
+  }
+  const onRecovered=(event:{operation:string;reason:string})=>writeAudit('pc-resource-audit.jsonl',{event:'pc_control.resource_recovered',...event},false);
+  if(files&&userSid&&configured){
+    try{recoverAbandonedPcResources(layout.sharedDirectory,userSid,onRecovered);}catch{/* fail closed on subsequent acquisition */}
   }
   const host=createLocalPcHost(authorizer,{
     ...(files&&configured&&profileId==='pc2-normal'?{chromeAction:createUserChromeClient(files)}:{}),
@@ -48,7 +52,7 @@ export function createDefaultPcRuntime(){
     runnerDirectory:layout.directory,
     acquireLease:async(operation,operationId)=>{
       if(!files||!userSid||!registry)throw new PcAccessDeniedError();
-      return acquirePcHostLease({directory:layout.sharedDirectory,userSid,profileId,authorizer,operation,operationId,observePeers:()=>registry.observe()});
+      return acquirePcHostLease({directory:layout.sharedDirectory,userSid,profileId,authorizer,operation,operationId,observePeers:()=>registry.observe(),onRecovered});
     },
     auditCommand:record=>writeAudit('pc-terminal-audit.jsonl',record),
   });

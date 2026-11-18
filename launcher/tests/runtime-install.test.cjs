@@ -303,6 +303,26 @@ test("packaged runtime source wait fails closed when materialization exceeds its
   }
 });
 
+test("150 source inspections report waiting only once",async()=>{
+  let attempts=0;
+  const events=[];
+  const {createBootReporter}=require("../electron/startup-timing.cjs");
+  const reporter=createBootReporter({info:(event,details)=>events.push({event,...details})});
+  events.length=0;
+  const done=reporter.begin("runtime_source");
+  const bundle={runtimeRoot:"fixture"};
+  assert.equal(await waitForPackagedRuntimeSource({
+    app:{isPackaged:true,getVersion:()=>"5.1.25"},resourcesPath:".",
+    timeoutMs:10000,intervalMs:1,returnBundle:true,
+    inspect:async()=>{if(++attempts<150)throw Error("not ready");return bundle;},
+    onWait:ms=>reporter.wait("runtime_source","source_materializing",ms),
+  }),bundle);
+  done();
+  assert.equal(attempts,150);assert.equal(events.length,3);
+  const main=fs.readFileSync(path.join(__dirname,"../electron/main.cjs"),"utf8");
+  assert.match(main,/inspect:\s*receipt\?inspectRuntimeMetadata:inspectRuntimeSource/);
+});
+
 test("packaged runtime transactionally repairs an incomplete installed bundle", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-repair-"));
   const resourcesPath = runtimeFixture(root);

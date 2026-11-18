@@ -99,6 +99,7 @@ function createPrivateFileAccess(userSid,options={}) {
     },
     ensurePrivateDirectoryAsync:async p=>{await nativeAsync({action:'ensure',path:p,userSid},options);},
     removePrivateFile:p=>removePrivateFile(p,userSid,options),
+    cleanupPrivateTemps:p=>request('cleanup-temps',p,userSid,{},options).removed,
     quarantinePrivateFile:p=>quarantinePrivateFile(p,userSid,options),
     inspectProcess:pid=>native({action:'inspect-process',userSid,pid},options).process,
     inspectDevLauncherProcesses:()=>native({action:'inspect-dev-launchers',userSid},options).state,

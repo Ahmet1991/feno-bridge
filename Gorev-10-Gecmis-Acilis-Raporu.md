@@ -68,3 +68,38 @@ Her iki yardımcı kendi `.sha256` dosyasıyla eşleşti; uzantı paket içeriğ
 Defender `MsMpEng` önce 1 (PID 3348), sonra 1 (aynı PID), CPU alanı boş olduğundan CPU farkı ölçülemedi. DEV kalıcı izin SHA-256 önce ve sonra aynı: `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`.
 
 Canlı PC2 araçları, kurulum, Chrome profili, canlı tünel, izinler ve iş geçmişine müdahale edilmedi. Paket kurulmayan izole test içindir; merge, etiket ve CI bekleme yoktur.
+
+## Devam: kilit kurtarma (5.1.25)
+
+19.11.2026 — Yarım kalan yedi dosyadaki değişiklikler incelendi ve K-4–K-7 tamamlandı. Karşılaştırma tabanı `origin/feat/normal-pc2-next-5.0.96` (`4e4a6ef`).
+
+- **K-4:** Ölü sahip ve PID yeniden kullanımı, işlem kimliği ve başlangıç zamanı ile doğrulanarak güvenli kilit kurtarma yapılıyor. İş/terminal için kapanışta süreçleri öldüren Job Object doğrulandı. Masaüstü/ADB yardımcısının kalmadığı native süreç gözlemiyle doğrulanamadığında kilit korunuyor. Canlı, okunamayan veya bozuk kayıtlar güvenli biçimde reddediliyor. Açılış taraması aynı kuralları uyguluyor; `pc_control.resource_recovered` yalnız işlem türü ve nedeni içeriyor. Eski ortak iş/terminal kaydında işlem türü yoksa açılış günlüğünde iş türü kullanılıyor.
+- **K-5:** Kaynak beklemesi için her denemede aşama olayı yerine başlangıç, özet ve bitiş; 150 sahte denemede en çok üç olay.
+- **K-6:** Başarısız atomik yazımın geçici dosyası temizleniyor. Başlangıçta yalnız kendi özel klasörlerindeki geçerli UUID desenli, hem oluşturulma hem yazılma zamanı bir saatten eski geçici dosyalar özel ACL ve açık dosya kontrolleriyle temizleniyor; hata açılışı durdurmuyor.
+- **K-7:** İlk boşta belge zaman aşımı ve geçici ağ hatalarında aynı süreçte en fazla üç deneme, 1 ve 2 saniye geri çekilme; kalıcı hata önceki davranışa iletiliyor. Denemeler ve süreler günlüğe yazılıyor.
+
+Kırmızı testler değişiklik öncesi ayrık çalışma ağacında doğrulandı: K-4 kurtarma gerekli hatası, K-5 her denemede aşama kaydı, K-6 başlangıç temizleme işlevinin yokluğu, K-7 yeniden deneme işlevinin yokluğu. K-6 başarısız yazım senaryosu testte ayrıca doğrulandı; eski kaynakta başlangıç temizliği bulunmuyordu. Yeşil testlerde gerçek yardımcı süreç geçici klasörde kilit alıp 17 koduyla çıktı ve sonraki alım kurtarıldı. Dört kilit türü, PID yeniden kullanımı, canlı/bozuk kayıt ve açılış taraması da kapsandı.
+
+| Kapı | Sonuç |
+|---|---|
+| Odaklı Bun | 11 başarılı, 0 başarısız |
+| Odaklı Node | 2 başarılı, 0 başarısız |
+| Kök (119 dosya) | 1.234 başarılı, 5 atlanan, 0 başarısız; 7.849 assertion |
+| Launcher Node | 442 başarılı, 3 atlanan, 0 başarısız |
+| Launcher Bun | 45 başarılı, 0 başarısız |
+| İki typecheck | Çıkış 0 |
+| Sürüm | `VERSION_SYNC_OK 5.1.25 bun@1.4.0` |
+| Diff denetimi | Çıkış 0 |
+| Paket | `bun run app:package`, çıkış 0 |
+| Gerçek paket dumanı | `PACKAGED_LAUNCHER_SMOKE_OK win32/x64`, CDP 200, runtime doğrulandı, PC hizmeti başladı |
+| Gizli Chrome dumanı | `BROWSER_SMOKE_OK`, Chrome/157.0.8103.79, 111 örnek, 0 odak değişimi, 0 Chrome örneği |
+
+Paket açılışı: ilk kaynak ve runtime toplamı 45,711 s; ikinci açılış 0,702 s; arka plan karma 3,767 s. Paket ön plan örnekleyicisi 453 örnekte 0 odak değişimi, 0 Chrome ve 0 köprü örneği gördü. Gerçek Windows soğuk yeniden başlatması ve canlı tünel/tam yetki süresi ölçülmedi; testler geçici profilde çalıştı.
+
+Paket: `launcher/artifacts/feno-bridge-5.1.25-win-x64.exe` (162.446.209 bayt).
+SHA-256: `1ffe282db9615d79ff982663a334cbe97aef35a17b86f7f0408bd31ad89a11eb` — yan dosya oluşturuldu ve yeniden karma alınarak eşleşme doğrulandı (`True`).
+Paketli `pc-windows-helper.exe`: `04f313399fcfbc1c1540c5359def4789a29f547ad67c73bc646a66e98ac5b972`.
+Paketli `chrome-native-host.exe`: `a01f6c9f56f080386c905b4800adb267ca4bb4e5a24ba03d167655855b584b64`.
+Her iki yardımcı paket içindeki kendi `.sha256` dosyasıyla eşleşti; uzantı manifesti 5.1.25 doğrulandı.
+
+Defender `MsMpEng` önce/sonra 1 (PID 3980); tehdit tespit kaydı sayısı 40 → 40. DEV kalıcı izin SHA-256 önce/sonra `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`. Canlı PC2 araçları, kurulum, canlı koordinasyon/runtime, Chrome profili, DEV ve Defender ayarları değiştirilmedi. Merge, etiket ve CI bekleme yoktur.

@@ -22,6 +22,7 @@ const {
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
+  initializeBrowserWithRetry,
   MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
   MANUAL_SUBMIT_TIMEOUT_MS,
   navigationErrorForLog,
@@ -4019,4 +4020,19 @@ test("an aborted turn without the steering mark, or without a proven connector, 
     unboundFixture.fixture, unbound.traceId, unbound.helperPid, "aborted", false, "ChatGPT web turn aborted", true, false, false, true,
   );
   assert.deepEqual(unboundFixture.removed, [unbound.id]);
+});
+test("idle bootstrap retries transient errors within the same contents and propagates persistent failure", async()=>{
+  const contents={isDestroyed:()=>false}, events=[], waits=[];
+  const logger={info:(event,details)=>events.push({event,...details})};
+  const timeout=new Error("Browser idle document did not commit within 10000ms");
+  let calls=0;
+  await initializeBrowserWithRetry(contents,logger,{load:async(c)=>{assert.equal(c,contents);if(++calls===1)throw timeout;},pause:async ms=>waits.push(ms)});
+  assert.equal(calls,2);assert.deepEqual(waits,[1000]);
+  assert.deepEqual(events.map(e=>e.event),["browser.initialization_retry","browser.initialization_recovered"]);
+  calls=0;
+  await assert.rejects(initializeBrowserWithRetry(contents,logger,{load:async()=>{calls++;throw timeout;},pause:async()=>{}}),/did not commit/);
+  assert.equal(calls,3);
+  calls=0;
+  await assert.rejects(initializeBrowserWithRetry(contents,logger,{load:async()=>{calls++;throw Error("renderer crashed");},pause:async()=>{}}),/renderer crashed/);
+  assert.equal(calls,1);
 });

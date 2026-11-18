@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {join,isAbsolute} from 'node:path';
+import {existsSync} from 'node:fs';
 import {PcAccessDeniedError,PcAuthorizer} from './authorization';
 import {PcOperationError} from './errors';
 import {PC_RESOURCE_PROTOCOL,assertCompatiblePcResourcePeers,type PcPeerEvidence} from './resource-protocol';
@@ -10,8 +11,12 @@ interface NativeApi {
   ensurePrivateDirectory(path:string,sid:string):void;
   acquireExclusivePrivateFile(path:string,sid:string):NativeLease;
   inspectProcess(pid:number):ProcessState;
+  inputHelpersAbsent(operation:'desktop-input'|'adb',ownerStartTime:string):boolean;
 }
 type Operation='job'|'terminal'|'desktop-input'|'adb';
+type RecoveryEvent={operation:Operation;reason:'owner_dead'|'pid_reused'};
+type RecoveryLog=(event:RecoveryEvent)=>void;
+const recoveryRequired=()=>new PcOperationError('pc_resource_recovery_required',{reason:'Kaynak kilidi doğrulanamadı. Feno Bridge yerel yöneticisine başvurun; kilidi elle silmeyin.'});
 // Long-running terminal builds must not monopolize the short-lived input planes.
 // Jobs and terminals still serialize against one another; input classes remain
 // exclusive within each class and use the same per-user private ACL and peer protocol.
@@ -22,9 +27,10 @@ export interface PcResourceOptions {
   directory:string;userSid:string;profileId:PcProfileId;authorizer:PcAuthorizer;
   operation:Operation;operationId:string;observePeers:()=>PcPeerEvidence;
   signal?:AbortSignal;timeoutMs?:number;
+  onRecovered?:RecoveryLog;
 }
 type Owner={profileId:PcProfileId;grantId:string;operationId:string;pid:number;startTime:string};
-type RecordState={schema:1;protocol:typeof PC_RESOURCE_PROTOCOL;generation:string;state:'held'|'released';owner:Owner};
+type RecordState={schema:1;protocol:typeof PC_RESOURCE_PROTOCOL;generation:string;state:'held'|'released';owner:Owner;operation?:Operation};
 const requirements:Record<Operation,readonly Exclude<PcPermission,'status'>[]>={
   job:['jobs'],terminal:['jobs','terminal.exec'],'desktop-input':['desktop.input'],adb:['adb'],
 };
@@ -39,16 +45,50 @@ function authorize(options:PcResourceOptions):string {
   let id='';for(const permission of requirements[options.operation])id=options.authorizer.assert(permission).id;return id;
 }
 function readRecord(lease:NativeLease):RecordState|undefined {
-  const bytes=lease.readBytes(8192);if(!bytes.length)return undefined;
   try{
+    const bytes=lease.readBytes(8192);if(!bytes.length)return undefined;
     const r=JSON.parse(bytes.toString('utf8')) as RecordState;
     if(r.schema!==1||r.protocol!==PC_RESOURCE_PROTOCOL||!['held','released'].includes(r.state)
       ||typeof r.generation!=='string'||!r.generation||!r.owner||!['pc2-normal','pc2-dev'].includes(r.owner.profileId)
-      ||!Number.isInteger(r.owner.pid)||r.owner.pid<1||typeof r.owner.startTime!=='string'||!/^\d{1,24}$/.test(r.owner.startTime))throw Error();
+      ||typeof r.owner.grantId!=='string'||!/^[a-zA-Z0-9_-]{8,128}$/.test(r.owner.grantId)
+      ||typeof r.owner.operationId!=='string'||!/^[a-zA-Z0-9_-]{8,128}$/.test(r.owner.operationId)
+      ||!Number.isInteger(r.owner.pid)||r.owner.pid<1||r.owner.pid>0xffffffff||typeof r.owner.startTime!=='string'||!/^\d{1,24}$/.test(r.owner.startTime)
+      ||(r.operation!==undefined&&!Object.hasOwn(requirements,r.operation)))throw Error();
     return r;
-  }catch{throw new PcOperationError('pc_resource_recovery_required');}
+  }catch{throw recoveryRequired();}
 }
 const writeRecord=(lease:NativeLease,r:RecordState)=>lease.writeBytes(Buffer.from(JSON.stringify(r)));
+function recoverAbandoned(api:NativeApi,lease:NativeLease,previous:RecordState|undefined,operation:Operation,onRecovered?:RecoveryLog){
+  if(previous?.state!=='held')return;
+  if(previous.operation&&pcResourceLockFile(previous.operation)!==pcResourceLockFile(operation))throw recoveryRequired();
+  let reason:RecoveryEvent['reason'];
+  try{
+    const owner=api.inspectProcess(previous.owner.pid);
+    if(owner.state==='dead')reason='owner_dead';
+    else if(owner.state==='alive'&&owner.startTime&&owner.startTime!==previous.owner.startTime)reason='pid_reused';
+    else throw recoveryRequired();
+    // Jobs and terminal shells are assigned atomically to a non-inheritable
+    // KILL_ON_JOB_CLOSE job. Explicitly detached GUI children are not leased.
+    // Legacy input helpers have no such containment: require a complete
+    // native snapshot proving no matching helper remains.
+    if((operation==='desktop-input'||operation==='adb')&&!api.inputHelpersAbsent(operation,previous.owner.startTime))throw recoveryRequired();
+  }catch{throw recoveryRequired();}
+  writeRecord(lease,{...previous,state:'released'});
+  try{onRecovered?.({operation:previous.operation??operation,reason});}catch{/* recovery must not depend on logging */}
+}
+/** Startup maintenance only; never creates a journal or bypasses an OS lease. */
+export function recoverAbandonedPcResources(directory:string,userSid:string,onRecovered?:RecoveryLog){
+  if(!isAbsolute(directory)||!existsSync(directory))return;
+  const api=nativeApi();
+  for(const operation of ['job','desktop-input','adb'] as const){
+    const file=join(directory,pcResourceLockFile(operation));
+    if(!existsSync(file))continue;
+    let lease:NativeLease|undefined;
+    try{lease=api.acquireExclusivePrivateFile(file,userSid);recoverAbandoned(api,lease,readRecord(lease),operation,onRecovered);}
+    catch{/* Busy, unreadable or unproven records remain untouched. */}
+    finally{lease?.close();}
+  }
+}
 function checkCancelled(options:PcResourceOptions){if(options.signal?.aborted)throw new PcOperationError('pc_resource_cancelled');}
 async function pause(ms:number,signal?:AbortSignal){
   await new Promise<void>((resolve,reject)=>{
@@ -82,10 +122,10 @@ export async function acquirePcHostLease(options:PcResourceOptions):Promise<PcHo
     try{
       checkCancelled(options);if(authorize(options)!==grantId)throw new PcAccessDeniedError();
       const previous=readRecord(held);
-      if(previous?.state==='held')throw new PcOperationError('pc_resource_recovery_required');
+      recoverAbandoned(api,held,previous,options.operation,options.onRecovered);
       const self=api.inspectProcess(process.pid);
       if(self.state!=='alive'||!self.startTime)throw new PcOperationError('pc_resource_recovery_required');
-      const record:RecordState={schema:1,protocol:PC_RESOURCE_PROTOCOL,generation:randomUUID(),state:'held',owner:{profileId:options.profileId,grantId,operationId:options.operationId,pid:process.pid,startTime:self.startTime}};
+      const record:RecordState={schema:1,protocol:PC_RESOURCE_PROTOCOL,generation:randomUUID(),state:'held',operation:options.operation,owner:{profileId:options.profileId,grantId,operationId:options.operationId,pid:process.pid,startTime:self.startTime}};
       writeRecord(held,record);
       let completed=false,pending:Promise<void>|undefined;
       return Object.freeze({generation:record.generation,

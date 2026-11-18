@@ -104,6 +104,9 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       files.ensurePrivateDirectory(layout.directory);
       files.ensurePrivateDirectory(path.join(profile.userData,'pc-control'));
       files.ensurePrivateDirectory(path.dirname(policy.persistentStorePath));
+      for(const directory of [layout.directory,layout.sharedDirectory,path.dirname(policy.persistentStorePath)]){
+        try{if(fs.existsSync(directory))files.cleanupPrivateTemps(directory);}catch{/* maintenance never prevents startup */}
+      }
       channel=createPcConsentChannel({directory:layout.directory,profileId:policy.profileId,files,clock});
       const store=createPcPersistentConsent({filePath:policy.persistentStorePath,profileId:policy.profileId,files,
         encryption:createWindowsDpapiProtection(context.userSid,policy.profileId,{bunPath})});
