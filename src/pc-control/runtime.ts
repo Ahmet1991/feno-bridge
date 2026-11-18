@@ -52,7 +52,7 @@ export function createDefaultPcRuntime(){
     },
     auditCommand:record=>writeAudit('pc-terminal-audit.jsonl',record),
   });
-  const sync=files&&configured?createPcPolicySync({directory:layout.directory,files,authorizer,onRevoked:()=>host.revokeActiveJobs()}):undefined;
+  const sync=files&&configured?createPcPolicySync({directory:layout.directory,files,authorizer,onRevoked:()=>host.revokeActiveJobs(),onTransportLost:()=>host.suspendTransport?.()}):undefined;
   let closed=false;
   function refresh(){if(closed)return;if(sync)sync.refresh();else authorizer.revoke();}
   // 500 ms is well below the 15 s signed heartbeat limit and avoids

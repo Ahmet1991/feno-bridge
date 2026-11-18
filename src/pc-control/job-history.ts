@@ -9,7 +9,7 @@ export interface PcJobSummary {
 type ProcessInfo={state:string;startTime?:string};
 type Files={ensurePrivateDirectory(path:string):unknown;readPrivateFile(path:string,maxBytes:number):Buffer;
   writePrivateAtomic(path:string,data:Buffer):unknown;removePrivateFile(path:string):unknown;inspectProcess(pid:number):ProcessInfo};
-type Entry={profileId:PcProfileId;grantId:string;pid:number;startTime:string;summary:PcJobSummary};
+type Entry={profileId:PcProfileId;grantId:string;lineageId?:string;pid:number;startTime:string;summary:PcJobSummary};
 const filename=/^(\d{16})-([a-f0-9-]{36})\.json$/i;
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 export function createPcJobHistory({directory,profileId,files,clock=Date.now}:{directory:string;profileId:PcProfileId;files:Files;clock?:()=>number}){
@@ -25,19 +25,19 @@ export function createPcJobHistory({directory,profileId,files,clock=Date.now}:{d
   const key=(s:PcJobSummary)=>`${String(s.startedAt).padStart(16,'0')}-${s.jobId}.json`;
   const persist=(name:string,entry:Entry)=>files.writePrivateAtomic(join(folder,name),Buffer.from(JSON.stringify(entry),'utf8'));
   return {
-    write(grantId:string,summary:PcJobSummary){
+    write(grantId:string,summary:PcJobSummary,lineageId?:string){
       const own=files.inspectProcess(process.pid);if(own.state!=='alive'||!own.startTime)throw Error('unknown process identity');
       const s=safeSummary(summary);files.ensurePrivateDirectory(folder);
-      persist(key(s),{profileId,grantId,pid:process.pid,startTime:own.startTime,summary:s});
+      persist(key(s),{profileId,grantId,...(lineageId?{lineageId}:{}),pid:process.pid,startTime:own.startTime,summary:s});
       // Independent per-job atomic files avoid losing another MCP process's updates.
       for(const name of names().slice(20)){try{files.removePrivateFile(join(folder,name));}catch{/* Concurrent pruning is harmless. */}}
     },
-    list(grantId:string):PcJobSummary[]{
+    list(grantId:string,lineageId?:string):PcJobSummary[]{
       const result:PcJobSummary[]=[];
       for(const name of names().slice(0,20)){
         try{
           const entry=JSON.parse(files.readPrivateFile(join(folder,name),16384).toString('utf8')) as Entry;
-          if(entry.profileId!==profileId||entry.grantId!==grantId||!Number.isSafeInteger(entry.pid)||entry.pid<=0||typeof entry.startTime!=='string')continue;
+          if(entry.profileId!==profileId||(entry.lineageId!==undefined?(!uuid.test(entry.lineageId)||entry.lineageId!==lineageId):entry.grantId!==grantId)||!Number.isSafeInteger(entry.pid)||entry.pid<=0||typeof entry.startTime!=='string')continue;
           let s=safeSummary(entry.summary);if(key(s)!==name)continue;
           if(s.state==='queued'||s.state==='running'){
             const owner=files.inspectProcess(entry.pid);

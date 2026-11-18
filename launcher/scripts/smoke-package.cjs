@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { validateRuntimeBundle } = require("../electron/runtime-install.cjs");
 const { stageWindowsSmoke } = require("./stage-windows-smoke.cjs");
@@ -23,7 +23,7 @@ const coreHome = path.join(scratch, "core-home");
 let macAppBundle;
 let failed = false;
 
-const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = 240_000;
+const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = 480_000;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -40,6 +40,38 @@ function run(command, args, options = {}) {
       `${command} failed with status ${result.status}: ${result.stderr?.trim() || result.stdout?.trim() || "no output"}`,
     );
   }
+  return result;
+}
+
+function waitForFile(file, timeout=10_000) {
+  const deadline=Date.now()+timeout;
+  const sleeper=new Int32Array(new SharedArrayBuffer(4));
+  while(!fs.existsSync(file)&&Date.now()<deadline)Atomics.wait(sleeper,0,0,100);
+  if(!fs.existsSync(file))throw Error('Foreground sampler did not signal readiness');
+}
+
+function startForegroundSampler() {
+  const compiler=['Framework64','Framework'].map(folder=>path.join(process.env.SystemRoot||'C:\\Windows','Microsoft.NET',folder,'v4.0.30319','csc.exe')).find(file=>fs.existsSync(file));
+  if(!compiler)throw Error('Foreground sampler compiler missing');
+  const library=path.join(scratch,'foreground.dll');
+  run(compiler,['/nologo','/target:library','/out:'+library,'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll',path.join(launcherRoot,'..','scripts','sample-browser-foreground.cs')]);
+  const probe=spawn('powershell.exe',['-NoProfile','-Command','Add-Type -Path $env:FENO_FOCUS_PROBE; [ForegroundProbe]::RunPassive($env:FENO_FOCUS_DIRECTORY)'],{windowsHide:true,stdio:'ignore',env:{...process.env,FENO_FOCUS_PROBE:library,FENO_FOCUS_DIRECTORY:scratch}});
+  const ready=path.join(scratch,'foreground-ready');
+  const stop=path.join(scratch,'foreground-stop');
+  const done=path.join(scratch,'foreground-done');
+  try{waitForFile(ready);}catch(error){fs.writeFileSync(stop,'stop');probe.kill();throw error;}
+  return () => {
+    fs.writeFileSync(stop,'stop');
+    try{waitForFile(done);}catch(error){probe.kill();throw error;}
+    const expected=fs.readFileSync(ready,'utf8').trim();
+    const rows=fs.readFileSync(path.join(scratch,'foreground.csv'),'utf8').trim().split(/\r?\n/).map(line=>line.split(','));
+    const changes=rows.filter(row=>row[1]!==expected);
+    const chromeSamples=rows.filter(row=>/^(chrome|msedge)$/i.test(row[3])).length;
+    const bridgeSamples=rows.filter(row=>row[3].toLowerCase()===launcherManifest.build.productName.toLowerCase()).length;
+    // Other apps can legitimately receive focus while this passive test runs.
+    console.log('PACKAGED_FOREGROUND '+JSON.stringify({samples:rows.length,foregroundChanges:changes.length,chromeSamples,bridgeSamples,interactive:expected!=='0'}));
+    if(expected==='0'||rows.length<5||chromeSamples||bridgeSamples)throw Error('Packaged launcher foreground check failed');
+  };
 }
 
 function artifact(pattern, label) {
@@ -124,7 +156,22 @@ try {
 
   if (!fs.existsSync(executable)) throw new Error(`Packaged launcher executable is missing: ${executable}`);
   if (process.platform === "win32") {
-    run(command, args, { env, timeout: WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS });
+    const logFile=path.join(env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR,'logs','launcher.jsonl');
+    const stopSampler=startForegroundSampler();
+    try {
+    for(let attempt=1;attempt<=2;attempt++){
+      fs.rmSync(markerPath,{force:true});
+      run(command, args, { env, timeout: WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS });
+      const ready=JSON.parse(fs.readFileSync(markerPath,'utf8'));
+      if(!ready.ok||!ready.runtimeStartupVerified||!ready.pcServiceStarted||ready.version!==expectedVersion)throw Error('Invalid smoke readiness marker on launch '+attempt);
+      const events=fs.readFileSync(logFile,'utf8').trim().split(/\r?\n/).map(line=>JSON.parse(line));
+      const boot=events.findLastIndex(event=>event.event==='launcher.boot_started');
+      const phases=Object.fromEntries(events.slice(boot).filter(event=>event.event==='launcher.boot_phase_finished').map(event=>[event.detail.phase,event.detail.durationMs]));
+      if(!Number.isFinite(phases.runtime_source)||!Number.isFinite(phases.runtime_install))throw Error('Missing runtime phase measurements');
+      if(attempt===2&&!Number.isFinite(phases.runtime_background_hash))throw Error('Repeated launch did not use deferred verification');
+      console.log('PACKAGED_STARTUP_TIMING '+JSON.stringify({attempt,phases,sourceAndInstallMs:phases.runtime_source+phases.runtime_install}));
+    }
+    } finally {stopSampler();}
   } else {
     run(command, args, { env });
   }

@@ -23,7 +23,10 @@ windowsTest('explicit normal config starts full grant without local dialog, pers
     assert.equal(a.status().permissions.length,13);assert.ok(a.status().permissions.includes('chrome.user'));assert.deepEqual(a.status().allowedApps,[]);
     const signed=JSON.parse(fs.readFileSync(path.join(f.profile.coreHome,'runtime','pc2-normal','pc-consent-state.json'),'utf8'));
     assert.equal(signed.payload.grant.fullAccess,true);assert.ok(signed.signature);
-    a.suspend();const restarted=f.make();restarted.start();try{await restarted.heartbeat();assert.equal(restarted.status().enabled,true);assert.equal(f.confirms,0);}finally{restarted.suspend();}
+    a.suspend();const restarted=f.make();restarted.start();try{await restarted.heartbeat();assert.equal(restarted.status().enabled,true);assert.equal(f.confirms,0);
+      const after=JSON.parse(fs.readFileSync(path.join(f.profile.coreHome,'runtime','pc2-normal','pc-consent-state.json'),'utf8')).payload.grant;
+      assert.ok(signed.payload.grant.lineageId);assert.equal(after.lineageId,signed.payload.grant.lineageId);assert.notEqual(after.id,signed.payload.grant.id);
+    }finally{restarted.suspend();}
     assert.ok(f.actions.some(e=>e.action==='full_access_enabled'));
   }finally{a.suspend();}
 });

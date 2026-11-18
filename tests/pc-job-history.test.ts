@@ -21,5 +21,11 @@ test('private job summaries survive process replacement and stay grant scoped',(
     expect(next.list('grant1')).toMatchObject([{jobId:completed,state:'succeeded'},{jobId,state:'interrupted'}]);
     expect(next.list('grant2')).toEqual([]);
     expect(createPcJobHistory({directory,profileId:'pc2-dev',files}).list('grant1')).toEqual([]);
+    alive=true;
+    const lineage=randomUUID(),owned=randomUUID();
+    next.write('grant1',{jobId:owned,kind:'job',state:'succeeded',startedAt:30,finishedAt:31,exitCode:0,projectRoot:directory,purpose:null,commandHash:'c'.repeat(64)},lineage);
+    expect(next.list('grant2',lineage)).toMatchObject([{jobId:owned}]);
+    expect(next.list('grant2',randomUUID())).toEqual([]);
+    expect(next.list('grant1')).toMatchObject([{jobId:completed},{jobId}]);
   }finally{rmSync(directory,{recursive:true,force:true});}
 });

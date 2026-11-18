@@ -25,7 +25,7 @@ function createPcPersistentConsent({filePath,profileId,encryption,files,allowLeg
   };
   const availableAsync=async()=>{
     try{return process.platform==='win32'&&(typeof encryption.isEncryptionAvailableAsync==='function'
-      ?await encryption.isEncryptionAvailableAsync():encryption.isEncryptionAvailable()===true);}catch{return false;}
+      ?await encryption.isEncryptionAvailableAsync():encryption.isEncryptionAvailable()===true);}catch(error){if(error?.code==='pc_private_storage_transient')throw error;return false;}
   };
   return Object.freeze({profileId,isProtectionAvailable:available,
     save(selection){

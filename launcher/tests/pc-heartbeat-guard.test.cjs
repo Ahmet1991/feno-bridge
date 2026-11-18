@@ -50,3 +50,16 @@ test('malformed native output and ACL security errors fail closed immediately',(
   f.guard.heartbeat();assert.equal(f.active(),false);assert.equal(f.revocations(),1);
   assert.equal(f.events.find(e=>e.action==='auto_suspended')?.reason,'channel_security_failure');
 });
+
+test('wake grace excludes only transient faults and audits the operation',()=>{
+  const f=fixture();f.guard.powerEvent();f.channelFault(Object.assign(transient(32),{op:'write'}));
+  for(let i=0;i<5;i++){f.guard.heartbeat();f.advance(10000);}
+  assert.equal(f.active(),true);assert.equal(f.guard.status().channelFailures,0);
+  assert.ok(f.events.some(e=>e.action==='heartbeat_transient_error'&&e.op==='write'&&e.nativeCode===32));
+  f.advance(10000);f.guard.heartbeat();
+  for(let i=0;i<3;i++){f.advance(10000);f.guard.heartbeat();}
+  assert.equal(f.active(),false);
+  assert.ok(f.events.some(e=>e.action==='auto_suspended'&&e.op==='write'&&e.nativeCode===32));
+  const secure=fixture();secure.guard.powerEvent();secure.channelFault(Object.assign(new Error('invalid ACL'),{code:'pc_private_storage'}));
+  secure.guard.heartbeat();assert.equal(secure.active(),false);
+});

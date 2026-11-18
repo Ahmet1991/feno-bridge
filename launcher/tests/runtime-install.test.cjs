@@ -7,6 +7,9 @@ const path = require("node:path");
 const { runtimeInvocation } = require("../electron/runtime-command.cjs");
 const {
   ensurePackagedRuntime,
+  ensurePackagedRuntimeAsync,
+  inspectRuntimeMetadata,
+  inspectRuntimeSource,
   pruneRuntimeVersions,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
@@ -96,6 +99,32 @@ function runtimeFixture(root, version = "0.2.0") {
   writeRuntimeManifest(source, version);
   return path.join(root, "resources");
 }
+
+test('verified receipt defers hashes on repeated startup and detects later corruption', async (t) => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-fast-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const resourcesPath=runtimeFixture(root),coreHome=path.join(root,'core-home');
+  const app={isPackaged:true,getVersion:()=> '0.2.0'};
+  const identity={version:'0.2.0',platform:process.platform,arch:process.arch};
+  const source=path.join(resourcesPath,'runtime');
+  let saved=null,hashes=0;
+  const phases=[];
+  const receipt={save:async data=>{saved=data;},invalidate:async()=>{saved=null;}};
+  const inspect=async (...args)=>{hashes++;return inspectRuntimeSource(...args);};
+  const begin=phase=>()=>phases.push(phase);
+  const options={app,coreHome,resourcesPath,receipt,inspect,begin};
+  const first=await ensurePackagedRuntimeAsync({...options,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  assert.ok(saved);assert.ok(hashes>=2);assert.equal(first.verifyInBackground,null);
+  hashes=0;
+  const next=await ensurePackagedRuntimeAsync({...options,previousReceipt:saved,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  assert.equal(next.runtimeRoot,first.runtimeRoot);assert.equal(hashes,0);assert.equal(typeof next.verifyInBackground,'function');
+  assert.ok(phases.includes('runtime_install_metadata'));
+  await next.verifyInBackground();assert.equal(hashes,2);assert.ok(phases.includes('runtime_background_hash'));
+  fs.writeFileSync(path.join(next.runtimeRoot,'app','cli.js'),'bad');
+  await assert.rejects(next.verifyInBackground(),/checksum mismatch|changed/);assert.equal(saved,null);
+  const repaired=await ensurePackagedRuntimeAsync({...options,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  assert.equal(fs.readFileSync(path.join(repaired.runtimeRoot,'app','cli.js'),'utf8'),'cli');
+});
 
 test("packaged runtime is installed once into a durable versioned directory", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-install-"));

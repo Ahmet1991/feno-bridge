@@ -14,6 +14,7 @@ const {
   nativeImage,
   nativeTheme,
   powerMonitor,
+  safeStorage,
   screen,
   session,
   shell,
@@ -60,7 +61,10 @@ const {
 } = require("./guidance.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const {
-  ensurePackagedRuntime,
+  ensurePackagedRuntimeAsync,
+  createRuntimeReceipt,
+  inspectRuntimeMetadata,
+  inspectRuntimeSource,
   pruneRuntimeVersions,
   waitForPackagedRuntimeSource,
 } = require("./runtime-install.cjs");
@@ -1232,30 +1236,25 @@ async function start() {
   portDone();
   if (app.isReady()) throw new Error("Electron became ready before launcher CDP configuration");
 
+  const readyDone=bootReporter.begin('electron_ready');await app.whenReady();readyDone();
+  const receipt=app.isPackaged&&process.platform==='win32'&&!IS_DEV_PROFILE
+    ?createRuntimeReceipt({filePath:path.join(launcherUserData,'runtime-install.receipt'),protection:safeStorage}):null;
   const sourceDone=bootReporter.begin('runtime_source');
-  let sourceBundle=await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, returnBundle:true,
+  const previousReceipt=await receipt?.read();
+  const sourceBundle=await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, returnBundle:true,
+    inspect:async(root,identity)=>{const phase=bootReporter.begin(receipt?'runtime_source_metadata':'runtime_source_hash');try{return await (receipt?inspectRuntimeMetadata:inspectRuntimeSource)(root,identity);}finally{phase();}},
     onWait:waitMs=>bootReporter.wait('runtime_source','source_materializing',waitMs) });
   sourceDone();
   let installedRuntimeRoot = null;
-  let runtimeRootResolved = false;
+  let runtimeIntegrityFailed = false;
+  const runtimeDone=bootReporter.begin('runtime_install');
+  const installation=await ensurePackagedRuntimeAsync({app,coreHome:CORE_HOME,resourcesPath:process.resourcesPath,sourceBundle,receipt,previousReceipt,begin:phase=>bootReporter.begin(phase)});
+  runtimeDone();
   const runtimeRootProvider = () => {
-    const packagedRuntimeWasRemoved = app.isPackaged
-      && (!installedRuntimeRoot || !fs.existsSync(installedRuntimeRoot));
-    if (!runtimeRootResolved || packagedRuntimeWasRemoved) {
-      installedRuntimeRoot = ensurePackagedRuntime({
-        app,
-        coreHome: CORE_HOME,
-        resourcesPath: process.resourcesPath,
-        sourceBundle,
-      });
-      sourceBundle=null;
-      runtimeRootResolved = true;
-    }
-    return installedRuntimeRoot;
+    if(runtimeIntegrityFailed||app.isPackaged&&!fs.existsSync(installation.runtimeRoot))throw new Error('Packaged runtime requires verification and restart');
+    return installation.runtimeRoot;
   };
-  const runtimeDone=bootReporter.begin('runtime_install');installedRuntimeRoot = runtimeRootProvider();runtimeDone();
-
-  const readyDone=bootReporter.begin('electron_ready');await app.whenReady();readyDone();
+  installedRuntimeRoot = runtimeRootProvider();
 
   const stateDone=bootReporter.begin('state_and_autostart');
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
@@ -1381,7 +1380,10 @@ async function start() {
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   if(!launcherSmokeTest&&!IS_DEV_PROFILE){
     const {bindTunnelWake}=require('./tunnel-wake.cjs');
-    disposeTunnelWake=bindTunnelWake(powerMonitor,event=>runtimeSupervisor.checkTunnelAfterPowerEvent(event));
+    const powerEvent=()=>pcService?.powerEvent();
+    powerMonitor.on('resume',powerEvent);powerMonitor.on('unlock-screen',powerEvent);
+    const dispose=bindTunnelWake(powerMonitor,event=>runtimeSupervisor.checkTunnelAfterPowerEvent(event));
+    disposeTunnelWake=()=>{dispose();powerMonitor.removeListener('resume',powerEvent);powerMonitor.removeListener('unlock-screen',powerEvent);};
   }
   browserHost = new BrowserHost({
     window: mainWindow,
@@ -1448,14 +1450,14 @@ async function start() {
           });
           return response.response === 0;
         },
-        audit: ({ action, reason, code, consecutiveFailures }) => {
-          if(action==='auto_suspended')logger.warn('pc_control.auto_suspended',{reason,code,consecutiveFailures});
+        audit: ({ action, reason, code, consecutiveFailures,op,nativeCode }) => {
+          if(action==='auto_suspended')logger.warn('pc_control.auto_suspended',{reason,code,consecutiveFailures,op,nativeCode});
           else if(action==='expired')logger.info('pc_control.grant_expired',{reason:'expired'});
           else if(action==='invalid_clock')logger.warn('pc_control.auto_suspended',{reason:'invalid_clock',code:'pc_access_denied',consecutiveFailures:0});
-          else if(action==='heartbeat_transient_error')logger.warn('pc_control.heartbeat_transient_error',{reason,code,consecutiveFailures});
+          else if(action==='heartbeat_transient_error')logger.warn('pc_control.heartbeat_transient_error',{reason,code,consecutiveFailures,op,nativeCode});
           else if(action==='full_access_enabled')logger.info('pc_control.full_access_enabled',{});
           else if(action==='full_access_disabled')logger.info('pc_control.full_access_disabled',{});
-          else if(action==='full_access_recovery_failed')logger.warn('pc_control.full_access_recovery_failed',{code});
+          else if(action==='full_access_recovery_failed')logger.warn('pc_control.full_access_recovery_failed',{code,op,nativeCode});
           else if(action==='full_access_config_retry')logger.warn('pc_control.full_access_config_retry',{code});
           else logger.info('pc_control.local_consent',{action});
         },
@@ -1526,8 +1528,9 @@ async function start() {
       runtimeCommand: [runtime.executable, ...runtime.args],
       acknowledgedUnofficialAt: new Date().toISOString(), pcFullAccess: false,
     };
-    fs.writeFileSync(configPath, JSON.stringify(config), { flag: "wx", mode: 0o600 });
-    fs.writeFileSync(config.storageStatePath, "{}", { flag: "wx", mode: 0o600 });
+    // Smoke is isolated and deliberately reuses the same durable runtime on its second launch.
+    fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+    fs.writeFileSync(config.storageStatePath, "{}", { mode: 0o600 });
     let pcServiceStarted = false;
     try {
       const startup = await runtimeSupervisor.startIfConfigured();
@@ -1551,6 +1554,7 @@ async function start() {
         if (!pcServiceStarted) throw new Error("Packaged PC service did not start");
         logger.info("pc_control.smoke_service_started", {});
       }
+      await installation.verifyInBackground?.();
     } finally {
       try { pcService?.suspend(); }
       finally { await runtimeSupervisor.shutdown({ cancelActiveTurns: true, force: true }); }
@@ -1766,6 +1770,35 @@ async function start() {
     publishOperation({ name: "runtime-start", status: "failed", message });
     recordStartupReadiness("repair-required", message);
   }).finally(finishRuntimeStartup);
+
+  if(installation.verifyInBackground){
+    // Wait for the normal runtime/tunnel startup and briefly for asynchronously restored
+    // full access. Even unconfigured launchers verify within a bounded interval.
+    const verify=async()=>{
+      try{
+        await installation.verifyInBackground();
+        logger.info('launcher.runtime_background_verified',{});
+      }catch(error){
+        runtimeIntegrityFailed=true;
+        logger.error('launcher.runtime_background_rejected',{code:'runtime_integrity_mismatch'});
+        runtimeStartupAbort.abort();pcStartupRetry?.stop();
+        try{pcService?.suspend();}catch{}
+        try{await runtimeSupervisor?.shutdown({cancelActiveTurns:true,force:true});}finally{app.exit(1);}
+      }
+    };
+    void (async()=>{
+      let timeout;
+      try{
+        await Promise.race([runtimeStartup,new Promise(resolve=>{timeout=setTimeout(resolve,30000);})]);
+        if(runtimeHost.runtimeConfigSnapshot().config?.pcFullAccess===true){
+          const deadline=Date.now()+30000;
+          while(!pcService?.status()?.fullAccess&&Date.now()<deadline&&!quitting)await new Promise(resolve=>setTimeout(resolve,500));
+        }
+      }catch{/* A failed readiness check must not suppress integrity verification. */}
+      finally{clearTimeout(timeout);}
+      if(!quitting)await verify();
+    })();
+  }
 
   app.on("before-quit", (event) => {
     if (exitCommitted) return;

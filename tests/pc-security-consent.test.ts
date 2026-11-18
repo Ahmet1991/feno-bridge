@@ -40,6 +40,25 @@ windowsTest('stale heartbeat, rotated key and expired signed approval fail close
   files.writePrivateAtomic(join(directory,'pc-consent-key'),'0'.repeat(64));sync.refresh();expect(auth.status().enabled).toBe(false);
   now=61000;expect(()=>writer.activate(enabledGrant())).toThrow('pc_access_denied');
 });
+
+windowsTest('permanent lineage survives heartbeat and key rotation but not scope change or revocation',()=>{
+  let now=1000;const directory=join(mkdtempSync(join(tmpdir(),'pc-lineage-restart-')),'private');
+  const make=()=>createPcConsentChannel({directory,profileId:'pc2-normal',files,clock:()=>now});
+  const auth=new PcAuthorizer({profileId:'pc2-normal',clock:()=>now});
+  let retired=0;const sync=createPcPolicySync({directory,authorizer:auth,files,clock:()=>now,onRevoked:()=>{retired++;}});
+  const first=make();first.start();first.activate(enabledGrant(null));sync.refresh();
+  const before=auth.assert('files.read');expect(before.lineageId).toBeTruthy();
+  now+=15001;sync.refresh();expect(auth.status().enabled).toBe(false);
+  first.heartbeat();sync.refresh();const renewed=auth.assert('files.read');
+  expect(renewed.id).not.toBe(before.id);expect(renewed.lineageId).toBe(before.lineageId);expect(retired).toBe(0);
+  const second=make();second.start({restorePersistent:true});sync.refresh();expect(auth.status().enabled).toBe(false);
+  second.activate({...enabledGrant(null),id:'signed-fixture-0002'});sync.refresh();expect(auth.assert('files.read').lineageId).toBe(before.lineageId);expect(retired).toBe(0);
+  second.activate({...enabledGrant(null),id:'signed-fixture-0003',roots:['D:\\GitHub\\fixture\\narrow']});sync.refresh();
+  const narrow=auth.assert('files.read');expect(narrow.lineageId).not.toBe(before.lineageId);expect(retired).toBe(1);
+  second.revoke();sync.refresh();expect(auth.status().enabled).toBe(false);
+  second.activate({...enabledGrant(null),id:'signed-fixture-0004',roots:['D:\\GitHub\\fixture\\narrow']});sync.refresh();
+  expect(auth.assert('files.read').lineageId).not.toBe(narrow.lineageId);
+});
 windowsTest('asynchronous revocation cleanup failure cannot become an unhandled failure or preserve permission',async()=>{
   const directory=join(mkdtempSync(join(tmpdir(),'pc-async-revoke-')),'private');
   const writer=createPcConsentChannel({directory,profileId:'pc2-normal',files,clock:()=>1000});writer.start();writer.activate(enabledGrant());

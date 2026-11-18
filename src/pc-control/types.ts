@@ -6,6 +6,8 @@ export type PcPermission = typeof PC_PERMISSIONS[number];
 export interface PcGrant {
   profileId: PcProfileId;
   id: string;
+  /** Stable ownership of jobs within one locally approved scope. */
+  lineageId?: string;
   expiresAt: number | null;
   /** Signed launcher-only scope; never accepted for the DEV profile. */
   fullAccess?: boolean;

@@ -7,7 +7,7 @@ const {createPcPersistentConsent}=require('./pc-persistent-consent.cjs');
 const {createPcConsentController}=require('./pc-consent.cjs');
 const {createPcConsentChannel}=require('./pc-consent-channel.cjs');
 const {createPcPeerRegistry}=require('./pc-resource-peers.cjs');
-const {createPcHeartbeatGuard}=require('./pc-heartbeat-guard.cjs');
+const {createPcHeartbeatGuard,transient,errorDetail,safeCode}=require('./pc-heartbeat-guard.cjs');
 const {createPcDevRetirementStore}=require('./pc-dev-retirement.cjs');
 const {pcRuntimePaths}=require('./pc-runtime-paths.cjs');
 const {createChromeBroker}=require('./chrome-broker.cjs');
@@ -42,6 +42,7 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
   let channel,controller,peers,retirementStore,scope,timer,guard,lastAutoStop,started=false,initialized=false,stopped=false,retirementPending=false;
   let heartbeatPending,chromeBroker,chromeReady=false;
   let lastConfigErrorAt=-Infinity;
+  let recoveryFailures=0,nextRecoveryAt=-Infinity;
   const blank=()=>({roots:[],permissions:[],allowedApps:[]});
   function enabledInConfig(){
     if(policy.profileId!=='pc2-normal')return false;
@@ -52,9 +53,10 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
     if(!roots.length||!roots.every(root=>/^[A-Z]:\\$/.test(root)))throw deny();
     const selection={durationMs:null,fullAccess:true,roots,permissions:[...PC_FULL_PERMISSIONS],allowedApps:[]};
     validatePcSelection(selection);
+    if(!started||stopped||!enabledInConfig())throw deny();
     const grant=await controller.activateFullAccessAsync(selection);
-    if(!started||stopped){controller.suspend();throw deny();}
-    try{await channel.activateAsync(grant);scope=copyPcSelection(selection);}catch(error){controller.suspend();scope=undefined;throw error;}
+    if(!started||stopped||!enabledInConfig()||!controller.isActiveGrant(grant.id)){controller.suspend();throw deny();}
+    try{await channel.activateAsync(grant);scope=copyPcSelection(selection);audit({action:'full_access_enabled',at:clock()});}catch(error){controller.suspend();scope=undefined;throw error;}
   }
   async function reconcileFullAccess(){
     if(policy.profileId!=='pc2-normal')return;
@@ -70,10 +72,14 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       // Malformed configuration and other security errors never authorize access.
     }
     if(configured){
-      if(!controller.status().enabled||scope?.fullAccess!==true){
-        try{await issueFullGrant();}catch(error){audit({action:'full_access_recovery_failed',at:clock(),code:error?.code||'pc_access_denied'});}
+      if((!controller.status().enabled||scope?.fullAccess!==true)&&clock()>=nextRecoveryAt){
+        try{await issueFullGrant();recoveryFailures=0;nextRecoveryAt=-Infinity;}catch(error){
+          if(transient(error))nextRecoveryAt=clock()+Math.min(8000,500*2**Math.min(++recoveryFailures,4));
+          else{recoveryFailures=0;nextRecoveryAt=-Infinity;}
+          audit({action:'full_access_recovery_failed',at:clock(),code:error?.code?safeCode(error):'pc_access_denied',...errorDetail(error,'full_access.recover')});
+        }
       }
-    }else if(scope?.fullAccess){
+    }else if(scope?.fullAccess||channel.hasFullLineage()){
       scope=undefined;try{await controller.revokeAsync();}finally{await channel.revokeAsync();}
       audit({action:'full_access_disabled',at:clock()});
     }
@@ -98,13 +104,13 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       files.ensurePrivateDirectory(layout.directory);
       files.ensurePrivateDirectory(path.join(profile.userData,'pc-control'));
       files.ensurePrivateDirectory(path.dirname(policy.persistentStorePath));
-      channel=createPcConsentChannel({directory:layout.directory,profileId:policy.profileId,files,clock});channel.start();
+      channel=createPcConsentChannel({directory:layout.directory,profileId:policy.profileId,files,clock});
       const store=createPcPersistentConsent({filePath:policy.persistentStorePath,profileId:policy.profileId,files,
         encryption:createWindowsDpapiProtection(context.userSid,policy.profileId,{bunPath})});
       controller=createPcConsentController({profileId:policy.profileId,clock,confirmLocally,
         audit:event=>{
           if(event.action==='expired'||event.action==='invalid_clock')lastAutoStop={at:event.at,reason:event.action,code:'pc_access_denied'};
-          audit(event);
+          if(event.action!=='full_access_enabled')audit(event);
         },store});
       if(policy.profileId==='pc2-normal')retirementStore=createPcDevRetirementStore({directory:layout.sharedDirectory,files,
         encryption:createWindowsDpapiProtection(context.userSid,'pc2-normal',{bunPath})});
@@ -113,11 +119,13 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
           legacyHomes:{...layout.legacyHomes,'pc2-dev':testPeerEvidence.devHome||layout.legacyHomes['pc2-dev']}}:{}),
       });
       peers.start(policy.profileId);
-      guard=createPcHeartbeatGuard({clock,controller,channel,peers,onInactive:()=>{scope=undefined;},audit:event=>{
+      guard=createPcHeartbeatGuard({clock,controller,channel,peers,onInactive:()=>{scope=undefined;},preserveInactive:()=>channel.hasFullLineage()&&enabledInConfig(),audit:event=>{
         if(event.action==='auto_suspended')lastAutoStop={at:event.at,reason:event.reason,code:event.code};
         audit(event);
       }});
       const saved=store.restore();
+      const fullConfigured=enabledInConfig();
+      channel.start({restoreFull:fullConfigured,restorePersistent:!fullConfigured&&!!saved&&!saved.fullAccess});
       if(saved&&!saved.fullAccess&&!enabledInConfig()){
         const appsValid=saved.allowedApps.every(app=>PC_ALLOWED_APPLICATIONS.some(item=>item.id===app));
         const launchValid=!saved.permissions.includes('apps.launch')||saved.allowedApps.some(app=>PC_ALLOWED_APPLICATIONS.some(item=>item.id===app&&item.launchable));
@@ -188,12 +196,13 @@ function createPcLauncherService({profile,bunPath,sharedDirectory,clock=Date.now
       audit({action:'full_access_disabled',at:clock()});return service.status();
     },
     heartbeat,
+    powerEvent(){guard?.powerEvent();recoveryFailures=0;nextRecoveryAt=-Infinity;},
     assertCanExit(){if(controller?.status().persistentRevocationPending)throw new Error('pc_persistent_revocation_pending');},
     suspend(){
       if(stopped)return;stopped=true;
       if(timer)clearInterval(timer);timer=undefined;scope=undefined;started=false;
       chromeReady=false;chromeBroker?.close();chromeBroker=undefined;
-      controller?.suspend();try{channel?.revoke();}finally{peers?.close();}
+      controller?.suspend();try{channel?.suspend();}finally{peers?.close();}
     },
   };
   return service;

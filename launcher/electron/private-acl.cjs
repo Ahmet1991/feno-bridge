@@ -8,6 +8,9 @@ const MAX_BYTES = 2 * 1024 * 1024;
 const deny = () => Object.assign(new Error('pc_private_storage'), {code:'pc_private_storage'});
 const transient=code=>Object.assign(new Error('pc_private_storage_transient'),{code:'pc_private_storage_transient',nativeCode:code});
 function native(request,options={}) {
+  try{return nativeImpl(request,options);}catch(error){error.op=request.action;throw error;}
+}
+function nativeImpl(request,options={}) {
   if(process.platform !== 'win32') throw deny();
   if(process.versions.bun)return require('./private-acl-native.cjs').handleRequest(request);
   // Supplied by the trusted launcher from its verified embedded runtime, never MCP arguments or PATH.
@@ -33,6 +36,9 @@ function native(request,options={}) {
 // Periodic launcher work uses the same verified Bun helper without blocking
 // Electron's main event loop while Windows waits on an ACL or file lock.
 async function nativeAsync(request,options={}){
+  try{return await nativeAsyncImpl(request,options);}catch(error){error.op=request.action;throw error;}
+}
+async function nativeAsyncImpl(request,options={}){
   if(process.platform!=='win32')throw deny();
   if(process.versions.bun)return require('./private-acl-native.cjs').handleRequest(request);
   const executable=options.bunPath;
@@ -104,7 +110,7 @@ function createWindowsDpapiProtection(userSid,profileId,options={}) {
   const transform=(action,bytes)=>Buffer.from(native({action,userSid,profileId,data:Buffer.from(bytes).toString('base64')},options).data,'base64');
   return Object.freeze({
     isEncryptionAvailable(){try{native({action:'protection-check',userSid,profileId},options);return true;}catch{return false;}},
-    async isEncryptionAvailableAsync(){try{await nativeAsync({action:'protection-check',userSid,profileId},options);return true;}catch{return false;}},
+    async isEncryptionAvailableAsync(){try{await nativeAsync({action:'protection-check',userSid,profileId},options);return true;}catch(error){if(error?.code==='pc_private_storage_transient')throw error;return false;}},
     encryptString:text=>transform('protect',Buffer.from(text,'utf8')),
     encryptStringAsync:async text=>Buffer.from((await nativeAsync({action:'protect',userSid,profileId,data:Buffer.from(text,'utf8').toString('base64')},options)).data,'base64'),
     decryptString:bytes=>transform('unprotect',bytes).toString('utf8'),

@@ -1,5 +1,6 @@
 import {expect,test} from 'bun:test';
-import {mkdtempSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PcAuthorizer,validatePcGrant,isValidPcRoot} from '../src/pc-control/authorization';
@@ -111,4 +112,24 @@ test('full access Notepad accepts an approved existing file argument',async()=>{
     resolve:()=> 'C:\\Windows\\System32\\notepad.exe',spawnApp:async(_exe,args)=>{launched.push(args);}});
   expect(await app.launchPcApp('notepad.exe',undefined,file)).toMatchObject({launched:true});
   expect(launched).toEqual([[file]]);
+});
+
+test('a surviving job remains accessible after transport identity rotation within its lineage',async()=>{
+  if(process.platform!=='win32')return;
+  const root=mkdtempSync(join(tmpdir(),'pc-lineage-'));
+  const auth=new PcAuthorizer({profileId:'pc2-normal'}),lineageId=randomUUID();
+  const scoped={...grant,roots:[root.slice(0,3)],lineageId};
+  auth.setGrantFromLocalApproval(scoped);
+  const host=createLocalPcHost(auth,{acquireLease:async()=>({generation:'lineage-test',releaseAfterExit:async done=>{await done;}}),auditCommand:()=>{},isInteractive:async()=>true});
+  try{
+    const first=await host.startTerminal(root,'Write-Output lineage-fixture; Start-Sleep -Seconds 30','lineage fixture') as {jobId:string};
+    auth.suspend();host.suspendTransport?.();auth.setGrantFromLocalApproval({...scoped,id:randomUUID()});
+    expect(await host.listJobs!()).toMatchObject([{jobId:first.jobId}]);
+    expect(await host.jobStatus(first.jobId)).toMatchObject({state:'running'});
+    expect(await host.jobLogs(first.jobId,0)).toBeDefined();
+    expect(await host.cancelJob(first.jobId)).toEqual({cancelled:true});
+    auth.revoke();await host.revokeActiveJobs();auth.setGrantFromLocalApproval({...scoped,id:randomUUID(),lineageId:randomUUID()});
+    expect(await host.listJobs!()).toEqual([]);
+    await expect(host.jobStatus(first.jobId)).rejects.toThrow();
+  }finally{await host.revokeActiveJobs();rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

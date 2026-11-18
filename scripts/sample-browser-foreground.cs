@@ -8,6 +8,23 @@ public static class ForegroundProbe {
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
 
+    // Observe the current foreground without activating a test window.
+    public static void RunPassive(string directory) {
+        string ready=Path.Combine(directory,"foreground-ready");
+        string stop=Path.Combine(directory,"foreground-stop");
+        string log=Path.Combine(directory,"foreground.csv");
+        try {
+            while(!File.Exists(stop)) {
+                IntPtr hwnd=GetForegroundWindow();
+                uint owner;GetWindowThreadProcessId(hwnd,out owner);
+                string name="unknown";try{using(Process p=Process.GetProcessById((int)owner))name=p.ProcessName;}catch{}
+                File.AppendAllText(log,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()+","+hwnd.ToInt64()+","+owner+","+name+Environment.NewLine);
+                if(!File.Exists(ready))File.WriteAllText(ready,hwnd.ToInt64().ToString());
+                System.Threading.Thread.Sleep(100);
+            }
+        } finally {File.WriteAllText(Path.Combine(directory,"foreground-done"),"done");}
+    }
+
     public static void Run(string directory) {
         string ready=Path.Combine(directory,"foreground-ready");
         string stop=Path.Combine(directory,"foreground-stop");

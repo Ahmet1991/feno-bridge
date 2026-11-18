@@ -1,6 +1,6 @@
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import * as z from 'zod/v4';
-import {PcAccessDeniedError,PcAuthorizer} from './authorization';
+import {PcAccessDeniedError,PcAuthorizer,jobOwner} from './authorization';
 import {PcOperationError} from './errors';
 import {applyPcPatch,createPcDirectory,createPcFile,listPcFiles,readPcFile,withPcUploadFiles} from './files';
 import {createPcJobManager,createPcJobResources,inferPcCommandSpecs,type PcJobKind,type PcJobManagerOptions} from './jobs';
@@ -27,6 +27,7 @@ export interface PcHost {
   startJob(kind:PcJobKind,root:string,timeoutSeconds?:number):Promise<unknown>;listProjectTasks(root:string):Promise<unknown>;startProjectTask(root:string,id:string):Promise<unknown>;
   startTerminal(root:string,command:string,purpose:string,timeoutSeconds?:number):Promise<unknown>;listJobs?():Promise<unknown>;jobStatus(id:string):Promise<unknown>;jobLogs(id:string,cursor:number):Promise<unknown>;cancelJob(id:string):Promise<unknown>;
   revokeActiveJobs():Promise<void>;
+  suspendTransport?():void;
   listWindows?():Promise<unknown>;captureScreen?(id:string):Promise<{mimeType:'image/png';data:Uint8Array}>;
   captureFullScreen?(mode:'all'|'monitor',monitor?:number):Promise<{mimeType:'image/png';data:Uint8Array}>;
   desktopInput?(input:PcDesktopInput):Promise<unknown>;
@@ -79,16 +80,19 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     const adbPath=options.adbPath??resolveTrustedAdbPath();if(!adbPath)throw new PcAccessDeniedError();
     return createPcAdbController({authorizer,adbPath,signal,runCommand:options.adbRun});
   };
-  const retire=()=>{
+  const suspendTransport=()=>{
     for(const action of actions)action.abort();
     browser?.disconnect();
+  };
+  const retire=()=>{
+    suspendTransport();
     const old=[...managers.values()];managers.clear();owners.clear();activeGrant=undefined;
     const completion=Promise.all(old.map(e=>e.manager.revokeAll())).then(()=>{});
     retired.add(completion);void completion.then(()=>retired.delete(completion),()=>{cleanupFailed=true;retired.delete(completion);});return completion;
   };
   function forProject(root:string){
     const grant=authorizer.assert('jobs'),canonical=resolveAllowedPath(root,grant.roots,{fullAccess:grant.fullAccess});
-    if(grant.id!==activeGrant){void retire().catch(()=>{});activeGrant=grant.id;}
+    if(jobOwner(grant)!==activeGrant){void retire().catch(()=>{});activeGrant=jobOwner(grant);}
     if(cleanupFailed)throw new PcOperationError('pc_resource_recovery_required');
     if(managers.has(canonical))return managers.get(canonical)!;
     if(managers.size>=16)throw new PcAccessDeniedError();
@@ -97,14 +101,14 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
       jobTimeoutMs:options.jobTimeoutMs,terminalTimeoutMs:options.terminalTimeoutMs,history:options.history});
     const entry={manager,tasks:Object.keys(specs).sort()};managers.set(canonical,entry);return entry;
   }
-  function job(id:string){const grant=authorizer.assert('jobs');const manager=owners.get(id);if(!manager||grant.id!==activeGrant)throw new PcAccessDeniedError();return manager;}
+  function job(id:string){const grant=authorizer.assert('jobs');const manager=owners.get(id);if(!manager||jobOwner(grant)!==activeGrant)throw new PcAccessDeniedError();return manager;}
   async function start(root:string,action:(manager:Manager)=>Promise<{jobId:string}>){
-    const entry=forProject(root),grantId=activeGrant;
+    const entry=forProject(root),grantId=activeGrant,initialId=authorizer.assert('jobs').id;
     // Old processes and leases must be retired before acquiring new ownership.
     await Promise.all([...retired]);
-    if(authorizer.assert('jobs').id!==grantId||activeGrant!==grantId)throw new PcAccessDeniedError();
+    if(authorizer.assert('jobs').id!==initialId||jobOwner(authorizer.assert('jobs'))!==grantId||activeGrant!==grantId)throw new PcAccessDeniedError();
     const result=await action(entry.manager);
-    try{if(authorizer.assert('jobs').id!==grantId||activeGrant!==grantId)throw new PcAccessDeniedError();}
+    try{if(jobOwner(authorizer.assert('jobs'))!==grantId||activeGrant!==grantId)throw new PcAccessDeniedError();}
     catch(error){await entry.manager.revokeAll();throw error;}
     owners.set(result.jobId,entry.manager);return result;
   }
@@ -122,10 +126,11 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     listProjectTasks:async root=>forProject(root).tasks,
     startProjectTask:(projectRoot,taskId)=>start(projectRoot,async m=>{if(!forProject(projectRoot).tasks.includes(taskId))throw new PcAccessDeniedError();return m.startDeveloperTask({projectRoot,taskId},authorizer);}),
     startTerminal:(projectRoot,command,purpose,timeoutSeconds)=>{authorizer.assert('terminal.exec');return start(projectRoot,m=>m.startTerminalCommand({projectRoot,command,purpose,timeoutSeconds},authorizer));},
-    listJobs:async()=>{const grant=authorizer.assert('jobs');const history=new Map<string,import('./job-history').PcJobSummary>();try{for(const j of options.history?.list(grant.id)??[])history.set(j.jobId,j);}catch{/* Private storage unavailable. */}if(grant.id===activeGrant)for(const j of [...managers.values()].flatMap(e=>e.manager.listPcJobs(authorizer)))history.set(j.jobId,j);return [...history.values()].sort((a,b)=>b.startedAt-a.startedAt).slice(0,20);},
+    listJobs:async()=>{const grant=authorizer.assert('jobs');const history=new Map<string,import('./job-history').PcJobSummary>();try{for(const j of options.history?.list(grant.id,grant.lineageId)??[])history.set(j.jobId,j);}catch{/* Private storage unavailable. */}if(jobOwner(grant)===activeGrant)for(const j of [...managers.values()].flatMap(e=>e.manager.listPcJobs(authorizer)))history.set(j.jobId,j);return [...history.values()].sort((a,b)=>b.startedAt-a.startedAt).slice(0,20);},
     jobStatus:async id=>job(id).pcJobStatus(id,authorizer),jobLogs:async(id,cursor)=>job(id).pcJobLogs(id,cursor,authorizer),
     cancelJob:async id=>{await job(id).cancelPcJob(id,authorizer);return {cancelled:true};},
     revokeActiveJobs:async()=>{await retire();await Promise.all([...retired]);},
+    suspendTransport,
     listWindows:()=>runGuarded('screen.read',signal=>windowController(signal).listPcWindows()),
     captureScreen:id=>runGuarded('screen.read',signal=>windowController(signal).capturePcWindow(id)),
     captureFullScreen:(mode,monitor)=>runGuarded('screen.full',signal=>windowController(signal).captureFull(mode,monitor)),

@@ -1,7 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {existsSync,readFileSync,realpathSync,statSync} from 'node:fs';
 import path from 'node:path';
-import {PcAccessDeniedError,PcAuthorizer} from './authorization';
+import {PcAccessDeniedError,PcAuthorizer,jobOwner} from './authorization';
 import {PcOperationError} from './errors';
 import {resolveAllowedPath} from './paths';
 import {spawnContainedWindowsProcess,type PcContainedProcess} from './job-native';
@@ -65,7 +65,7 @@ export function inferPcCommandSpecs(projectRoot:string,platform:NodeJS.Platform=
 }
 
 interface Job {
-  id:string;kind:string;grantId:string;state:PcJobState;createdAt:number;finishedAt?:number;closed:boolean;exitCode?:number;purpose?:string;commandHash:string;
+  id:string;kind:string;grantId:string;lineageId?:string;state:PcJobState;createdAt:number;finishedAt?:number;closed:boolean;exitCode?:number;purpose?:string;commandHash:string;
   child:PcContainedProcess;log:ReturnType<typeof createPcJobLog>;completed:Promise<void>;
   timeout?:ReturnType<typeof setTimeout>;termination?:Promise<void>;
 }
@@ -84,18 +84,18 @@ export function createPcJobManager(options:PcJobManagerOptions){
   const specs=Object.fromEntries(Object.entries(options.commandSpecs).map(([key,s])=>[key,{...s,args:[...s.args]}]));
   const jobs=new Map<string,Job>();let retiring=false;
   function summary(j:Job):import('./job-history').PcJobSummary{return {jobId:j.id,kind:j.kind==='terminal'?'terminal':'job',state:j.state==='timed_out'?'timeout':j.state,startedAt:j.createdAt,finishedAt:j.finishedAt??null,exitCode:j.exitCode??null,projectRoot:root,purpose:j.purpose??null,commandHash:j.commandHash};}
-  function persist(j:Job){try{options.history?.write(j.grantId,summary(j));}catch{/* History I/O must not orphan a running process or change lease semantics. */}}
+  function persist(j:Job){try{options.history?.write(j.grantId,summary(j),j.lineageId);}catch{/* History I/O must not orphan a running process or change lease semantics. */}}
   function owner(authorizer:PcAuthorizer,terminal=false):string{
     if(authorizer?.profileId!==options.profileId)throw new PcAccessDeniedError();
-    const id=authorizer.assert('jobs').id;if(terminal&&authorizer.assert('terminal.exec').id!==id)throw new PcAccessDeniedError();return id;
+    const grant=authorizer.assert('jobs');if(terminal&&authorizer.assert('terminal.exec').id!==grant.id)throw new PcAccessDeniedError();return jobOwner(grant);
   }
-  function validateRoot(requested:string,authorizer:PcAuthorizer,grantId:string,terminal:boolean){
+  function validateRoot(requested:string,authorizer:PcAuthorizer,grantId:string,terminal:boolean,initialId:string){
     const grant=authorizer.assert('jobs');
-    if(owner(authorizer,terminal)!==grantId||resolveAllowedPath(requested,grant.roots,{fullAccess:grant.fullAccess})!==root)throw new PcAccessDeniedError();
+    if(grant.id!==initialId||owner(authorizer,terminal)!==grantId||resolveAllowedPath(requested,grant.roots,{fullAccess:grant.fullAccess})!==root)throw new PcAccessDeniedError();
   }
   function get(id:string,authorizer:PcAuthorizer):Job{
     const grantId=owner(authorizer);const job=typeof id==='string'?jobs.get(id):undefined;
-    if(!job||job.grantId!==grantId)throw new PcAccessDeniedError();
+    if(!job||(job.lineageId??job.grantId)!==grantId)throw new PcAccessDeniedError();
     if(job.kind==='terminal')owner(authorizer,true);return job;
   }
   function timeout(terminal:boolean,requestedSeconds?:number){
@@ -109,7 +109,7 @@ export function createPcJobManager(options:PcJobManagerOptions){
     try{await job.termination;}catch(error){job.termination=undefined;throw error;}
   }
   async function start(kind:string,requested:string,authorizer:PcAuthorizer,override?:PcCommandSpec,audit?:PcTerminalAudit,requestedSeconds?:number):Promise<{jobId:string}>{
-    const terminal=kind==='terminal',grantId=owner(authorizer,terminal);validateRoot(requested,authorizer,grantId,terminal);
+    const terminal=kind==='terminal',grantId=owner(authorizer,terminal),initialId=authorizer.assert('jobs').id;validateRoot(requested,authorizer,grantId,terminal,initialId);
     if(retiring)throw new PcAccessDeniedError();const duration=timeout(terminal,requestedSeconds),spec=override??specs[kind];
     if(!spec||typeof spec.command!=='string'||!spec.command||spec.command.includes('\0')||!Array.isArray(spec.args)||spec.args.some(a=>typeof a!=='string'||a.includes('\0'))||typeof spec.usesEmulator!=='boolean')throw new PcAccessDeniedError();
     for(const [id,job] of jobs)if(job.closed&&clock()-job.createdAt>HISTORY_TTL)jobs.delete(id);
@@ -118,11 +118,12 @@ export function createPcJobManager(options:PcJobManagerOptions){
     const release=resources.reserve(spec.usesEmulator,terminal,full),id=randomUUID();let lease:PcHostLease|undefined,started=false;
     try{
       lease=full?await resources.sharedTerminalLease(grantId,()=>options.acquireLease('terminal',id)):await options.acquireLease(terminal?'terminal':'job',id);
-      validateRoot(requested,authorizer,grantId,terminal);if(retiring)throw new PcAccessDeniedError();
+      validateRoot(requested,authorizer,grantId,terminal,initialId);if(retiring)throw new PcAccessDeniedError();
       if(audit){try{await options.auditCommand(audit);}catch{throw new PcAccessDeniedError();}}
-      validateRoot(requested,authorizer,grantId,terminal);if(retiring)throw new PcAccessDeniedError();
+      validateRoot(requested,authorizer,grantId,terminal,initialId);if(retiring)throw new PcAccessDeniedError();
       const log=createPcJobLog(),child=spawnContainedWindowsProcess({ ...spec,allowGuiBreakaway:spec.allowGuiBreakaway===true&&terminal&&authorizer.assert('jobs').fullAccess===true },root,b=>log.stdout.write(b),b=>log.stderr.write(b));started=true;
-      const job:Job={id,kind,grantId,state:'running',createdAt:clock(),closed:false,child,log,completed:Promise.resolve(),purpose:audit?.purpose,commandHash:audit?.commandHash??createHash('sha256').update(JSON.stringify([spec.command,...spec.args])).digest('hex')};
+      const grant=authorizer.assert('jobs');
+      const job:Job={id,kind,grantId:grant.id,lineageId:grant.lineageId,state:'running',createdAt:clock(),closed:false,child,log,completed:Promise.resolve(),purpose:audit?.purpose,commandHash:audit?.commandHash??createHash('sha256').update(JSON.stringify([spec.command,...spec.args])).digest('hex')};
       jobs.set(id,job);
       persist(job);
       const nativeExit=child.exited.then(()=>{});
@@ -164,7 +165,7 @@ export function createPcJobManager(options:PcJobManagerOptions){
       const record={at:clock(),projectRoot:root,purpose:redactPcText(input.purpose).slice(0,160),commandHash:createHash('sha256').update(input.command).digest('hex')};
       return start('terminal',input.projectRoot,authorizer,containedWindowsTerminalSpec(input.command),record,input.timeoutSeconds);
     },
-    listPcJobs(authorizer:PcAuthorizer){const id=owner(authorizer);return [...jobs.values()].filter(j=>j.grantId===id).reverse().sort((a,b)=>b.createdAt-a.createdAt).slice(0,20).map(summary);},
+    listPcJobs(authorizer:PcAuthorizer){const id=owner(authorizer);return [...jobs.values()].filter(j=>(j.lineageId??j.grantId)===id).reverse().sort((a,b)=>b.createdAt-a.createdAt).slice(0,20).map(summary);},
     pcJobStatus(id:string,authorizer:PcAuthorizer){const j=get(id,authorizer);return {state:j.state,...(j.exitCode!==undefined?{exitCode:j.exitCode}:{}),...(j.kind==='terminal'&&j.log.scriptBlocked()?{hint:'pc_script_blocked: .ps1 çalıştırılamıyor; komutu satır içi verin'}:{})};},
     pcJobLogs(id:string,cursor=0,authorizer:PcAuthorizer){const j=get(id,authorizer);if(!Number.isSafeInteger(cursor)||cursor<0)throw new PcAccessDeniedError();return j.log.page(cursor);},
     async cancelPcJob(id:string,authorizer:PcAuthorizer){await terminate(get(id,authorizer));},

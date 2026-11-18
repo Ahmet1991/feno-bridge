@@ -5,6 +5,7 @@ import {createPcBrowser,readBrowserEndpoint} from '../src/pc-control/browser';
 import sharp from 'sharp';
 
 const directory=mkdtempSync(join(tmpdir(),'feno-pc-browser-smoke-'));
+const hiddenOnly=process.argv.includes('--hidden-only');
 const cache=join(import.meta.dir,'..','.cache');
 if(process.platform==='win32'){
   const compiler= ['Framework64','Framework'].map(folder=>join(process.env.SystemRoot??'C:\\Windows','Microsoft.NET',folder,'v4.0.30319','csc.exe')).find(existsSync);
@@ -44,7 +45,7 @@ const run=async(action:string,args:Record<string,unknown>={})=>{
   steps.push({action:action==='computer'?'computer:'+args.action:action,start,end:Date.now()});
   return result;
 };
-const focus=process.platform==='win32'?Bun.spawn(['powershell.exe','-NoProfile','-Sta','-Command','Add-Type -Path $env:FENO_FOCUS_PROBE; [ForegroundProbe]::Run($env:FENO_FOCUS_DIRECTORY)'],{
+const focus=process.platform==='win32'?Bun.spawn(['powershell.exe','-NoProfile','-Sta','-Command',hiddenOnly?'Add-Type -Path $env:FENO_FOCUS_PROBE; [ForegroundProbe]::RunPassive($env:FENO_FOCUS_DIRECTORY)':'Add-Type -Path $env:FENO_FOCUS_PROBE; [ForegroundProbe]::Run($env:FENO_FOCUS_DIRECTORY)'],{
   windowsHide:true,stdout:'inherit',stderr:'inherit',env:{...process.env,FENO_FOCUS_PROBE:join(import.meta.dir,'..','.cache','sample-browser-foreground.dll'),FENO_FOCUS_DIRECTORY:directory}
 }):undefined;
 const ready=join(directory,'foreground-ready');
@@ -76,9 +77,12 @@ async function exercise(mode:string){
   const start=Date.now();
   const target=`http://127.0.0.1:${server.port}/`;
   if(mode==='hidden'){
-    const before=await urls();
-    await run('mode',{mode:'hidden'});
-    sameUrls(before,await urls());
+    if(hiddenOnly)await run('mode',{mode:'hidden'});
+    else{
+      const before=await urls();
+      await run('mode',{mode:'hidden'});
+      sameUrls(before,await urls());
+    }
   }
   const {tabId}=await run('open',{url:target});
   const version=await browserCdp('Browser.getVersion');
@@ -162,16 +166,18 @@ async function exercise(mode:string){
 try{
   if(focus){
     for(let i=0;i<100&&!existsSync(ready);i++)await Bun.sleep(100);
-    if(!existsSync(ready))throw new Error('Foreground fixture did not acquire focus');
+    if(!existsSync(ready))throw new Error('Foreground sampler did not become ready');
   }
-  await exercise('visible');
+  if(!hiddenOnly)await exercise('visible');
   await exercise('hidden');
-  const transition=Date.now();
-  const before=await urls();
-  await run('mode',{mode:'visible'});
-  sameUrls(before,await urls());
-  await Bun.sleep(500);
-  sample('hidden-to-visible',transition,Date.now());
+  if(!hiddenOnly){
+    const transition=Date.now();
+    const before=await urls();
+    await run('mode',{mode:'visible'});
+    sameUrls(before,await urls());
+    await Bun.sleep(500);
+    sample('hidden-to-visible',transition,Date.now());
+  }
   console.log(JSON.stringify({focus:counts}));
   if(counts.some(c=>c.samples===0||c.foregroundChanges!==0))throw new Error('Foreground focus changed');
 }catch(error){
