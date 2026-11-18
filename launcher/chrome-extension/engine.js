@@ -133,6 +133,7 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
     const target=await page(id,'uploadTarget',{ref:a.ref,documentId:refs.get(id),marker});
     if(!target)fail('pc_chrome_ref_stale');
     if(target.sensitive)reject(warning);
+    if(target.ok===false)reject(target.reason||warning);
     let node;
     try{
       if(target.direct){
@@ -152,7 +153,7 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
       }
       await command(id,'DOM.setFileInputFiles',{...node,files:a.paths});
       const {object}=await command(id,'DOM.resolveNode',node);
-      try{const {result}=await command(id,'Runtime.callFunctionOn',{objectId:object.objectId,functionDeclaration:'function(){return Array.from(this.files||[],f=>({name:f.name,size:f.size}));}',returnByValue:true});return {files:result.value};}
+      try{const {result}=await command(id,'Runtime.callFunctionOn',{objectId:object.objectId,functionDeclaration:'function(){return Array.from(this.files||[],f=>({name:f.name,size:f.size}));}',returnByValue:true});return {files:result.value,...(target.via?{via:target.via}:{})};}
       finally{await command(id,'Runtime.releaseObject',{objectId:object.objectId}).catch(()=>{});}
     }finally{
       choosers.delete(id);

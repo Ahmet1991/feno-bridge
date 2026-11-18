@@ -82,6 +82,7 @@ export function pageOperation(action, args = {}) {
       if (action === 'find' && !(role+' '+name).toLocaleLowerCase().includes(args.query.toLocaleLowerCase())) continue;
       const ref = 'ref_'+(++state.seq);
       const record = {ref, role, name};
+      if (e.tagName==='LABEL' && e.control) record.control=e.control.tagName==='INPUT'?e.control.type:e.control.tagName.toLowerCase();
       length += JSON.stringify(record).length;
       if (length > limit || nodes.length >= 1000) break;
       state.refs.set(ref,e); nodes.push(record);
@@ -93,15 +94,23 @@ export function pageOperation(action, args = {}) {
     return true;
   }
   if(action==='form'||action==='uploadTarget'){
-    const e=state.refs.get(args.ref);
+    let e=state.refs.get(args.ref);
     if(!e?.isConnected||state.id!==args.documentId)return null;
+    let via={};
+    if(e.tagName==='LABEL'){
+      if(!e.control){
+        if(action==='uploadTarget')return {direct:false};
+        return {ok:false,reason:'Bu etiket bir form alanına bağlı değil.'};
+      }
+      e=e.control;via={via:'label'};
+    }
     if(sensitive(e))return {ok:false,sensitive:true,reason:'Şifre ve ödeme alanları için kullanıcı onayı gerekir.'};
+    if((action==='form'||via.via)&&(e.disabled||e.readOnly))return {ok:false,reason:'Alan değiştirilemez.'};
     if(action==='uploadTarget'){
       const direct=e.tagName==='INPUT'&&e.type==='file';
       if(direct)e.setAttribute('data-feno-upload',args.marker);
-      return {direct};
+      return {direct,...via};
     }
-    if(e.disabled||e.readOnly)return {ok:false,reason:'Alan değiştirilemez.'};
     const value=args.value;
     const set=(target,property,v)=>{const setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target),property)?.set;if(setter)setter.call(target,v);else target[property]=v;};
     let actual;
@@ -118,7 +127,7 @@ export function pageOperation(action, args = {}) {
       // React's checkbox/radio change plugin observes click. Native activation
       // emits input/change itself, updates the radio group and never focuses a tab.
       if(e.checked!==value&&(e.type==='checkbox'||value)&&typeof e.click==='function'){
-        e.click();return e.checked===value?{ok:true,value:e.checked}:{ok:false,reason:'Sayfa form değişikliğini kabul etmedi.'};
+        e.click();return e.checked===value?{ok:true,value:e.checked,...via}:{ok:false,reason:'Sayfa form değişikliğini kabul etmedi.'};
       }
       set(e,'checked',value);actual=e.checked;
     }else if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'&&['text','search','email','tel','url','date','datetime-local','time','month','week','range','number','color'].includes(e.type)){
@@ -128,7 +137,7 @@ export function pageOperation(action, args = {}) {
       if(typeof value!=='string')return {ok:false,reason:'Metin gerekli.'};e.textContent=value;actual=e.textContent;
     }else return {ok:false,reason:'Bu öğe desteklenen bir form alanı değil.'};
     e.dispatchEvent(new Event('input',{bubbles:true,composed:true}));e.dispatchEvent(new Event('change',{bubbles:true,composed:true}));
-    return {ok:true,value:actual};
+    return {ok:true,value:actual,...via};
   }
   if (action === 'ref') {
     const e=state.refs.get(args.ref);

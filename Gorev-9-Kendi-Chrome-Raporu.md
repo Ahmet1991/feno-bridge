@@ -199,3 +199,38 @@ Launcher ilk günlük yönlendirmesi PowerShell NativeCommandError (exit 1) dön
 - Chrome native host SHA-256: `77440d5de69d12b3aefff130bbd2e34ff8517ae3d3fd7391020d3032d50d7256`.
 - Defender önce/sonra AntivirusEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled dört değer True; imza 1.463.344.0. DEV kalıcı izin SHA-256 önce/sonra `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`.
 - Kurucu çalıştırılmadı; paket geçici test alanında açılıp doğrulandı. Canlı PC2 araçları, ana Chrome, canlı köprü/config/izin, tüneller, DEV, Defender ayarları ve G: değiştirilmedi. Merge/etiket/CI bekleme yok.
+
+## Devam: etiketten alana (5.1.23)
+
+18.11.2026 — PR #97, `feat/normal-pc2-next-5.0.96`, taban `605465d`; başlangıçta origin ile 0/0 ve çalışma ağacı temiz.
+
+- Form ve yükleme etiket ref'inden `label.control` ile iç içe veya `for` bağlantılı alana geçer. Hassas, disabled ve readOnly denetimleri çözülmüş alana uygulanır; bağlı alanı olmayan form etiketi `Bu etiket bir form alanına bağlı değil.` hatasını verir. Bağlı alanı olmayan yükleme etiketi mevcut seçici yakalama yolunu korur. Başarıda `via: "label"`; read/find etiketi için `control` (select, checkbox, radio, date, text, file vb.) döner. Çıktı sınırları korunur. Her iki araç açıklaması güncellendi.
+- Dosyaya bağlı etikette `direct: true`, `DOM.setFileInputFiles` ve işaretçi temizliği mevcut doğrudan yükleme yolunu kullanır. Alan ref'lerinin mevcut davranışı korunur.
+- Kırmızı → yeşil: ilk odaklı Node koşusu 4 başarılı, 1 hata (eski desteklenmeyen alan hatası); düzeltmeden sonra 5 başarılı, 0 hata. İç içe ve `for` etiketlerinde select (metin/değer), checkbox, radio, date, text; şifre, disabled, readOnly, bağlantısız etiket, doğrudan dosya ve read/find kontrol türü doğrulandı.
+
+### Gerçek gizli sekme dumanı
+
+Chrome for Testing (Chromium 1255), geçici profil ve yerel sayfa: `OWN_CHROME_LABEL_OK`, `OWN_CHROME_EXTRA_OK`, `OWN_CHROME_SMOKE_OK`, exit 0. Etiket form süreleri 3/2/2/3/3/3 ms; yükleme 8 ms. Sayfa select için a, checkbox/radio true, tarih 2026-11-18, metin hello ve upload-fixture.txt (14 bayt) gördü. 14 input/change olayı alındı. Etiket yüklemesinde seçici yakalama veya fare tıklaması yapılırsa test hata verecek şekilde denetlendi; ikisi de yapılmadı. Önceki alan ref'leriyle form/yükleme de geçti (form 4/4/3/2/2 ms, yükleme 11/32 ms). 136 ön plan örneğinde 0 değişiklik, etkin sekme korunuyor. Gizli sekme click/hover/type/screenshot ortancaları 26/33/29/98,5 ms; 20 ekran görüntüsü, hata yok. Ölçüm geçici profilde uzantı engine üzerinden yapıldı, canlı MCP uçtan uca denenmedi.
+
+### Kapılar ve paket
+
+| Kapı | Sonuç |
+| --- | --- |
+| Odaklı Node | 5 başarılı, 0 hata |
+| Kök Bun | 1231 başarılı, 5 atlanan, 0 hata; 7811 doğrulama; 336,11 sn |
+| Launcher, ayrı süreç | Node 440 başarılı, 3 atlanan, 0 hata; Bun 43 başarılı, 0 hata |
+| Kök ve launcher typecheck | İkisi de exit 0 |
+| Sürüm | VERSION_SYNC_OK 5.1.23 bun@1.4.0; manifest dahil |
+| git diff --check | Exit 0; LF/CRLF çalışma kopyası uyarıları |
+| Gizli sekme dumanı | OWN_CHROME_LABEL_OK, OWN_CHROME_EXTRA_OK, OWN_CHROME_SMOKE_OK |
+| Paket | bun run app:package exit 0 |
+| Gerçek açılış | PACKAGED_LAUNCHER_SMOKE_OK 5.1.23 win32/x64; runtimeVerified=true, cdpStatus=200, runtimeStartupVerified=true, pcServiceStarted=true |
+| Paket uzantısı ve yardımcılar | PACKAGED_CHROME_EXTENSION_OK 5.1.23, iki PACKAGED_HELPER_SHA256_OK |
+
+`launcher/artifacts/feno-bridge-5.1.23-win-x64.exe` — 162.440.819 bayt.
+
+- Kurucu SHA-256: `f1b4907d416ac58e7eb6a77fc95a31206103a808f908bf9ae624883d94dd1ada`; `.exe.sha256` yazıldı ve yeniden hesaplanan değer eşleşti.
+- Windows yardımcısı SHA-256: `d20a4535d217cf342ecbbbc80bd00f735df214ecb482196e3e9fe279c10bcd9f`.
+- Chrome native host SHA-256: `738b9414b8c4e1fc5901ea1fbc8a5688a4255cb09c5bdc804a052fe6a93aee9a`.
+- Defender başta etkin, gerçek zamanlı koruma açık; paket öncesi/sonrası AntivirusEnabled, RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled dört değer True; imza 1.463.344.0. DEV kalıcı izin dosyası paket öncesi/sonrası beklenen `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` ile eşleşti.
+- Kurucu kurulmadı; canlı PC2 araçları, kullanıcı Chrome profili, canlı köprü, tünel, izin/config, DEV ve güvenlik ayarları değiştirilmedi. Merge/etiket ve CI bekleme yok.

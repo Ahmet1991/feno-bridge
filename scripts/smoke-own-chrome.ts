@@ -181,6 +181,22 @@ try{
   }
   const fileState=JSON.parse((await timed('js',{code:'[...document.querySelectorAll("input[type=file]")].map(e=>[...e.files].map(f=>({name:f.name,size:f.size})))'})).json);
   assert.deepEqual(fileState,[[{name:'upload-fixture.txt',size:14}],[{name:'upload-fixture.txt',size:14}]]);
+  const labelsHtml='<div style="position:absolute;top:650px;left:30px"><label>Label choice<select aria-label="label-select"><option value="a">Alpha</option><option value="b">Beta</option></select></label><label for="labelCheck">Label check</label><input id="labelCheck" type="checkbox" aria-label="label-check"><label>Label radio<input type="radio" aria-label="label-radio"></label><label for="labelDate">Label date</label><input id="labelDate" type="date" aria-label="label-date"><label>Label text<input aria-label="label-text"></label><label for="labelFile">Label file</label><input id="labelFile" type="file" aria-label="label-file"></div>';
+  await timed('js',{code:'document.body.insertAdjacentHTML("beforeend",'+JSON.stringify(labelsHtml)+');formEvents.length=0;true'});
+  const findLabel=async(name:string,control:string)=>{
+    const found=await run('find',{tabId,query:name});const label=found.nodes.find((n:any)=>n.role==='label'&&n.name.includes(name));assert.equal(label?.control,control);return label.ref;
+  };
+  const tree=await run('read',{tabId,mode:'tree'});assert.ok(tree.nodes.some((n:any)=>n.role==='label'&&n.name.includes('Label choice')&&n.control==='select'));
+  const labelDurations:Record<string,number[]>={form:[],upload:[]};
+  for(const [name,control,value,expected] of [['Label choice','select','Beta','b'],['Label choice','select','a','a'],['Label check','checkbox',true,true],['Label radio','radio',true,true],['Label date','date','2026-11-18','2026-11-18'],['Label text','text','hello','hello']] as const){
+    const ref=await findLabel(name,control);const result=await timed('form',{ref,value});assert.equal(result.via,'label');assert.equal(result.value,expected);labelDurations.form.push(extra.form.at(-1)!);
+  }
+  await worker.evaluate(()=>{const c=(globalThis as any).chrome;const send=c.debugger.sendCommand;c.debugger.sendCommand=(...args:any[])=>{if(args[1]==='Page.setInterceptFileChooserDialog'||args[1]==='Input.dispatchMouseEvent')throw Error('Label upload must not intercept or click');return send(...args);};});
+  const labelUpload=await timed('upload',{ref:await findLabel('Label file','file'),paths:[file]});assert.equal(labelUpload.via,'label');assert.deepEqual(labelUpload.files,[{name:'upload-fixture.txt',size:14}]);labelDurations.upload.push(extra.upload.at(-1)!);
+  const labelState=JSON.parse((await timed('js',{code:'({values:[...document.querySelectorAll("[aria-label^=label-]")].map(e=>e.type==="file"?[...e.files].map(f=>({name:f.name,size:f.size})):e.type==="checkbox"||e.type==="radio"?e.checked:e.value),events:formEvents})'})).json);
+  assert.deepEqual(labelState.values,['a',true,true,'2026-11-18','hello',[{name:'upload-fixture.txt',size:14}]]);
+  for(const name of ['select','check','radio','date','text','file'])assert.ok(labelState.events.includes('change:label-'+name),name+' change missing');
+  console.log('OWN_CHROME_LABEL_OK '+JSON.stringify({labelDurations,labelState,chooserIntercepted:false}));
   await timed('console',{clear:true});await timed('network',{});
   await timed('js',{code:'console.error("fixture-console-error"); fetch("/?token=fixture-secret",{headers:{"X-Test-Token":"fixture-secret"}}).then(r=>r.text()).then(t=>t.length)'});
   await Bun.sleep(300);

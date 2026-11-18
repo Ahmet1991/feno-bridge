@@ -58,6 +58,32 @@ test('form DOM enforces selection, sensitive fields, and emits both events',asyn
   try{assert.deepEqual(form('ref_1',['Alpha','b']).value,['a','b']);assert.match(form('ref_1','missing').reason,/Alpha/);assert.equal(form('ref_2',true).value,true);assert.equal(form('ref_3','secret').sensitive,true);assert.deepEqual(events,['input','change','input','change']);}
   finally{globalThis.__fenoPc2State=previous;}
 });
+test('label refs resolve controls in form, upload, read and find',async()=>{
+  const {pageOperation}=await import('../chrome-extension/dom.js');
+  const {Window}=await import('happy-dom');
+  const window=new Window();const previous=globalThis.__fenoPc2State,doc=globalThis.document,EventClass=globalThis.Event;
+  globalThis.document=window.document;globalThis.Event=window.Event;delete globalThis.__fenoPc2State;
+  try{
+    document.body.innerHTML=`<label>Nested select<select><option value="a">Alpha</option><option value="b">Beta</option></select></label><label for="s">External select</label><select id="s"><option value="a">Alpha</option><option value="b">Beta</option></select><label>Nested check<input type="checkbox"></label><label for="c">External check</label><input id="c" type="checkbox"><label>Nested radio<input type="radio"></label><label for="r">External radio</label><input id="r" type="radio"><label>Nested date<input type="date"></label><label for="d">External date</label><input id="d" type="date"><label>Nested text<input></label><label for="t">External text</label><input id="t"><label>Secret<input type="password"></label><label>Disabled<input disabled></label><label>Readonly<input readonly></label><label>Orphan</label><label for="f">File label</label><input id="f" type="file"><label>Disabled file<input type="file" disabled></label>`;
+    for(const e of document.querySelectorAll('*'))e.getClientRects=()=>[{}];
+    const get=(name,mode='find')=>{const result=pageOperation(mode,{query:name,mode:'tree'});const record=result.nodes.find(n=>n.role==='label'&&n.name.includes(name));assert.ok(record,name);return {record,documentId:result.documentId};};
+    const act=(action,name,args={})=>{const {record,documentId}=get(name);return pageOperation(action,{ref:record.ref,documentId,...args});};
+    for(const prefix of ['Nested','External']){
+      for(const [kind,value,expected] of [['select','Beta','b'],['select','a','a'],['check',true,true],['radio',true,true],['date','2026-11-18','2026-11-18'],['text','hello','hello']]){
+        const name=prefix+' '+kind;assert.deepEqual(act('form',name,{value}),{ok:true,value:expected,via:'label'});
+      }
+    }
+    assert.equal(act('form','Secret',{value:'x'}).sensitive,true);
+    assert.equal(act('uploadTarget','Secret',{marker:'x'}).sensitive,true);
+    for(const name of ['Disabled','Readonly'])assert.equal(act('form',name,{value:'x'}).reason,'Alan değiştirilemez.');
+    assert.equal(act('form','Orphan',{value:'x'}).reason,'Bu etiket bir form alanına bağlı değil.');
+    assert.deepEqual(act('uploadTarget','Orphan',{marker:'m'}),{direct:false});
+    assert.deepEqual(act('uploadTarget','File label',{marker:'m'}),{direct:true,via:'label'});
+    assert.equal(document.querySelector('#f').getAttribute('data-feno-upload'),'m');
+    assert.equal(act('uploadTarget','Disabled file',{marker:'m'}).reason,'Alan değiştirilemez.');
+    for(const mode of ['read','find']){assert.equal(get('External select',mode).record.control,'select');assert.equal(get('External check',mode).record.control,'checkbox');assert.equal(get('File label',mode).record.control,'file');assert.equal(get('Orphan',mode).record.control,undefined);}
+  }finally{globalThis.__fenoPc2State=previous;globalThis.document=doc;globalThis.Event=EventClass;await window.happyDOM.close();}
+});
 test('upload direct and intercepted chooser use CDP and JS exceptions/timeouts recover',async()=>{
   const {engine,chrome,calls}=await fixture();let direct=true,jsMode='exception';
   chrome.scripting.executeScript=async({args:[action]})=>[{result:action==='read'?{documentId:'d',nodes:[]}:action==='uploadTarget'?{direct}:action==='ref'?{x:10,y:10,sensitive:false}:action==='guard'?{sensitive:false}:action==='sensitivePage'?false:action==='visibility'?'visible':true}];
