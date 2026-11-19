@@ -1,3 +1,4 @@
+import { afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,8 @@ export function restoreTestHomes(): void {
 
 restoreTestHomes();
 
-process.on("exit", () => {
+// A preload afterAll runs after all test files, including their own cleanup hooks.
+afterAll(() => {
   try {
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   } catch (error) {
