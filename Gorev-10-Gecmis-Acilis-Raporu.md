@@ -335,3 +335,31 @@ Değişen dosyalar: `launcher/electron/private-acl.cjs`, `private-acl-cli.cjs`, 
 Paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (163.003.488 bayt); SHA-256 `a751f50c66da34ed6d09ccd1c5227b1b1670f74fcf97b4d6fdecef36983a5ec8`, `.sha256` yeniden hesaplamayla eşleşti. Windows helper `bef733e68726aa1fe68c8808de556b6321ace2c124cb618bbcb64b08b0fc5133`, native host `a5841a8300c19ee2d96fc6c6accea640f3c5adbd58d3331e6ce4687afdd68b53` paket dumanında eşleşti. İkinci açılış kaynak ve kurulum 0,776 s, arka plan hash 3,545 s. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi.
 
 Değişen dosyalar: `launcher/electron/browser-host.cjs`, `main.cjs`, `startup-timing.cjs`, `pc-windows-helper.sha256`, `launcher/scripts/smoke-package.cjs`, yeni `package-smoke-diagnostics.cjs`, `launcher/tests/browser-host.test.cjs`, yeni `package-smoke-diagnostics.test.cjs` ve bu rapor. Windows yerel kapıları yeşil; yeni Linux ve macOS CI sonucu beklenmedi. Canlı profil/kurulum/koordinasyon/runtime ve güvenlik ayarlarına dokunulmadı; kurulum, merge, etiket ve yayın yapılmadı.
+
+#### Tur 2 — Linux tek örnek kilidi
+
+CI 44526373141 (`b389510`) Windows/macOS yeşil; Linux'ta 34 ms'de başlayan `single_instance_lock` aşaması dönmeden 120 s doldu. `origin/main` karşılaştırmasında en güçlü neden duman ortamında `TMPDIR`'in sistem geçici dizininden uzun çalışma ağacı `.cache/.../tmp` dizinine taşınmasıdır. Chromium `GetTempDir` Linux'ta `TMPDIR`'i kullanır; `ProcessSingleton` soketini bu kökün altında oluşturur ve uzun `sockaddr_un.sun_path` yolunu reddeder. Örnek CI kökü 87 bayt, `/.org.chromium.Chromium.123456/SingletonSocket` ile 133 bayt; kullanılabilir sınır 107 bayt. Yeni `/tmp/feno-smoke-XXXXXX` köküyle örnek soket 68 bayttır. Kaynaklar: https://chromium.googlesource.com/chromium/src/+/HEAD/chrome/browser/process_singleton_posix.cc ve https://chromium.googlesource.com/chromium/src/+/HEAD/base/files/file_util_posix.cc. Yol uzunluğu sorunu kaynak ve birim testle doğrulandı; Linux'taki asıl takılmanın tamamen düzeldiği yeni CI olmadan kesinleştirilmedi.
+
+- ABI betiği ayrı geçici AppImage kopyasını yalnız çıkarıyor, `nm` ve `ldd` denetliyor; Electron açmıyor. Ana duman tek yeni `launcher-data` ile açılıyor. Erken logger aynı izole profilin `logs` altına yazıyor; koordinasyon ve DEV dizinleri ayrı, kilit öncesi süreler düşük. Runtime makbuzu/hash, tarayıcı ve PC servisi kilitten sonra; bunlara müdahale edilmedi.
+- Yalnız Linux dumanının `TMPDIR`, `TEMP` ve `TMP` değerleri `mkdtemp` ile oluşturulan kısa özel dizine taşındı; kalıcı runtime, profil ve koordinasyon çalışma ağacındaki izole dizinde kaldı. Dumanın 120 s sınırı, tek örnek kilidi ve güvenlik denetimleri değişmedi. Yeni dizin duman sonunda temizlenir; başarısızlıkta çalışma ağacındaki kanıt korunur.
+- `launcher.single_instance_lock_call` ve `launcher.single_instance_lock_return` (`gotLock`) doğrudan çağrının çevresine eklendi. Linux'ta `--enable-logging=stderr` ve `ELECTRON_ENABLE_LOGGING=1`; hata/zaman aşımında sinyalden önce PID/PPID, durum, `wchan`, izinli komut/switch özeti, `ps` eşleşmeleri ve `Singleton*` bağlantılarının türü, hedef uzunluğu, sahip PID/erişilebilirlik bilgisi alınır. Host adı, cookie değeri, ham yollar ve serbest komut argümanları yazılmaz. Asenkron Linux ve senkron komut hatalarında stdout/stderr son 80 satırı sabit tanı kategorilerine dönüştürülür; diğer içerik maskelenir. İzole süreç ağacı o andan sonra SIGTERM/SIGKILL ile kapatılır; adla genel süreç öldürme yoktur.
+- Linux platform taklidiyle uzun/kısa soket sınırı, ortam değişkenleri, Mac/Windows davranışının değişmemesi ve tanı gizliliği test edildi. Gerçek Linux süreç ağacı testi Windows'ta mevcut platform atlamasını koruyor; yeni atlama eklenmedi.
+
+| Kapı | Sonuç |
+| --- | --- |
+| check-version | VERSION_SYNC_OK 5.1.26, Bun 1.4.0 |
+| audit / launcher:audit | 0 bulgu (145 paket) / 0 bulgu (351 paket, mevcut 1 ignore) |
+| typecheck / launcher:typecheck | Geçti / geçti |
+| bun test ./tests | 1.237 pass, 5 skip, 0 fail |
+| launcher testleri | Node 448 pass, 5 skip, 0 fail; Bun 46 pass, 0 fail |
+| launcher:build | Geçti |
+| runtime bundle / notices / smoke-release | Geçti; SHARP_RUNTIME_OK, RELOCATED_ACL_HELPER_OK, RELOCATABLE_RUNTIME_SMOKE_OK |
+| licenses | Geçti, 114 runtime paketi |
+| app:package | Geçti; EXE ve blockmap üretildi |
+| app:smoke | Geçti; iki açılış, CDP 200, runtimeVerified / runtimeStartupVerified / pcServiceStarted true |
+| gizli sekme dumanı | BROWSER_SMOKE_OK; 119 örnek, sıfır odak değişimi |
+| git diff --check | Geçti; mevcut LF/CRLF uyarıları |
+
+Paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (163.003.363 bayt); SHA-256 `73b047e85a72b464803876da496977713d06761139a9d84ccdfdaa36f816ddc2`, `.sha256` yeniden hesaplamayla eşleşti. Paket dumanında kilit her iki açılışta 2 ms, kaynak ve kurulum ilkinde 47,005 s, ikincide 0,774 s; arka plan hash 3,579 s. 465 ön plan örneğinde 0 odak değişimi, 0 Chrome ve 0 köprü örneği. Paketli ACL yardımcı yolu ve sharp 0.35.5/libvips 8.18.7 doğrulandı. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi.
+
+Değişen dosyalar: `launcher/electron/main.cjs`, `launcher/electron/pc-windows-helper.sha256`, `launcher/scripts/smoke-package.cjs`, `launcher/scripts/package-smoke-diagnostics.cjs`, `launcher/tests/package-smoke-diagnostics.test.cjs` ve bu rapor. Windows yerel kapıları yeşil; Linux/macOS yeni CI sonucu beklenmedi. Canlı profil, kurulum, koordinasyon, runtime ve güvenlik ayarları değiştirilmedi; kurulum, merge, etiket ve yayın yapılmadı.

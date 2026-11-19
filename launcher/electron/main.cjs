@@ -1217,7 +1217,9 @@ async function requestQuit() {
 
 async function start() {
   const lockingDone=bootReporter.begin('single_instance_lock');
+  bootLogger.info('launcher.single_instance_lock_call', {});
   const gotLock = app.requestSingleInstanceLock();
+  bootLogger.info('launcher.single_instance_lock_return', {gotLock});
   lockingDone();
   if (!gotLock) {
     app.quit();

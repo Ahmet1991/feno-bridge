@@ -4,7 +4,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { validateRuntimeBundle } = require("../electron/runtime-install.cjs");
 const { stageWindowsSmoke } = require("./stage-windows-smoke.cjs");
-const { summarizeLauncherLog, runLinuxLauncher, safeErrorCode } = require('./package-smoke-diagnostics.cjs');
+const { summarizeLauncherLog, runLinuxLauncher, safeErrorCode, makeSmokeTemp, linuxSmokeOptions, summarizeOutput } = require('./package-smoke-diagnostics.cjs');
 
 const launcherRoot = path.resolve(__dirname, "..");
 const artifactsDirectory = path.join(launcherRoot, "artifacts");
@@ -19,6 +19,7 @@ fs.mkdirSync(smokeRoot, { recursive: true });
 const scratch = fs.mkdtempSync(path.join(smokeRoot, "codex-web-gpt-package-smoke-"));
 const scratchTemp = path.join(scratch, "tmp");
 fs.mkdirSync(scratchTemp);
+let launchTemp = scratchTemp;
 const markerPath = path.join(scratch, "ready.json");
 const coreHome = path.join(scratch, "core-home");
 let macAppBundle;
@@ -38,10 +39,13 @@ function run(command, args, options = {}) {
     timeout: options.timeout || 45_000,
     windowsHide: true,
   });
+  if (result.error || result.status !== 0) {
+    console.log('PACKAGED_COMMAND_DIAGNOSTICS '+JSON.stringify({code:safeErrorCode(result.error),status:result.status,stdout:summarizeOutput(result.stdout),stderr:summarizeOutput(result.stderr)}));
+  }
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(
-      `${command} failed with status ${result.status}: ${result.stderr?.trim() || result.stdout?.trim() || "no output"}`,
+      `Packaged command failed with status ${result.status}`,
     );
   }
   return result;
@@ -94,9 +98,9 @@ function artifact(pattern, label) {
 function smokeEnvironment() {
   return {
     ...process.env,
-    TMPDIR: scratchTemp,
-    TEMP: scratchTemp,
-    TMP: scratchTemp,
+    TMPDIR: launchTemp,
+    TEMP: launchTemp,
+    TMP: launchTemp,
     CODEX_WEB_GPT_LAUNCHER_DATA_DIR: path.join(scratch, "launcher-data"),
     CODEX_CHATGPT_WEB_HOME: coreHome,
     CODEX_WEB_GPT_DEV_HOME: path.join(scratch, "dev-home"),
@@ -112,7 +116,8 @@ try {
   let executable;
   let command;
   let args;
-  const env = smokeEnvironment();
+  launchTemp = makeSmokeTemp(process.platform, scratchTemp);
+  let env = smokeEnvironment();
 
   if (process.platform === "darwin") {
     const archive = artifact(/-mac-(?:arm64|x64)\.zip$/, "macOS launcher archive");
@@ -130,8 +135,7 @@ try {
       timeout: 120_000,
     });
     command = "xvfb-run";
-    args = ["-a", executable, "--launcher-smoke-test"];
-    env.APPIMAGE_EXTRACT_AND_RUN = "1";
+    ({args, env} = linuxSmokeOptions(executable, env));
   } else if (process.platform === "win32") {
     const installer = artifact(/-win-x64\.exe$/, "Windows installer");
     executable = stageWindowsSmoke({ installer, scratch, productName: launcherManifest.build.productName, run });
@@ -279,6 +283,7 @@ try {
   } finally {
     try {
       if (!failed) fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+      if (launchTemp !== scratchTemp) fs.rmSync(launchTemp, {recursive:true,force:true,maxRetries:5,retryDelay:100});
     } catch (error) {
       if (!(process.platform === "win32" && ["EPERM", "EBUSY", "ENOTEMPTY"].includes(error?.code))) {
         throw error;
