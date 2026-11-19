@@ -241,6 +241,13 @@ try {
     throw new Error(`Packaged launcher installed the wrong durable runtime: ${JSON.stringify(installedManifest)}`);
   }
   const packagedBun = path.join(installedRuntime, 'runtime', process.platform === 'win32' ? 'bun.exe' : 'bun');
+  require('../../scripts/runtime-path-audit.cjs').auditRuntimePaths(installedRuntime,[path.dirname(launcherRoot)]);
+  if(process.platform==='win32'){
+    const acl=JSON.parse(run(packagedBun,[path.join(installedRuntime,'app','cli.js'),'runtime-acl-smoke'],{env}).stdout);
+    const expected=fs.realpathSync.native(path.join(installedRuntime,'runtime','private-acl-cli.cjs'));
+    if(acl.ok!==true||typeof acl.helperPath!=='string'||acl.helperPath.toLowerCase()!==expected.toLowerCase())throw Error('Packaged ACL helper path mismatch');
+    process.stdout.write('PACKAGED_ACL_HELPER_OK '+acl.helperPath+'\n');
+  }
   const sharpSmoke = run(packagedBun, ['-e', `const sharp = require('sharp'); const png = await sharp({create:{width:1600,height:900,channels:3,background:'#6789ab'}}).png().toBuffer(); const preview = await sharp(png,{limitInputPixels:100_000_000,failOn:'error'}).rotate().resize(1280,1280,{fit:'inside',withoutEnlargement:true}).jpeg({quality:80}).toBuffer(); const meta=await sharp(preview).metadata(); if(meta.width!==1280||meta.height!==720||preview.length>400000||!sharp.versions.vips) throw Error('Sharp preview failed'); console.log('PACKAGED_SHARP_OK '+sharp.versions.sharp+' '+sharp.versions.vips);`], { cwd: path.join(installedRuntime, 'app'), env });
   process.stdout.write(sharpSmoke.stdout);
   process.stdout.write(`PACKAGED_LAUNCHER_SMOKE_OK ${process.platform}/${process.arch} ${JSON.stringify(marker)}\n`);

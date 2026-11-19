@@ -276,3 +276,32 @@ Değişen dosyalar: `src/pc-control/mcp-tools.ts`, yeni `tests/pc-widget-legacy-
 | git diff --check | Çıkış 0; Git'in mevcut LF/CRLF uyarıları |
 
 Paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.993.890 bayt), SHA-256 `998d10eab71815fd2f705ad6d2891d853c872f62afe0040d1a5f349f55698e4c`; `.sha256` eşleşmesi True. Paket açılış dumanı 447 ön plan örneğinde 0 odak değişimi, 0 Chrome ve 0 köprü örneği gösterdi. Paket helper SHA-256 `b9a895486aa94069f86e3046fd26479eb1e79a515f10a970c54c80c0a0235160`, Chrome native host SHA-256 `fa294df218dffb399320fcf3220eea2be72239d9d1af3ec2821421a34eb88ac7` doğrulandı. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Yeni test atlaması yok. Canlı araç kullanılmadı, kurulum yapılmadı. Gerçek ChatGPT önbellek davranışı yeni paket kurulmadan canlı doğrulanmadı; regresyon testi gerçek MCP SDK istemci/sunucu bağlantısıyla çalıştı. Çok platformlu CI sonucu beklenmeyecek; PR #97 taslak kalacak.
+
+### Runtime gömülü yol (kritik)
+
+5.1.26, başlangıç `7b71d02`; origin ile fark başlangıçta 0/0. Canlı kurulu eski `versions/5.1.26-win32-x64/app/cli.js` ve eski derleme yalnız okunarak incelendi. Bun, `private-acl.cjs` içindeki `__dirname` değerini `D:\\GitHub\\feno-bridge-pc-normal-next\\launcher\\electron` olarak JS içine gömüyordu. Bir ayrıntı: eski Bun eşzamanlı ve asenkron yolları `process.versions.bun` dalında gömülü `private-acl-native.cjs` modülünü süreç içinde çalıştırıyordu; kaynak betiği çağrısının canlı gerçekleştiği doğrulanmadı. Gömülü kaynak yolu Node/Electron alt süreç dalına aitti ve Linux/macOS taşıma dumanını kırıyordu. Windows ham yol taraması JS kaçışlı yolu görmüyordu.
+
+Yeni paket `runtime/private-acl-cli.cjs`, `runtime/private-acl-native.cjs` ve `runtime/private-atomic-retry.cjs` dosyalarını içerir. Üçü de schema 2 manifestinde boyut ve SHA-256 ile yer alır; mevcut bundleId ve kurulum makbuzu üç dosyayı da kapsar. Makbuz testinde yardımcı dosya bozulduğunda arka plan doğrulaması başarısız olur ve makbuz geçersizleşir. Paketlenmiş Bun, gerçek `app/cli.js` ve gömülü Bun çalıştırıcısının aynı runtime kökünde olduğunu doğrular; mutlak, bağlantısız ve kanonik yolları kabul eder, üç dosyanın manifest karması ile derlemeye sabitlenmiş karma değerlerini karşılaştırır. Ardından doğrulanmış yardımcı betiği çalıştırır. Node/Electron `module.filename` üzerinden asar.unpacked yolunu çalışma anında çözer. Kaynak Bun testleri ve süreç içinde kalması gereken native kilit işlemleri mevcut davranışı korur. Paketlenmiş ACL çağrıları için alt süreç maliyeti vardır; yoğun canlı kullanım gecikmesi ayrıca ölçülmedi.
+
+Kırmızı-yeşil: yeni tarayıcı eski `dist/runtime/app/cli.js` için `Runtime artifact embeds an ephemeral build path` hatasını üretti. Yeni paketin tüm JS/CJS/MJS ve CMD dosyaları ham, JS kaçışlı, eğik çizgili yasak yollar ve sabit `var __dirname`/`var __filename` desenleriyle tarandı; sonuç temiz. İki regresyon testi asar, asar.unpacked, runtime, göreli/kök dışı yol, junction, bozuk yardımcı ve değiştirilmiş manifest reddini kapsıyor. Taşınan runtime'da gerçek ACL oluşturma, yazma, okuma ve silme çalıştı: `RELOCATED_ACL_HELPER_OK .../relocated-runtime/runtime/private-acl-cli.cjs`. EXE'den izole dumanla kurulan kopyada da `PACKAGED_ACL_HELPER_OK .../core-home/versions/5.1.26-win32-x64/runtime/private-acl-cli.cjs` alındı; o kopyanın JS taraması temiz. Canlı eski kurulum değiştirilmedi.
+
+| Kapı (ayrı süreç) | Sonuç |
+|---|---|
+| check-version | VERSION_SYNC_OK 5.1.26, Bun 1.4.0 |
+| audit | 145 paket, sıfır bulgu |
+| launcher:audit | 351 paket, sıfır bulgu; mevcut bir istisna |
+| typecheck / launcher:typecheck | İkisi de çıkış 0 |
+| bun test ./tests | 1237 başarılı, 5 atlama, 0 hata; 1242 test, 121 dosya |
+| launcher testleri | Node 444 başarılı, 4 atlama, 0 hata; Bun 46 başarılı, 0 hata |
+| launcher:build | Çıkış 0 |
+| runtime bundle | Çıkış 0; son paket runtime'ı da yeniden derlendi |
+| third-party notices / licenses | Çıkış 0, 114 paket bildirimi |
+| smoke-release | SHARP_RUNTIME_OK 0.35.5 8.18.7; RELOCATED_ACL_HELPER_OK; RELOCATABLE_RUNTIME_SMOKE_OK (son paket runtime'ı dahil) |
+| app:package | Çıkış 0; EXE ve blockmap üretildi |
+| app:smoke | PACKAGED_ACL_HELPER_OK; PACKAGED_SHARP_OK; PACKAGED_LAUNCHER_SMOKE_OK; CDP 200, runtimeVerified ve pcServiceStarted true |
+| Gizli sekme | BROWSER_SMOKE_OK; 93 örnek, 0 odak değişimi, 0 Chrome örneği |
+| git diff --check | Çıkış 0; mevcut LF/CRLF uyarıları |
+
+Paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (163.002.746 bayt), SHA-256 `e77be63f76a31eed23f54b8ca48262e58526777a856925be235a46556c5e0e85`; `.sha256` eşleşmesi True. Paket dumanı 454 ön plan örneğinde 0 odak değişimi, 0 Chrome ve 0 köprü örneği; ilk kaynak ve kurulum 46,768 s, ikinci 0,820 s. Windows helper SHA-256 `bb617e46c18dfc7bbe1b82daa619ae60eae5a0748850efb06e8bf06bf9fb10b4`, Chrome native host SHA-256 `be4cab7b840f9d2c436798b57e81637d6f9950e6a05e61ae48eba57b19f81ab4` doğrulandı. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi.
+
+Değişen dosyalar: `launcher/electron/private-acl.cjs`, `private-acl-cli.cjs`, yeni `private-acl-location.cjs`, `pc-windows-helper.sha256`, `launcher/tests/private-acl-location.test.cjs`, `launcher/tests/runtime-install.test.cjs`, `launcher/scripts/smoke-package.cjs`, `scripts/build-runtime-bundle.ts`, yeni `scripts/runtime-path-audit.cjs`, `scripts/smoke-release.ts`, `src/cli.ts` ve bu rapor. Yeni test atlaması yok. Canlı PC2/Chrome araçları, canlı kurulum, canlı koordinasyon/runtime, DEV, Defender ayarları ve başka worktree'ler değiştirilmedi. Linux/macOS gerçek runner sonucu CI'da doğrulanacak; bu turda CI bekleme, merge, etiket, yayın veya PR'ı hazır yapma yok.

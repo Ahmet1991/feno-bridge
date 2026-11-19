@@ -77,6 +77,9 @@ function runtimeFixture(root, version = "0.2.0") {
   fs.mkdirSync(path.dirname(executable), { recursive: true });
   fs.mkdirSync(path.join(source, "app"), { recursive: true });
   fs.writeFileSync(executable, "bun");
+  for(const name of require('../electron/private-acl-location.cjs').names){
+    fs.writeFileSync(path.join(source,'runtime',name),name);
+  }
   if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
   fs.writeFileSync(path.join(source, "app", "cli.js"), "cli");
   fs.writeFileSync(path.join(source, "app", "browser-helper.cjs"), "helper");
@@ -124,6 +127,11 @@ test('verified receipt defers hashes on repeated startup and detects later corru
   await assert.rejects(next.verifyInBackground(),/checksum mismatch|changed/);assert.equal(saved,null);
   const repaired=await ensurePackagedRuntimeAsync({...options,sourceBundle:await inspectRuntimeMetadata(source,identity)});
   assert.equal(fs.readFileSync(path.join(repaired.runtimeRoot,'app','cli.js'),'utf8'),'cli');
+  const helper=path.join(repaired.runtimeRoot,'runtime','private-acl-cli.cjs');
+  const fast=await ensurePackagedRuntimeAsync({...options,previousReceipt:saved,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  fs.writeFileSync(helper,'tampered');
+  await assert.rejects(fast.verifyInBackground(),/checksum mismatch|changed|size mismatch/);
+  assert.equal(saved,null);
 });
 
 test("packaged runtime is installed once into a durable versioned directory", () => {

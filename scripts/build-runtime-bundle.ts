@@ -55,12 +55,20 @@ mkdirSync(appDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
 mkdirSync(binDir, { recursive: true });
 
+const aclHashes: Record<string, string> = {};
+for (const name of ["private-acl-cli.cjs", "private-acl-native.cjs", "private-atomic-retry.cjs"]) {
+  const source = join(root, "launcher", "electron", name);
+  copyFileSync(source, join(runtimeDir, name));
+  aclHashes[name] = createHash("sha256").update(readFileSync(source)).digest("hex");
+}
+
 const build = await Bun.build({
   entrypoints: [join(root, "src", "cli.ts")],
   target: "bun",
   minify: true,
   external: ["playwright-core"],
   packages: "external",
+  define: { __FENO_PACKAGED_ACL_HASHES__: JSON.stringify(aclHashes) },
   outdir: appDir,
   naming: "cli.js",
 });

@@ -3,20 +3,32 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync,spawn } = require('node:child_process');
+const {resolveElectronHelper,resolveRuntimeHelper}=require('./private-acl-location.cjs');
 
 const MAX_BYTES = 2 * 1024 * 1024;
 const deny = () => Object.assign(new Error('pc_private_storage'), {code:'pc_private_storage'});
 const transient=code=>Object.assign(new Error('pc_private_storage_transient'),{code:'pc_private_storage_transient',nativeCode:code});
+// The bundle pins the helper digests; source Bun execution keeps its in-process
+// native module. Do not use lexical __dirname in code bundled by Bun.
+const packagedPins=typeof __FENO_PACKAGED_ACL_HASHES__==='undefined'?null:__FENO_PACKAGED_ACL_HASHES__;
+function helperCommand(options){
+  try{
+    if(process.versions.bun&&packagedPins){
+      return {executable:process.execPath,helper:resolveRuntimeHelper(process.argv[1],process.execPath,packagedPins)};
+    }
+    const executable=options.bunPath;
+    if(typeof executable!=='string'||!path.isAbsolute(executable)||!fs.statSync(executable).isFile())throw deny();
+    return {executable,helper:resolveElectronHelper(module.filename)};
+  }catch{throw deny();}
+}
 function native(request,options={}) {
   try{return nativeImpl(request,options);}catch(error){error.op=request.action;throw error;}
 }
 function nativeImpl(request,options={}) {
   if(process.platform !== 'win32') throw deny();
-  if(process.versions.bun)return require('./private-acl-native.cjs').handleRequest(request);
+  if(process.versions.bun&&!packagedPins)return require('./private-acl-native.cjs').handleRequest(request);
   // Supplied by the trusted launcher from its verified embedded runtime, never MCP arguments or PATH.
-  const executable=options.bunPath;
-  try{if(typeof executable!=='string'||!path.isAbsolute(executable)||!fs.statSync(executable).isFile())throw deny();}catch{throw deny();}
-  const helper=path.join(__dirname,'private-acl-cli.cjs').replace(/app\.asar([\\/])/,'app.asar.unpacked$1');
+  const {executable,helper}=helperCommand(options);
   const result=spawnSync(executable,[helper],{
     input:JSON.stringify(request),encoding:'utf8',windowsHide:true,shell:false,timeout:3000,maxBuffer:4*1024*1024,
   });
@@ -44,10 +56,8 @@ async function nativeAsync(request,options={}){
 }
 async function nativeAsyncImpl(request,options={}){
   if(process.platform!=='win32')throw deny();
-  if(process.versions.bun)return require('./private-acl-native.cjs').handleRequest(request);
-  const executable=options.bunPath;
-  try{if(typeof executable!=='string'||!path.isAbsolute(executable)||!fs.statSync(executable).isFile())throw deny();}catch{throw deny();}
-  const helper=path.join(__dirname,'private-acl-cli.cjs').replace(/app\.asar([\\/])/,'app.asar.unpacked$1');
+  if(process.versions.bun&&!packagedPins)return require('./private-acl-native.cjs').handleRequest(request);
+  const {executable,helper}=helperCommand(options);
   return new Promise((resolve,reject)=>{
     let finished=false,output='',size=0;
     const child=spawn(executable,[helper],{windowsHide:true,shell:false,stdio:['pipe','pipe','ignore']});
