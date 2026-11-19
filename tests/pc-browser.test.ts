@@ -107,7 +107,7 @@ test('browser audit stores field names only, including denied calls',async()=>{
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'browser-test',expiresAt:null,roots:[],allowedApps:[],permissions:['browser']});
   const callbacks=new Map<string,any>(),records:unknown[]=[];
-  const server={registerResource(){},registerTool(name:string,options:unknown,fn:any){callbacks.set(name,fn);}} as unknown as McpServer;
+  const server={server:{setRequestHandler(){}},registerResource(){},registerTool(name:string,options:unknown,fn:any){callbacks.set(name,fn);}} as unknown as McpServer;
   registerPcTools(server,{authorizer:auth,host:{browser:async()=>({text:'secret-output'})} as unknown as PcHost,auditTool:r=>{records.push(r);}});
   await callbacks.get('pc_browser_type')({tabId:'tab',ref:'ref_1',text:'secret-input'});
   auth.revoke();await callbacks.get('pc_browser_open')({url:'http://secret-url'});

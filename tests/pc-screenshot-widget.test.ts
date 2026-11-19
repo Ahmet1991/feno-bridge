@@ -63,7 +63,7 @@ test('all screenshot tools share a discoverable self-contained resource and keep
   const definitions=new Map<string,any>();
   const callbacks=new Map<string,(args:any)=>Promise<any>>();
   const resources=new Map<string,()=>Promise<any>>();
-  const server={registerTool:(name:string,definition:unknown,handler:(args:any)=>Promise<any>)=>{
+  const server={server:{setRequestHandler(){}},registerTool:(name:string,definition:unknown,handler:(args:any)=>Promise<any>)=>{
     definitions.set(name,definition);callbacks.set(name,handler);
   },registerResource:(_name:string,uri:string,_opts:unknown,handler:()=>Promise<any>)=>{resources.set(uri,handler);}} as unknown as McpServer;
   const host={listWindows:async()=>[{id:'123',title:'Chrome Haberler',processName:'chrome.exe'}],

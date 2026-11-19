@@ -61,7 +61,7 @@ test('PC tools audit every outcome without logging caller paths, content or inpu
   const auth=new PcAuthorizer({profileId:'pc2-normal'});auth.setGrantFromLocalApproval(grant);
   const callbacks=new Map<string,(args:unknown)=>Promise<{isError?:boolean;structuredContent?:unknown}>>();
   const records:unknown[]=[];
-  const server={registerResource:()=>{},registerTool:(name:string,_options:unknown,handler:(input:unknown)=>Promise<unknown>)=>callbacks.set(name,handler as (input:unknown)=>Promise<{isError?:boolean;structuredContent?:unknown}>)} as unknown as McpServer;
+  const server={server:{setRequestHandler(){}},registerResource:()=>{},registerTool:(name:string,_options:unknown,handler:(input:unknown)=>Promise<unknown>)=>callbacks.set(name,handler as (input:unknown)=>Promise<{isError?:boolean;structuredContent?:unknown}>)} as unknown as McpServer;
   const host={status:async()=>({platform:'win32'}),readFile:async()=>({content:'test-secret-content'})} as unknown as PcHost;
   registerPcTools(server,{authorizer:auth,host,auditTool:record=>{records.push(record);}});
   expect((await callbacks.get('pc_status')!({})).structuredContent).toMatchObject({ok:true,enabled:true});

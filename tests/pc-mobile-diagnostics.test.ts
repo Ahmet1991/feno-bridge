@@ -35,7 +35,7 @@ test('MCP request logging correlates metadata only and rotates',async()=>{
 
 test('configured probes and compatible metadata are advertised',async()=>{
   const defs=new Map<string,any>(),resources=new Map<string,any>();
-  const server={registerTool:(n:string,d:any)=>defs.set(n,d),registerResource:(n:string,u:string,d:any,h:any)=>resources.set(u,h)} as unknown as McpServer;
+  const server={server:{setRequestHandler(){}},registerTool:(n:string,d:any)=>defs.set(n,d),registerResource:(n:string,u:string,d:any,h:any)=>resources.set(u,h)} as unknown as McpServer;
   registerPcTools(server,{authorizer:new PcAuthorizer({profileId:'pc2-normal'}),host:{} as PcHost,pcWidgetProbes:true});
   expect(defs.has('pc_widget_probe_mcpapp')).toBe(true);
   expect(defs.has('pc_widget_probe_skybridge')).toBe(true);
@@ -47,7 +47,7 @@ test('configured probes and compatible metadata are advertised',async()=>{
 
 test('all PC screenshot tools are unconditionally read-only and describe ChatGPT-only display',()=>{
   const defs=new Map<string,any>();
-  const server={registerTool:(n:string,d:any)=>defs.set(n,d),registerResource:()=>{}} as unknown as McpServer;
+  const server={server:{setRequestHandler(){}},registerTool:(n:string,d:any)=>defs.set(n,d),registerResource:()=>{}} as unknown as McpServer;
   // Model the former normal runtime, which always passed a mirror callback even when disabled.
   const deps={authorizer:new PcAuthorizer({profileId:'pc2-normal'}),host:{} as PcHost,pcWidgetProbes:true,pcScreenshotMirrorDir:()=>undefined};
   registerPcTools(server,deps);

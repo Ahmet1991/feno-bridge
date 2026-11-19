@@ -248,3 +248,31 @@ GNU'nun tam lisans metinleri indirildi; LGPL'nin atıf yaptığı GPL metni de e
 Paket açılış dumanı 463 ön plan örneğinde sıfır odak değişimi, sıfır Chrome ve köprü örneği gösterdi. İlk ve ikinci runtime kaynak/kurulum süreleri sırasıyla 45,579 s ve 0,787 s. Yeni paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.993.710 bayt), SHA-256 `a8219ca0311693f2ea415691735f15d74c91ce29e950cc43b574b074f132c9fc`; `.sha256` dosyası yeniden hesaplanan karma ile eşleşti. Paket helper SHA-256 `0d24e31b9649d366f96367ee85ee418a97f947e72fa10662febe442efc443bd7`, native host SHA-256 `0ce213ad12a28cdc9cbe43dc08cc67275a7cb8a8bad416f857ad690b836c35af` doğrulandı.
 
 Değişen dosyalar: `.github/workflows/release.yml`, `scripts/generate-third-party-notices.ts`, iki GNU lisans dosyası, `tests/pc-mcp-core.test.ts`, `tests/third-party-notices.test.ts`, `launcher/electron/pc-windows-helper.sha256` ve bu rapor. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Canlı araç, kurulum, merge, etiket ve yayın yok. Linux/macOS gerçek runner doğrulaması yeni CI koşusuna kalıyor; CI beklenmeyecek, PR #97 taslak kalacak.
+
+### Eski widget adresi uyumluluğu
+
+19.11.2026 — Taban `26c6abd`, uzak dal farkı 0/0; sürüm 5.1.26. ChatGPT'nin önbellekteki `ui://widget/pc-screenshot-v5.1.23.html` isteği önce yeni regresyon testinde -32602 üretti. SDK'nın URL normalleştirmesi nedeniyle ham URI, mevcut kaynakların kayıtlı okuma işlevlerine güvenli bir MCP `resources/read` işleyicisiyle eşleniyor. Dört kaynak ailesinin güncel HTML, MIME ve CSP dahil metadata'sı aynen korunuyor; yanıtta URI istenen adres. Kaynak ve araç listeleri eski adresleri duyurmuyor. Ekran görüntüsü aracı ve HTML davranışında değişiklik yok.
+
+Kabul: `ui://widget/pc-screenshot-v5.1.23.html`, `ui://widget/pc-screenshot-skybridge-v5.0.96.html`, `ui://widget/probe-mcpapp-v5.1.23.html`, `ui://widget/probe-skybridge-v5.0.96.html`; her dört ailede iki eski sürüm ve güncel sürüm test edildi. Sayısal üç bileşen en fazla üç basamak ve güncel sürümden büyük olamaz. Ret (-32602): boş sürüm, `5.1`, `5.1.26.1`, `5.1.27`, `9.9.9`, `0000.1.1`, `../`, yüzde kodlaması, sorgu, fragment, yanlış harf büyüklüğü, boşluk ve satır sonu. Nokta segmentleriyle güncel adrese normalleşebilen istekler de reddediliyor.
+
+Değişen dosyalar: `src/pc-control/mcp-tools.ts`, yeni `tests/pc-widget-legacy-uri.test.ts`, mevcut testlerin sunucu taklitleri (`tests/pc-browser.test.ts`, `tests/pc-full-access.test.ts`, `tests/pc-mobile-diagnostics.test.ts`, `tests/pc-screenshot-widget.test.ts`, `tests/pc-widget-probes.test.ts`), yeniden üretilen `launcher/electron/pc-windows-helper.sha256` ve bu rapor.
+
+| Ayrı doğrulama kapısı | Sonuç |
+|---|---|
+| Regresyon kırmızı → yeşil | Önce -32602; düzeltme sonrası ilgili 18 test, 251 assertion, 0 hata |
+| check-version | VERSION_SYNC_OK 5.1.26 bun@1.4.0 |
+| audit | 145 paket, sıfır bulgu |
+| launcher:audit | 351 paket, mevcut bir istisna dışında sıfır bulgu |
+| typecheck / launcher:typecheck | Çıkış 0 |
+| Kök Bun | 1.237 başarılı, 5 atlanan, 0 başarısız; 8.012 assertion, 121 dosya |
+| Launcher Node / Bun | 442 başarılı, 4 atlanan / 46 başarılı, 0 hata |
+| launcher:build | Çıkış 0 |
+| Runtime bundle / notices | Çıkış 0, 114 paket bildirimi |
+| smoke-release | SHARP_RUNTIME_OK 0.35.5 8.18.7; RELOCATABLE_RUNTIME_SMOKE_OK |
+| licenses | Çıkış 0, 114 paket bildirimi |
+| app:package | Çıkış 0; EXE ve blockmap üretildi |
+| app:smoke | PACKAGED_LAUNCHER_SMOKE_OK win32/x64; CDP 200; PACKAGED_SHARP_OK 0.35.5 8.18.7 |
+| Gizli sekme | BROWSER_SMOKE_OK Chrome/157.0.8103.79; 101 örnek, 0 odak değişimi, 0 Chrome örneği |
+| git diff --check | Çıkış 0; Git'in mevcut LF/CRLF uyarıları |
+
+Paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.993.890 bayt), SHA-256 `998d10eab71815fd2f705ad6d2891d853c872f62afe0040d1a5f349f55698e4c`; `.sha256` eşleşmesi True. Paket açılış dumanı 447 ön plan örneğinde 0 odak değişimi, 0 Chrome ve 0 köprü örneği gösterdi. Paket helper SHA-256 `b9a895486aa94069f86e3046fd26479eb1e79a515f10a970c54c80c0a0235160`, Chrome native host SHA-256 `fa294df218dffb399320fcf3220eea2be72239d9d1af3ec2821421a34eb88ac7` doğrulandı. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Yeni test atlaması yok. Canlı araç kullanılmadı, kurulum yapılmadı. Gerçek ChatGPT önbellek davranışı yeni paket kurulmadan canlı doğrulanmadı; regresyon testi gerçek MCP SDK istemci/sunucu bağlantısıyla çalıştı. Çok platformlu CI sonucu beklenmeyecek; PR #97 taslak kalacak.

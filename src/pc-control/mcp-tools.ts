@@ -1,4 +1,5 @@
-import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import {McpServer,type ResourceMetadata} from '@modelcontextprotocol/sdk/server/mcp.js';
+import {ErrorCode,McpError,ReadResourceRequestSchema,type ReadResourceResult} from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod/v4';
 import {PcAccessDeniedError,PcAuthorizer,jobOwner} from './authorization';
 import {PcOperationError} from './errors';
@@ -182,21 +183,37 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
     }catch(error){const code=error instanceof PcOperationError?error.code:error instanceof PcAccessDeniedError?'pc_access_denied':'pc_operation_failed';
       const value={ok:false,code,...(error instanceof PcOperationError&&error.details?error.details:{})};await audit(tool,'error',code,error instanceof PcOperationError&&['pc_desktop_unavailable','pc_helper_timeout','pc_helper_failed','pc_grant_changed'].includes(code)?error.details?.reason:undefined,fields);return {isError:true,content:[{type:'text' as const,text:JSON.stringify(value)}],structuredContent:value};}
   };
-  server.registerResource('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
+  const widgetReaders=new Map<string,()=>Promise<ReadResourceResult>>();
+  const registerWidget=(name:string,uri:string,metadata:ResourceMetadata,read:()=>Promise<ReadResourceResult>)=>{
+    widgetReaders.set(uri,read);server.registerResource(name,uri,metadata,read);
+  };
+  registerWidget('pc-screenshot',PC_SCREENSHOT_URI,{mimeType:PC_SCREENSHOT_MIME,description:'Feno Bridge ekran görüntüsü kartı'},
     async()=>({contents:[{uri:PC_SCREENSHOT_URI,mimeType:PC_SCREENSHOT_MIME,text:PC_SCREENSHOT_HTML,
       _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline','fullscreen'],preferredDisplayMode:'inline'},'openai/widgetDescription':'Ekran görüntüsü; dokunarak büyütebilirsiniz.'}}]}));
-  server.registerResource('pc-screenshot-skybridge',PC_SCREENSHOT_SKYBRIDGE_URI,
+  registerWidget('pc-screenshot-skybridge',PC_SCREENSHOT_SKYBRIDGE_URI,
     {mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,description:'Ekran görüntüsü (Skybridge yedek kart)'},
     async()=>({contents:[{uri:PC_SCREENSHOT_SKYBRIDGE_URI,mimeType:PC_SCREENSHOT_SKYBRIDGE_MIME,text:PC_SCREENSHOT_SKYBRIDGE_HTML,
       _meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/widgetPrefersBorder':true,'openai/ui':{availableDisplayModes:['inline','fullscreen'],preferredDisplayMode:'inline'}}}]}));
-  server.registerResource('pc-probe-mcpapp',PC_PROBE_MCP_APP_URI,
+  registerWidget('pc-probe-mcpapp',PC_PROBE_MCP_APP_URI,
     {mimeType:'text/html;profile=mcp-app',description:'MCP Apps bağlantı teşhisi'},
     async()=>({contents:[{uri:PC_PROBE_MCP_APP_URI,mimeType:'text/html;profile=mcp-app',text:PC_PROBE_MCP_APP_HTML,
       _meta:{ui:{csp:{connectDomains:[],resourceDomains:[]}},'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/ui':{availableDisplayModes:['inline']}}}]}));
-  server.registerResource('pc-probe-skybridge',PC_PROBE_SKYBRIDGE_URI,
+  registerWidget('pc-probe-skybridge',PC_PROBE_SKYBRIDGE_URI,
     {mimeType:'text/html+skybridge',description:'Skybridge bağlantı teşhisi'},
     async()=>({contents:[{uri:PC_PROBE_SKYBRIDGE_URI,mimeType:'text/html+skybridge',text:PC_PROBE_SKYBRIDGE_HTML,
       _meta:{'openai/widgetCSP':{connect_domains:[],resource_domains:[]},'openai/ui':{availableDisplayModes:['inline']}}}]}));
+  // These are this server's only resources. Keep the SDK's static listing, but handle reads
+  // before URL normalization so malformed aliases cannot resolve to an approved widget.
+  const versionNumber=(parts:string[])=>parts.reduce((value,part)=>value*1000+Number(part),0);
+  const currentVersion=versionNumber(pcVersion.split('.'));
+  server.server.setRequestHandler(ReadResourceRequestSchema,async({params:{uri}})=>{
+    const match=/^ui:\/\/widget\/(pc-screenshot(?:-skybridge)?|probe-(?:mcpapp|skybridge))-v(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.html$/.exec(uri);
+    const read=match&&match[0]===uri&&versionNumber(match.slice(2))<=currentVersion
+      ?widgetReaders.get(`ui://widget/${match[1]}-v${pcVersion}.html`):undefined;
+    if(!read)throw new McpError(ErrorCode.InvalidParams,'Resource not found');
+    const result=await read();
+    return {...result,contents:result.contents.map(content=>({...content,uri}))};
+  });
   // MCP Apps is the documented default; switch only the screenshot card with an environment flag.
   const skybridge=process.env.FENO_PC_WIDGET_MODE==='skybridge';
   const imageToolMeta={...(skybridge?{}:{ui:{resourceUri:PC_SCREENSHOT_URI}}),'openai/outputTemplate':PC_SCREENSHOT_SKYBRIDGE_URI,

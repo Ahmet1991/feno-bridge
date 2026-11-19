@@ -119,7 +119,7 @@ test('probe MIME, tool metadata and screenshot fallback resources are independen
   const definitions=new Map<string,any>();
   const tools=new Map<string,()=>Promise<any>>();
   const resources=new Map<string,{definition:any;read:()=>Promise<any>}>();
-  const server={registerTool:(name:string,definition:any,handler:()=>Promise<any>)=>{definitions.set(name,definition);tools.set(name,handler);},
+  const server={server:{setRequestHandler(){}},registerTool:(name:string,definition:any,handler:()=>Promise<any>)=>{definitions.set(name,definition);tools.set(name,handler);},
     registerResource:(name:string,uri:string,opts:any,read:()=>Promise<any>)=>resources.set(uri,{definition:opts,read})} as unknown as McpServer;
   registerPcTools(server,{authorizer:new PcAuthorizer({profileId:'pc2-normal'}),host:{} as PcHost});
   for(const [tool,uri,mime,html] of [
@@ -145,7 +145,7 @@ test('diagnostic tools are hidden unless explicitly opted in',()=>{
   const previous=process.env.FENO_PC_WIDGET_PROBES;
   delete process.env.FENO_PC_WIDGET_PROBES;
   const names:string[]=[];
-  const server={registerTool:(name:string)=>names.push(name),registerResource:()=>{}} as unknown as McpServer;
+  const server={server:{setRequestHandler(){}},registerTool:(name:string)=>names.push(name),registerResource:()=>{}} as unknown as McpServer;
   try{
     registerPcTools(server,{authorizer:new PcAuthorizer({profileId:'pc2-normal'}),host:{} as PcHost});
     expect(names).not.toContain('pc_widget_probe_mcpapp');
@@ -159,7 +159,7 @@ test('explicit skybridge flag switches screenshots without changing either diagn
   const probeBefore=process.env.FENO_PC_WIDGET_PROBES;
   process.env.FENO_PC_WIDGET_PROBES='1';
   const definitions=new Map<string,any>();
-  const server={registerTool:(name:string,definition:any)=>definitions.set(name,definition),registerResource:()=>{}} as unknown as McpServer;
+  const server={server:{setRequestHandler(){}},registerTool:(name:string,definition:any)=>definitions.set(name,definition),registerResource:()=>{}} as unknown as McpServer;
   try{
     process.env.FENO_PC_WIDGET_MODE='skybridge';
     registerPcTools(server,{authorizer:new PcAuthorizer({profileId:'pc2-normal'}),host:{} as PcHost});
