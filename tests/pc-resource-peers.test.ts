@@ -1,8 +1,11 @@
-import {test,expect} from 'bun:test';
-import {mkdtempSync,mkdirSync,writeFileSync} from 'node:fs';
+import {afterAll,test,expect} from 'bun:test';
+import {mkdirSync,writeFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {createPcPeerRegistry} from '../src/pc-control/resource-peers';
 import {assertCompatiblePcResourcePeers} from '../src/pc-control/resource-protocol';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 const windowsTest=process.platform==='win32'?test:test.skip;
 windowsTest('a machine with no DEV home or peer permits a normal single-profile job lease',()=>{
   const root=mkdtempSync(join(tmpdir(),'pc-no-dev-'));
@@ -22,11 +25,16 @@ windowsTest('missing, invalid and legacy peer evidence never becomes inactive me
   const {createPrivateFileAccess}=require('../launcher/electron/private-acl.cjs');const files=createPrivateFileAccess(native.getCurrentUserSid());
   const registry=createPcPeerRegistry({directory:join(root,'private'),files,inspectProcess:native.inspectProcess,legacyHomes:{'pc2-dev':home},
     inspectDevLaunchers:()=>({state:'absent',pids:[]}),devInstallPaths:[join(root,'no-install')]});
-  registry.start('pc2-normal');expect(registry.observe().complete).toBe(false);
-  const child=Bun.spawn([process.execPath,join(import.meta.dir,'fixtures/pc-core-peer.ts'),join(root,'private')],{stdout:'pipe',stderr:'pipe'});
-  expect(await child.exited).toBe(0);expect(registry.observe().complete).toBe(true);
-  writeFileSync(join(home,'runtime/launcher-browser.json'),JSON.stringify({pid:process.pid}));
-  expect(registry.observe().peers.find(p=>p.profileId==='pc2-dev')?.state).toBe('unknown');registry.close();
+  registry.start('pc2-normal');
+  try {
+    expect(registry.observe().complete).toBe(false);
+    const child=Bun.spawn([process.execPath,join(import.meta.dir,'fixtures/pc-core-peer.ts'),join(root,'private')],{stdout:'pipe',stderr:'pipe'});
+    try {
+      expect(await child.exited).toBe(0);expect(registry.observe().complete).toBe(true);
+      writeFileSync(join(home,'runtime/launcher-browser.json'),JSON.stringify({pid:process.pid}));
+      expect(registry.observe().peers.find(p=>p.profileId==='pc2-dev')?.state).toBe('unknown');
+    } finally {if(child.exitCode===null)child.kill();await child.exited;}
+  } finally {registry.close();}
 });
 function fixture({home=false,retired=false,devProcess='absent',installation=false}: {
   home?:boolean;retired?:boolean;devProcess?:string;installation?:boolean;

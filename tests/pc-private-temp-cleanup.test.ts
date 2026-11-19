@@ -1,9 +1,11 @@
-import {test,expect} from 'bun:test';
-import {mkdtempSync,chmodSync,existsSync,readdirSync,statSync} from 'node:fs';
+import {afterAll,test,expect} from 'bun:test';
+import {chmodSync,existsSync,readdirSync,statSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
+import {trackTempDirectories} from './support/temp-directories';
 
+const mkdtempSync = trackTempDirectories(afterAll);
 const windowsTest=process.platform==='win32'?test:test.skip;
 windowsTest('failed replacement leaves no stage; sweep removes only old private stages',async()=>{
   const api=require('../launcher/electron/private-acl-native.cjs');

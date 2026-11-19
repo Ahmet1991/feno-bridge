@@ -1,6 +1,7 @@
-import {test,expect} from 'bun:test';
+import {afterAll,test,expect} from 'bun:test';
 import {spawn} from 'node:child_process';
-import {existsSync,mkdtempSync,readFileSync} from 'node:fs';
+import {existsSync,readFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -8,6 +9,8 @@ import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController,type PcWindowsHelper} from '../src/pc-control/windows';
 import {PcOperationError} from '../src/pc-control/errors';
 import {PC_PERMISSIONS} from '../src/pc-control/types';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 const e2e=process.platform==='win32'&&process.env.FENO_PC_DESKTOP_E2E==='1'?test:test.skip;
 e2e('real desktop E2E touches only the test-owned window; image bytes never hit disk',async()=>{
@@ -81,6 +84,10 @@ e2e('real desktop E2E touches only the test-owned window; image bytes never hit 
     expect(readFileSync(menuLog,'utf8')).toMatch(/open\nclose\n/);
     process.stdout.write('E2E own window input and in-memory captures succeeded.\n');
   }finally{
-    authorizer.revoke();child.kill();
+    authorizer.revoke();
+    if(child.exitCode===null&&child.signalCode===null){
+      const closed=new Promise<void>(resolve=>child.once('close',()=>resolve()));
+      child.kill();await closed;
+    }
   }
 },45000);

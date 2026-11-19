@@ -1,7 +1,10 @@
-import {test,expect} from 'bun:test';
-import {mkdtempSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';
+import {afterAll,test,expect} from 'bun:test';
+import {join} from 'node:path';import {tmpdir} from 'node:os';
+import { trackTempDirectories } from './support/temp-directories';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {acquirePcHostLease,recoverPcHostResource,recoverAbandonedPcResources,pcResourceLockFile} from '../src/pc-control/resource-locks';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 const native=process.platform==='win32'?require('../launcher/electron/private-acl-native.cjs'):undefined;
 const windowsTest=process.platform==='win32'?test:test.skip;
 async function readLine(stream:ReadableStream<Uint8Array>){const reader=stream.getReader();try{const value=await reader.read();if(value.done)throw Error('worker ended');return JSON.parse(new TextDecoder().decode(value.value).trim());}finally{reader.releaseLock();}}
@@ -15,7 +18,7 @@ windowsTest('two actual Windows processes racing across profiles have exactly on
     expect(states.filter(s=>s.state==='held')).toHaveLength(1);expect(states.filter(s=>s.error==='pc_resource_busy')).toHaveLength(1);
     const winner=states[0].state==='held'?a:b;winner.stdin.write('release\n');expect((await readLine(winner.stdout)).state).toBe('released');
     await Promise.all([a.exited,b.exited]);
-  }finally{a.kill();b.kill();}
+  }finally{a.kill();b.kill();await Promise.all([a.exited,b.exited]);}
 },15000);
 windowsTest('crash releases the OS handle and abandoned journal recovers automatically',async()=>{
   const directory=join(mkdtempSync(join(tmpdir(),'pc-resource-crash-')),'private');const child=start(directory,'pc2-normal');
@@ -64,5 +67,5 @@ windowsTest('crash releases the OS handle and abandoned journal recovers automat
     await expect(acquirePcHostLease(options)).rejects.toThrow('pc_resource_recovery_required');
     native.writePrivateAtomic(recordPath,'broken',options.userSid);
     await expect(acquirePcHostLease(options)).rejects.toMatchObject({code:'pc_resource_recovery_required',details:{reason:expect.stringContaining('kilidi')}});
-  }finally{child.kill();}
+  }finally{child.kill();await child.exited;}
 },15000);

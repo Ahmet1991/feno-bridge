@@ -1,10 +1,13 @@
-import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { afterAll, test, expect } from 'bun:test';
+import { mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PcAuthorizer } from '../src/pc-control/authorization';
 import { resolveAllowedPath } from '../src/pc-control/paths';
 import type { PcGrant } from '../src/pc-control/types';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 const permissions=['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','adb','runner'] as const;
 const grant=(extra:Partial<PcGrant>={}):PcGrant=>({profileId:'pc2-normal',id:'fixture-grant-0001',expiresAt:61000,roots:['D:\\GitHub\\fixture'],permissions:['files.read'],allowedApps:[],...extra});
 

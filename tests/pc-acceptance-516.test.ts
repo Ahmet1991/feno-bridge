@@ -1,5 +1,6 @@
-import {expect,test} from 'bun:test';
-import {mkdtempSync,mkdirSync,symlinkSync,writeFileSync} from 'node:fs';
+import {afterAll,expect,test} from 'bun:test';
+import {mkdirSync,symlinkSync,writeFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -7,6 +8,8 @@ import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController} from '../src/pc-control/windows';
 import {createPcApplicationLauncher,validatePcLaunchUrl} from '../src/pc-control/launch';
 import {createPcAdbController,type PcAdbRun} from '../src/pc-control/adb';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 const windowsOnly=process.platform==='win32'?test:test.skip;
 function full(fullAccess=true){

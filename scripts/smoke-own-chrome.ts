@@ -2,7 +2,9 @@ import {mkdtempSync,cpSync,writeFileSync,readFileSync,existsSync} from 'node:fs'
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
+import { removeSmokeDirectory } from './smoke-temp';
 const root=mkdtempSync(join(tmpdir(),'feno-own-chrome-'));
+try {
 const extension=join(root,'extension');
 cpSync(join(import.meta.dir,'../launcher/chrome-extension'),extension,{recursive:true});
 if(process.env.FENO_BASELINE==='1'){
@@ -215,4 +217,7 @@ try{
   if(socket){await Promise.race([cdp('Browser.close').catch(()=>{}),Bun.sleep(1500)]);socket.close();if(chromeProcess.exitCode===null)chromeProcess.kill();}
   else chromeProcess.kill();
   await chromeProcess.exited;server.stop();
+}
+} finally {
+  removeSmokeDirectory(root);
 }

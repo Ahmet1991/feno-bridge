@@ -4,7 +4,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +11,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
+import { removeSmokeDirectory } from './smoke-temp';
 
 const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
 const codex = resolve(codexArg ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
@@ -38,6 +38,7 @@ if (bundled.status !== 0) {
 }
 
 const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-live-subagents-"));
+try {
 const codexHome = join(root, "codex");
 mkdirSync(codexHome, { recursive: true });
 const catalogPath = join(root, "models.json");
@@ -131,7 +132,6 @@ function compactOutput(value: string): string {
   return value.length <= 8_000 ? value : value.slice(-8_000);
 }
 
-try {
   const processHandle = Bun.spawn([
     codex,
     "exec",
@@ -220,5 +220,5 @@ try {
     `LIVE_WEB_SUBAGENT_CHAIN_OK root=chatgpt-web/medium child=chatgpt-web/high version=${expectedVersion}\n`,
   );
 } finally {
-  rmSync(root, { recursive: true, force: true });
+  removeSmokeDirectory(root);
 }

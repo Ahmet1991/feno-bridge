@@ -1,9 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=require('node:child_process');
+const mkdtempSync = require('./temp-directories.cjs')(test.after);
 const windowsTest=(name,fn)=>test(name,{skip:process.platform!=='win32'},fn);
 const bunPath=process.platform==='win32'?cp.spawnSync('bun',['--print','process.execPath'],{encoding:'utf8'}).stdout.trim():'';
 function fixture(kind='production',clock=Date.now,confirmLocally=async()=>true,audit=()=>{}){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pc-service-test-'));
+  const root=mkdtempSync(path.join(os.tmpdir(),'pc-service-test-'));
   for(const name of ['home','ui','project'])fs.mkdirSync(path.join(root,name));
   const {createPcLauncherService}=require('../electron/pc-service.cjs');
   const profile={kind,coreHome:path.join(root,'home'),userData:path.join(root,'ui')};
@@ -59,7 +60,7 @@ test('PC IPC rejects another renderer and a same-origin subframe before any appr
 });
 
 windowsTest('existing runtime parent ACL is not migrated when creating a new private profile directory',()=>{
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pc-existing-runtime-'));
+  const root=mkdtempSync(path.join(os.tmpdir(),'pc-existing-runtime-'));
   const profile={kind:'production',coreHome:path.join(root,'home'),userData:path.join(root,'ui')};
   fs.mkdirSync(profile.coreHome);fs.mkdirSync(profile.userData);fs.mkdirSync(path.join(profile.coreHome,'runtime'));
   const {createPcLauncherService}=require('../electron/pc-service.cjs');
@@ -68,7 +69,7 @@ windowsTest('existing runtime parent ACL is not migrated when creating a new pri
   finally{service.suspend();}
 });
 windowsTest('DEV retirement needs local confirmation, is reversible and never overrides a running DEV',async()=>{
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pc-retirement-service-'));
+  const root=mkdtempSync(path.join(os.tmpdir(),'pc-retirement-service-'));
   for(const folder of ['home','ui','dev'])fs.mkdirSync(path.join(root,folder));
   const {createPcLauncherService}=require('../electron/pc-service.cjs');
   let live=false,approved=true,confirmed=0;

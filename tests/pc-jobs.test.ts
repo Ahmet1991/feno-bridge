@@ -1,8 +1,11 @@
-import {afterEach, expect, test} from 'bun:test';
-import {existsSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
+import {afterAll,afterEach, expect, test} from 'bun:test';
+import {existsSync, readFileSync, writeFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PcAuthorizer} from '../src/pc-control/authorization';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 const windowsTest = process.platform === 'win32' ? test : test.skip;
 const fixture = join(import.meta.dir, 'fixtures', 'pc-jobs-child.ts');
 const managers: {revokeAll():Promise<void>}[] = [];
