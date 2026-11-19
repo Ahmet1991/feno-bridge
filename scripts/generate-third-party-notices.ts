@@ -15,8 +15,23 @@ const argumentsList = process.argv.slice(2);
 const includeLauncher = argumentsList.includes("--include-launcher");
 const destinationArgument = argumentsList.find(argument => argument !== "--include-launcher");
 const visited = new Map<string, { directory: string; manifest: PackageJson }>();
-const bundledLicenseOverrides = new Map([
-  ["tiktoken@1.0.22", join(root, "LICENSES", "tiktoken-MIT.txt")],
+const libvipsLicenses = ["libvips-LGPL-3.0.txt", "libvips-GPL-3.0.txt"]
+  .map(file => join(root, "LICENSES", file));
+const bundledLicenseOverrides = new Map<string, string[]>([
+  ["tiktoken@1.0.22", [join(root, "LICENSES", "tiktoken-MIT.txt")]],
+  ["@img/sharp-libvips-linux-x64@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-darwin-arm64@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-darwin-x64@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-linux-arm@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-linux-arm64@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-linux-ppc64@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-linux-riscv64@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-linux-s390x@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-linuxmusl-arm64@1.3.4", libvipsLicenses],
+  ["@img/sharp-libvips-linuxmusl-x64@1.3.4", libvipsLicenses],
+  ["@img/sharp-win32-x64@0.35.5", libvipsLicenses],
+  ["@img/sharp-win32-arm64@0.35.5", libvipsLicenses],
+  ["@img/sharp-win32-ia32@0.35.5", libvipsLicenses],
 ]);
 
 function packageDirectory(name: string, from: string): string | undefined {
@@ -66,14 +81,13 @@ const sections = [...visited.values()]
     const identity = `${manifest.name}@${manifest.version}`;
     const override = bundledLicenseOverrides.get(identity);
     if (files.length === 0 && !override) throw new Error(`No license/notice file found for ${identity}`);
-    if (override && !existsSync(override)) throw new Error(`Bundled license override is missing for ${identity}`);
+    if (override?.some(file => !existsSync(file))) throw new Error(`Bundled license override is missing for ${identity}`);
     const license = typeof manifest.license === "string" ? manifest.license : manifest.license?.type ?? "unknown";
     return [
       "=".repeat(80),
       `${identity} (${license})`,
-      ...(override
-        ? ["-".repeat(80), `bundled license: ${override.slice(root.length + 1)}`, "-".repeat(80), readFileSync(override, "utf8").trim()]
-        : files.flatMap(file => ["-".repeat(80), file, "-".repeat(80), readFileSync(join(directory, file), "utf8").trim()])),
+      ...files.flatMap(file => ["-".repeat(80), file, "-".repeat(80), readFileSync(join(directory, file), "utf8").trim()]),
+      ...(override ?? []).flatMap(file => ["-".repeat(80), `bundled license: ${file.slice(root.length + 1)}`, "-".repeat(80), readFileSync(file, "utf8").trim()]),
     ].join("\n");
   });
 

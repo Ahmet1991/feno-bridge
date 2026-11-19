@@ -213,3 +213,38 @@ Yeni paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.969.814 bayt
 Değişen dosyalar: `launcher/electron/private-acl-native.cjs`, `launcher/electron/private-acl.cjs`, `launcher/electron/pc-windows-helper.sha256`, `launcher/tests/pc-consent-channel-race.test.cjs`, `launcher/tests/private-acl.test.cjs`, `launcher/tests/private-helper-errors.test.cjs`, `tests/pc-acceptance-515.test.ts`, `tests/pc-files.test.ts`, `tests/pc-full-access.test.ts`, `tests/support/canonical-temp.ts` ve bu rapor.
 
 Defender tehdit tespit sayısı 40 → 40. DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Canlı PC2 araçları kullanılmadı; kurulum, canlı izin/profil/runtime ve diğer çalışma ağaçları değiştirilmedi. Linux/macOS ve Windows runner'daki yeni CI sonucu henüz doğrulanmadı; CI beklenmeyecek. PR #97 taslak kalacak, merge/etiket/yayın yapılmayacak.
+
+### CI turu 3
+
+19.11.2026 — Taban `fb455a8`, uzak dal farkı 0/0; sürüm 5.1.26. CI 44505893356'da önceki ACL hataları kayboldu; Windows'ta tek 8.3 beklentisi, Linux/macOS'ta libvips lisans bildirimi kaldı.
+
+**Lisanslar:** Linux x64, Darwin arm64 ve Darwin x64 için npm tarball'ları kurulum yapmadan indirildi ve dosya listeleri ile package.json alanları incelendi. Üçünün de sürümü 1.3.4, lisansı LGPL-3.0-or-later; LICENSE/COPYING/NOTICE yok. Kilit dosyasındaki diğer yedi libvips platformu da npm pack --dry-run ile denetlendi; aynı lisans ve eksiklik doğrulandı. Sharp native sarmalayıcılarının tümü LICENSE taşıyor; Windows'un üç mimarisinde Apache-2.0 AND LGPL-3.0-or-later. Sharp ve @img/colour lisans dosyaları mevcut.
+
+- `LICENSES/libvips-LGPL-3.0.txt` (7.652 bayt): https://www.gnu.org/licenses/lgpl-3.0.txt
+- `LICENSES/libvips-GPL-3.0.txt` (35.149 bayt): https://www.gnu.org/licenses/gpl-3.0.txt
+
+GNU'nun tam lisans metinleri indirildi; LGPL'nin atıf yaptığı GPL metni de eklendi. Bildirim üreticisi on libvips 1.3.4 kimliğini ve üç Windows native 0.35.5 kimliğini açıkça eşliyor, mevcut paket lisanslarını koruyor ve iki GNU metnini ekliyor. Bilinmeyen sürümde eksik lisans veya eksik override dosyası hâlâ hata. Regresyon testi 13 kimliği, özgün Windows LICENSE metninin korunmasını ve bilinmeyen sürümün reddini doğruladı (46 assertion). Runtime/launcher LICENSES kopyalama deseni iki dosyayı paketliyor; release.yml ayrı, benzersiz adlarla yayın varlıklarına kopyalıyor; mevcut flatten/checksum adımları aynen kaldı. Bu çalışma eksik lisans bildirimi hatasının onarımıdır; bütün gömülü bileşenlerin ayrı bir lisans uyum denetimi değildir.
+
+**8.3:** `tests/pc-mcp-core.test.ts` içindeki signed local approval akışı artık `canonicalTemp` kullanıyor; iş geçmişindeki projectRoot beklentisi native kanonik yol ile eşleşiyor. Kök ve launcher tmpdir kullanımları, dönen yol karşılaştırmaları, runtime ve paket smoke yolları tarandı. Doğrudan kanonik yol karşılaştırması gerektiren ek hata bulunmadı; önceki 8.3 sınır testi korundu. Yeni test atlaması yok.
+
+| Ayrı doğrulama kapısı | Sonuç |
+|---|---|
+| check-version | VERSION_SYNC_OK 5.1.26 bun@1.4.0 |
+| audit | 145 paket, sıfır bulgu |
+| launcher:audit | 351 paket, mevcut bir istisna dışında sıfır bulgu |
+| Kök typecheck / launcher:typecheck | Çıkış 0; son lisans genişletmesinden sonra kök typecheck tekrar geçti |
+| Kök Bun | 1.236 başarılı, 5 atlanan, 0 başarısız; 7.878 assertion, 120 dosya |
+| Son lisans regresyonu | 1 başarılı, 0 başarısız; 46 assertion (ek platform eşlemelerinden sonra) |
+| Launcher Node / Bun | 442 başarılı, 4 atlanan / 46 başarılı, 0 hata |
+| Launcher build | Çıkış 0 |
+| Runtime bundle / notices | Çıkış 0, 114 paket bildirimi |
+| smoke-release | SHARP_RUNTIME_OK 0.35.5 8.18.7; RELOCATABLE_RUNTIME_SMOKE_OK |
+| licenses | Çıkış 0, 114 paket bildirimi |
+| app:package | Çıkış 0; EXE ve blockmap üretildi |
+| app:smoke | PACKAGED_LAUNCHER_SMOKE_OK win32/x64; CDP 200; PACKAGED_SHARP_OK 0.35.5 8.18.7 |
+| Gizli sekme | BROWSER_SMOKE_OK Chrome/157.0.8103.79; 97 örnek, 0 odak değişimi, 0 Chrome örneği |
+| git diff --check | Çıkış 0; mevcut Git satır sonu uyarıları |
+
+Paket açılış dumanı 463 ön plan örneğinde sıfır odak değişimi, sıfır Chrome ve köprü örneği gösterdi. İlk ve ikinci runtime kaynak/kurulum süreleri sırasıyla 45,579 s ve 0,787 s. Yeni paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.993.710 bayt), SHA-256 `a8219ca0311693f2ea415691735f15d74c91ce29e950cc43b574b074f132c9fc`; `.sha256` dosyası yeniden hesaplanan karma ile eşleşti. Paket helper SHA-256 `0d24e31b9649d366f96367ee85ee418a97f947e72fa10662febe442efc443bd7`, native host SHA-256 `0ce213ad12a28cdc9cbe43dc08cc67275a7cb8a8bad416f857ad690b836c35af` doğrulandı.
+
+Değişen dosyalar: `.github/workflows/release.yml`, `scripts/generate-third-party-notices.ts`, iki GNU lisans dosyası, `tests/pc-mcp-core.test.ts`, `tests/third-party-notices.test.ts`, `launcher/electron/pc-windows-helper.sha256` ve bu rapor. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Canlı araç, kurulum, merge, etiket ve yayın yok. Linux/macOS gerçek runner doğrulaması yeni CI koşusuna kalıyor; CI beklenmeyecek, PR #97 taslak kalacak.
