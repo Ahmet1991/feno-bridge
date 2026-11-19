@@ -1,6 +1,6 @@
 import {expect,test} from 'bun:test';
-import {readFileSync,mkdtempSync,writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {readFileSync,mkdtempSync,writeFileSync,realpathSync} from 'node:fs';
+import {join,win32} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {PcAuthorizer} from '../src/pc-control/authorization';
@@ -13,7 +13,7 @@ import {createPcFile,readPcFile,listPcFiles} from '../src/pc-control/files';
 function full(root:string){
   const a=new PcAuthorizer({profileId:'pc2-normal'});
   a.setGrantFromLocalApproval({profileId:'pc2-normal',id:'acceptance-515-grant',expiresAt:null,fullAccess:true,
-    roots:['C:\\','D:\\','G:\\'],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','adb','runner','desktop.advanced','apps.launch','screen.full','browser','chrome.user']});
+    roots:[win32.parse(root).root],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','adb','runner','desktop.advanced','apps.launch','screen.full','browser','chrome.user']});
   return a;
 }
 const win=process.platform==='win32'?test:test.skip;
@@ -41,12 +41,13 @@ test('T25/26/28/29/34: terminal, desktop and ADB use independent lock namespaces
   expect(pcResourceLockFile('job')).toBe(pcResourceLockFile('terminal'));
 });
 
-test('T39: launch browser URL with isolated approved test profile',async()=>{
-  const auth=full('D:\\');const calls:string[][]=[];
+win('T39: launch browser URL with isolated approved test profile',async()=>{
+  const root=realpathSync.native(mkdtempSync(join(tmpdir(),'pc-profile-515-')));
+  const profile=join(root,'browser');const auth=full(root);const calls:string[][]=[];
   const launch=createPcApplicationLauncher({authorizer:auth,resolve:()=> 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',spawnApp:(_exe,args)=>{calls.push(args);}});
-  expect(await launch.launchPcApp('chrome.exe','https://example.com/',undefined,'D:\\PC2-Browser-Test-Profile')).toMatchObject({launched:true});
-  expect(calls[0]).toEqual(['--user-data-dir=D:\\PC2-Browser-Test-Profile','--new-window','https://example.com/']);
-  await expect(launch.launchPcApp('notepad.exe',undefined,undefined,'D:\\PC2-Browser-Test-Profile')).rejects.toThrow('pc_invalid_argument');
+  expect(await launch.launchPcApp('chrome.exe','https://example.com/',undefined,profile)).toMatchObject({launched:true});
+  expect(calls[0]).toEqual(['--user-data-dir='+profile,'--new-window','https://example.com/']);
+  await expect(launch.launchPcApp('notepad.exe',undefined,undefined,profile)).rejects.toThrow('pc_invalid_argument');
 });
 
 test('T26: full-access native input forwards frame permission, selected access does not',async()=>{

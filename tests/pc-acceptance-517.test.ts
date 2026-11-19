@@ -1,16 +1,16 @@
 import {expect,test} from 'bun:test';
-import {mkdtempSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,win32} from 'node:path';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController} from '../src/pc-control/windows';
 import {createPcApplicationLauncher} from '../src/pc-control/launch';
 import {PC_PERMISSIONS} from '../src/pc-control/types';
 
-function approved(fullAccess=true){
+function approved(fullAccess=true,root?:string){
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'acceptance-517',expiresAt:null,fullAccess,
-    roots:fullAccess?['C:\\','D:\\']:['D:\\fixture'],allowedApps:fullAccess?[]:['notepad.exe'],
+    roots:root?[fullAccess?win32.parse(root).root:root]:fullAccess?['C:\\','D:\\']:['D:\\fixture'],allowedApps:fullAccess?[]:['notepad.exe'],
     permissions:fullAccess?[...PC_PERMISSIONS.slice(1)]:['desktop.input','desktop.advanced','apps.launch']});
   return auth;
 }
@@ -39,18 +39,19 @@ test('T24: selective input retains its strict character policy',async()=>{
     .rejects.toMatchObject({code:'pc_invalid_argument'});
 });
 
-test('T23: missing Notepad document has file-not-found code, existing document launches',async()=>{
-  const folder=mkdtempSync(join(tmpdir(),'pc2-t23-'));
+test.skipIf(process.platform!=='win32')('T23: missing Notepad document has file-not-found code, existing document launches',async()=>{
+  const folder=realpathSync.native(mkdtempSync(join(tmpdir(),'pc2-t23-')));
   const existing=join(folder,'exists.txt');writeFileSync(existing,'ok');
-  const launch=createPcApplicationLauncher({authorizer:approved(),resolve:()=> 'C:\\Windows\\System32\\notepad.exe',spawnApp:()=>{}});
+  const launch=createPcApplicationLauncher({authorizer:approved(true,folder),resolve:()=> 'C:\\Windows\\System32\\notepad.exe',spawnApp:()=>{}});
   await expect(launch.launchPcApp('notepad',undefined,join(folder,'missing.txt')))
     .rejects.toMatchObject({code:'pc_file_not_found'});
   expect(await launch.launchPcApp('notepad',undefined,existing)).toMatchObject({launched:true});
 });
 
-test('T31: Chrome handoff returns launched window and truthful focus result',async()=>{
+test.skipIf(process.platform!=='win32')('T31: Chrome handoff returns launched window and truthful focus result',async()=>{
+  const folder=realpathSync.native(mkdtempSync(join(tmpdir(),'pc2-t31-handoff-')));
   let lists=0;
-  const launch=createPcApplicationLauncher({authorizer:approved(),
+  const launch=createPcApplicationLauncher({authorizer:approved(true,folder),
     resolve:()=> 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',spawnApp:()=>{},
     windowHelper:async action=>{
       if(action==='list'){
@@ -62,7 +63,7 @@ test('T31: Chrome handoff returns launched window and truthful focus result',asy
       if(action==='activate')return {ok:false,reason:'focus_required'};
       throw Error('unexpected action');
     }});
-  expect(await launch.launchPcApp('chrome.exe','https://example.com/',undefined,'D:\\PC2-Browser-517'))
+  expect(await launch.launchPcApp('chrome.exe','https://example.com/',undefined,join(folder,'browser')))
     .toMatchObject({launched:true,app:'chrome.exe',windowId:'456',focused:false});
   expect(lists).toBeGreaterThanOrEqual(19);
 });

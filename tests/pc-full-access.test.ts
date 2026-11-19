@@ -42,8 +42,7 @@ test('full grant exposes all windows; selective empty application list still exp
   auth.revoke();auth.setGrantFromLocalApproval({...grant,id:'selective-789',fullAccess:undefined,permissions:grant.permissions.filter(p=>p!=='chrome.user'),roots:['C:\\Test'],allowedApps:[]});
   expect(await desktop.listPcWindows()).toHaveLength(0);
 });
-test('full root containment accepts drive root and still rejects an unavailable path',()=>{
-  if(process.platform!=='win32')return;
+test.skipIf(process.platform!=='win32')('full root containment accepts drive root and still rejects an unavailable path',()=>{
   const existing=process.env.SystemRoot||'C:\\Windows';
   expect(resolveAllowedPath(existing,[existing.slice(0,3)],{fullAccess:true})).toBeTruthy();
 });
@@ -76,8 +75,7 @@ test('PC tools audit every outcome without logging caller paths, content or inpu
   expect(serialized).not.toContain('test-secret-content');
   expect(serialized).not.toContain('secret-data');
 });
-test('full access identity rotation permits a new terminal and desktop shortcut',async()=>{
-  if(process.platform!=='win32')return;
+test.skipIf(process.platform!=='win32')('full access identity rotation permits a new terminal and desktop shortcut',async()=>{
   const root=mkdtempSync(join(tmpdir(),'pc-grant-rotate-'));
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({...grant,roots:[root.slice(0,3)]});
@@ -101,8 +99,7 @@ test('full access identity rotation permits a new terminal and desktop shortcut'
     expect((await host.status() as {fullAccess:boolean}).fullAccess).toBe(true);
   }finally{await host.revokeActiveJobs();}
 });
-test('full access Notepad accepts an approved existing file argument',async()=>{
-  if(process.platform!=='win32')return;
+test.skipIf(process.platform!=='win32')('full access Notepad accepts an approved existing file argument',async()=>{
   const root=mkdtempSync(join(tmpdir(),'pc-notepad-file-'));
   const file=join(root,'large.log');writeFileSync(file,'some local text\n');
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
@@ -114,8 +111,7 @@ test('full access Notepad accepts an approved existing file argument',async()=>{
   expect(launched).toEqual([[file]]);
 });
 
-test('a surviving job remains accessible after transport identity rotation within its lineage',async()=>{
-  if(process.platform!=='win32')return;
+test.skipIf(process.platform!=='win32')('a surviving job remains accessible after transport identity rotation within its lineage',async()=>{
   const root=mkdtempSync(join(tmpdir(),'pc-lineage-'));
   const auth=new PcAuthorizer({profileId:'pc2-normal'}),lineageId=randomUUID();
   const scoped={...grant,roots:[root.slice(0,3)],lineageId};

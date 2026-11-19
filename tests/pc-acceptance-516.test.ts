@@ -1,7 +1,7 @@
 import {expect,test} from 'bun:test';
 import {mkdtempSync,mkdirSync,symlinkSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,win32} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController} from '../src/pc-control/windows';
@@ -9,10 +9,10 @@ import {createPcApplicationLauncher,validatePcLaunchUrl} from '../src/pc-control
 import {createPcAdbController,type PcAdbRun} from '../src/pc-control/adb';
 
 const windowsOnly=process.platform==='win32'?test:test.skip;
-function full(fullAccess=true){
+function full(fullAccess=true, roots=fullAccess?['C:\\','D:\\']:['C:\\fixture']){
   const a=new PcAuthorizer({profileId:'pc2-normal'});
   a.setGrantFromLocalApproval({profileId:'pc2-normal',id:'acceptance-516',expiresAt:null,fullAccess,
-    roots:fullAccess?['C:\\','D:\\']:['C:\\fixture'],allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec',
+    roots,allowedApps:[],permissions:['files.read','files.write','jobs','terminal.exec',
       'screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner','browser',...(fullAccess?['chrome.user' as const]:[])]});
   return a;
 }
@@ -51,10 +51,11 @@ windowsOnly('T31: canonical allowed file URL opens but escapes, UNC and unsafe U
   const local=join(folder,'ş ğ ı ö ü ç.html');writeFileSync(local,'<p>ok</p>','utf8');
   const url=pathToFileURL(local).href;
   const calls:string[][]=[];
-  const launch=createPcApplicationLauncher({authorizer:full(),
+  const drive=win32.parse(folder).root;
+  const launch=createPcApplicationLauncher({authorizer:full(true,[drive]),
     resolve:()=> 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     spawnApp:(_exe,args)=>{calls.push(args);}});
-  expect(validatePcLaunchUrl(url,['C:\\','D:\\'],true)).toBe(url);
+  expect(validatePcLaunchUrl(url,[drive],true)).toBe(url);
   expect(await launch.launchPcApp('chrome.exe',url)).toMatchObject({launched:true});
   expect(calls[0]).toEqual([url]);
   for(const bad of ['file://remote/share/page.html','file:///C:/Windows/../Windows/win.ini',

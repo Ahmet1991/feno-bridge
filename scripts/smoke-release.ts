@@ -42,6 +42,8 @@ const launcher = join(runtimeRoot, manifest.launcher);
 const runtimeExecutable = join(runtimeRoot, "runtime", process.platform === "win32" ? "bun.exe" : "bun");
 const entrypoint = join(runtimeRoot, manifest.entrypoint);
 const runtimeCommand = [runtimeExecutable, entrypoint];
+const sharpSmoke = Bun.spawnSync([runtimeExecutable, "-e", `const sharp = require('sharp'); const png = await sharp({create:{width:1600,height:900,channels:3,background:'#6789ab'}}).png().toBuffer(); const preview = await sharp(png,{limitInputPixels:100_000_000,failOn:'error'}).rotate().resize(1280,1280,{fit:'inside',withoutEnlargement:true}).jpeg({quality:80}).toBuffer(); const meta=await sharp(preview).metadata(); if(meta.width!==1280||meta.height!==720||preview.length>400000||!sharp.versions.vips) throw Error('Sharp preview failed'); console.log('SHARP_RUNTIME_OK '+sharp.versions.sharp+' '+sharp.versions.vips);`], { cwd: join(runtimeRoot, "app"), stdout: "inherit", stderr: "inherit" });
+if (sharpSmoke.exitCode !== 0) throw new Error("Relocated sharp runtime smoke failed");
 const cliBundle = readFileSync(join(runtimeRoot, "app", "cli.js"), "utf8");
 const launcherText = readFileSync(launcher, "utf8");
 for (const forbidden of [sourceRoot, dirname(sourceBundle), "/private/tmp/codex-chatgpt-web-verify", "/tmp/codex-chatgpt-web-verify"]) {
@@ -84,7 +86,8 @@ const config = {
 writeFileSync(join(appHome, "config.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 writeFileSync(config.storageStatePath, "{}\n", { mode: 0o600 });
 
-const env = { ...process.env, CODEX_CHATGPT_WEB_HOME: appHome, CODEX_HOME: codexHome };
+const env = { ...process.env, CODEX_CHATGPT_WEB_HOME: appHome, CODEX_HOME: codexHome,
+  FENO_PC_COORDINATION_DIR: join(root, "coordination") };
 const child = Bun.spawn([...runtimeCommand, "serve"], { env, stdout: "pipe", stderr: "pipe" });
 let stoppedGracefully = false;
 try {

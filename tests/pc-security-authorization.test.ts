@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PcAuthorizer } from '../src/pc-control/authorization';
@@ -41,7 +41,7 @@ test('temporary suspension accepts the identical grant, never a changed or expli
 test('canonical root policy rejects sibling prefixes, junction escape and out-of-root creation',()=>{
   const root=mkdtempSync(join(tmpdir(),'pc-path-security-'));const project=join(root,'project');const sibling=join(root,'project-other');
   mkdirSync(project);mkdirSync(sibling);writeFileSync(join(project,'inside.txt'),'inside');writeFileSync(join(sibling,'outside.txt'),'outside');
-  expect(resolveAllowedPath(join(project,'inside.txt'),[project])).toBe(join(project,'inside.txt'));
+  expect(resolveAllowedPath(join(project,'inside.txt'),[project])).toBe(realpathSync.native(join(project,'inside.txt')));
   expect(()=>resolveAllowedPath(join(sibling,'outside.txt'),[project])).toThrow('pc_access_denied');
   expect(()=>resolveAllowedPath(join(sibling,'new.txt'),[project],{forCreate:true})).toThrow('pc_access_denied');
   symlinkSync(sibling,join(project,'escape'),process.platform==='win32'?'junction':'dir');

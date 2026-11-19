@@ -17,6 +17,7 @@ export const TEST_CODEX_HOME = join(root, "codex");
 export function restoreTestHomes(): void {
   process.env.CODEX_CHATGPT_WEB_HOME = TEST_BRIDGE_HOME;
   process.env.CODEX_HOME = TEST_CODEX_HOME;
+  process.env.FENO_PC_COORDINATION_DIR = join(root, "coordination");
 }
 
 restoreTestHomes();

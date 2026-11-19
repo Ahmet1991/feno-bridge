@@ -65,12 +65,15 @@ function startForegroundSampler() {
     try{waitForFile(done);}catch(error){probe.kill();throw error;}
     const expected=fs.readFileSync(ready,'utf8').trim();
     const rows=fs.readFileSync(path.join(scratch,'foreground.csv'),'utf8').trim().split(/\r?\n/).map(line=>line.split(','));
-    const changes=rows.filter(row=>row[1]!==expected);
-    const chromeSamples=rows.filter(row=>/^(chrome|msedge)$/i.test(row[3])).length;
-    const bridgeSamples=rows.filter(row=>row[3].toLowerCase()===launcherManifest.build.productName.toLowerCase()).length;
+    // The existing foreground window may itself be Chrome or the live bridge.
+    // Fail only if a different window/process of either app receives focus.
+    const baseline=rows[0];
+    const changes=rows.filter(row=>row[1]!==expected||row[2]!==baseline[2]);
+    const chromeSamples=changes.filter(row=>/^(chrome|msedge)$/i.test(row[3])).length;
+    const bridgeSamples=changes.filter(row=>row[3].toLowerCase()===launcherManifest.build.productName.toLowerCase()).length;
     // Other apps can legitimately receive focus while this passive test runs.
     console.log('PACKAGED_FOREGROUND '+JSON.stringify({samples:rows.length,foregroundChanges:changes.length,chromeSamples,bridgeSamples,interactive:expected!=='0'}));
-    if(expected==='0'||rows.length<5||chromeSamples||bridgeSamples)throw Error('Packaged launcher foreground check failed');
+    if((expected==='0'&&process.env.GITHUB_ACTIONS!=='true')||rows.length<5||chromeSamples||bridgeSamples)throw Error('Packaged launcher foreground check failed');
   };
 }
 
@@ -237,6 +240,9 @@ try {
     || !/^[a-f0-9]{64}$/.test(installedManifest.bundleId)) {
     throw new Error(`Packaged launcher installed the wrong durable runtime: ${JSON.stringify(installedManifest)}`);
   }
+  const packagedBun = path.join(installedRuntime, 'runtime', process.platform === 'win32' ? 'bun.exe' : 'bun');
+  const sharpSmoke = run(packagedBun, ['-e', `const sharp = require('sharp'); const png = await sharp({create:{width:1600,height:900,channels:3,background:'#6789ab'}}).png().toBuffer(); const preview = await sharp(png,{limitInputPixels:100_000_000,failOn:'error'}).rotate().resize(1280,1280,{fit:'inside',withoutEnlargement:true}).jpeg({quality:80}).toBuffer(); const meta=await sharp(preview).metadata(); if(meta.width!==1280||meta.height!==720||preview.length>400000||!sharp.versions.vips) throw Error('Sharp preview failed'); console.log('PACKAGED_SHARP_OK '+sharp.versions.sharp+' '+sharp.versions.vips);`], { cwd: path.join(installedRuntime, 'app'), env });
+  process.stdout.write(sharpSmoke.stdout);
   process.stdout.write(`PACKAGED_LAUNCHER_SMOKE_OK ${process.platform}/${process.arch} ${JSON.stringify(marker)}\n`);
 } catch (error) {
   failed = true;

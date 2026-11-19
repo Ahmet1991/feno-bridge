@@ -103,3 +103,37 @@ Paketli `chrome-native-host.exe`: `a01f6c9f56f080386c905b4800adb267ca4bb4e5a24ba
 Her iki yardımcı paket içindeki kendi `.sha256` dosyasıyla eşleşti; uzantı manifesti 5.1.25 doğrulandı.
 
 Defender `MsMpEng` önce/sonra 1 (PID 3980); tehdit tespit kaydı sayısı 40 → 40. DEV kalıcı izin SHA-256 önce/sonra `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef`. Canlı PC2 araçları, kurulum, canlı koordinasyon/runtime, Chrome profili, DEV ve Defender ayarları değiştirilmedi. Merge, etiket ve CI bekleme yoktur.
+
+## Devam: yayın hazırlığı (5.1.26)
+
+19.11.2026 — PR #97, taban `9f59027`; uzak dal ile karşılaştırma 0/0. Sürüm 5.1.26 olarak eşitlendi. Sharp 0.34.5 → 0.35.5 (`^0.35.5`); kök audit sıfır bulgu, yeni istisna yok. Kilitte win32-x64, linux-x64, darwin-arm64 ve darwin-x64 yerel paketleri; Unix libvips 1.3.4 ve Windows paketine gömülü libvips mevcut. Sharp 0.35 sürüm notlarındaki Node alt sınırı, kaldırılan kurulum betiği ve eski seçenekler incelendi. Önizlemenin boyut sınırı, failOn, limitInputPixels, PNG/JPEG ve metadata davranışı değişmedi. Runtime üretim bağımlılıkları @img paketlerini kapsıyor; yer değiştirilmiş runtime ve paketli Electron içinde gerçek PNG→JPEG dönüşümü doğrulandı.
+
+Çok platform incelemesi: Windows FFI (Job Object, Toolhelp32, ACL) tembel ve Windows koşullu yükleniyor; mevcut native test korumaları yerinde. Geçici gerçek sürücü kökü kullanılarak D:/G: bağımlılığı giderildi; macOS /var kanonik yolu karşılaştırılıyor. Test ve runtime dumanı geçici koordinasyon dizinine yönlendirildi. Temiz Windows CI için kök testlerden önce native yardımcı derleniyor. Başsız CI'da etkileşimli HWND yokluğu kabul edilir; etkileşimli ortamda odak denetimi sürer.
+
+**Windows dışı atlamalar (yeni veya açık hale getirilen):** `pc-acceptance-515` T39 izole Chrome profili; `pc-acceptance-517` T23 Notepad mevcut/eksik dosya ve T31 Chrome handoff; `pc-full-access` sürücü kökü kapsamı, terminal/masaüstü kimlik rotasyonu, Notepad mevcut dosya ve yaşayan işin lineage rotasyonu. İlk üçü Windows tam erişim sürücü kökü ile gerçek dosya sistemi davranışını gerektirir; son dördü önceden Windows dışında erken dönüyordu. Mevcut Windows native ACL, hizmet, güvenlik deposu, tam erişim ve native broker testleri Windows koşullu kalır. Platform bağımsız mock testleri korunmuştur.
+
+Windows koşusunda kökte beş atlama: iki Unix sembolik bağ testi (Codex config yönlendirme/geri alma), macOS dış hizmet kurulum temizliği ve iki isteğe bağlı masaüstü/ADB E2E testi. Launcher Node'da üç atlama: Linux AppImage geçici çıkarma, Linux AppImage güncelleme ve Unix shebang kullanan ilk tünel açılışı. Linux/macOS fiziksel koşusu yapılmadı; statik inceleme tamamlandı, gerçek dört platform sonucu CI ile belirlenecek.
+
+| Ayrı kapı | Sonuç |
+|---|---|
+| check-version | VERSION_SYNC_OK 5.1.26 bun@1.4.0 |
+| audit | 145 paket, sıfır bulgu |
+| launcher:audit | 351 paket, mevcut minimatch istisnası dışında sıfır bulgu |
+| typecheck / launcher:typecheck | Çıkış 0 |
+| Kök Bun testleri | 1.234 başarılı, 5 atlanan, 0 başarısız; 7.849 assertion, 119 dosya |
+| Launcher Node / Bun | 442 başarılı, 3 atlanan / 45 başarılı, 0 başarısız |
+| launcher:build | Çıkış 0 |
+| Runtime bundle ve notices | Çıkış 0; 114 paket bildirimi |
+| smoke-release | Çıkış 0; SHARP_RUNTIME_OK 0.35.5 8.18.7; RELOCATABLE_RUNTIME_SMOKE_OK |
+| app:package | EXE ve blockmap üretildi, SHA-256 eşleşti |
+| app:smoke | Çıkış 0; PACKAGED_SHARP_OK 0.35.5 8.18.7; PACKAGED_LAUNCHER_SMOKE_OK win32/x64, CDP 200 |
+| Gizli Chrome dumanı | Çıkış 0; BROWSER_SMOKE_OK Chrome/157.0.8103.79, 125 örnek, 0 odak değişimi |
+| git diff --check | Çıkış 0 (satır sonu uyarıları dışında bulgu yok) |
+
+İlk kök koşudaki altı fixture hatası geçici sürücü köküyle düzeltildi; son koşu sıfır başarısız. PowerShell 5.1 stderr yönlendirmesi kök test ve paket sarmalayıcısında NativeCommandError/çıkış 1 üretti; Bun sonuç özeti ve electron-builder tamamlanma çıktısı ile gerçek paket, karma ve açılış bağımsız doğrulandı. İlk paket dumanı zaten ön planda olan canlı köprüyü yanlış pozitif saydı (479 örnek, sıfır HWND/PID değişimi). Örnekleyici başlangıç HWND/PID'sini yeni odak alımından ayıracak şekilde düzeltildi. Son gerçek paket dumanında 497 örnek, 0 odak değişimi, 0 yeni Chrome ve 0 yeni köprü örneği; ilk runtime açılışı 48,695 s, ikinci 0,893 s.
+
+Paket: `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.968.770 bayt); SHA-256 `4cab979504455dbeda89dde9fb0779b417da56e7120e062bda9aa0e09e95164c`. Yan .sha256 dosyası yeniden karma ile eşleşti. Paketli Windows helper SHA-256 `ef1cd5ff78bf4601ccf78ccc0ce1c5e91b87015155f2f8b6ad392cb71838e63e`, Chrome native host `9596107a037f2efd44fcc0f4329c9802c2568ed11486d780aca90efb97916663`; native derlemenin ürettiği güncel yardımcı karma dosyası izlendi. Paket kurulmadı.
+
+Değişen dosyalar: `README.md`, `README.ja.md`, `README.ko.md`, `README.zh-CN.md`, `package.json`, `bun.lock`, `launcher/package.json`, `launcher/chrome-extension/manifest.json`, `launcher/electron/pc-windows-helper.sha256`, `launcher/scripts/smoke-package.cjs`, `launcher/tests/chrome-worker.test.cjs`, `launcher/tests/runtime-install.test.cjs`, `scripts/install.sh`, `scripts/smoke-release.ts`, `scripts/verify.ts`, `src/version.ts`, `src/pc-control/screenshot-widget.ts`, `src/pc-control/widget-probe.ts`, `tests/pc-acceptance-515.test.ts`, `tests/pc-acceptance-516.test.ts`, `tests/pc-acceptance-517.test.ts`, `tests/pc-full-access.test.ts`, `tests/pc-mcp-core.test.ts`, `tests/pc-security-authorization.test.ts`, `tests/support/isolate-homes.ts` ve bu rapor.
+
+Defender tehdit tespit kaydı 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Canlı PC2 araçları kullanılmadı; canlı kurulum, profiller, izinler, tüneller ve diğer çalışma ağaçları kapsam dışı kaldı. PR #97 taslak kalacak; merge, etiket, yayın ve CI bekleme yok.

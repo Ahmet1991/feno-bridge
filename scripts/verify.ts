@@ -24,6 +24,11 @@ try {
   await run(["run", "typecheck"]);
   // Electron 42 downloads its binary on first use. Do this outside timed tests.
   await run(["launcher/node_modules/electron/install.js"]);
+  // The Windows key-map contract test uses the source-built helper on a clean checkout.
+  if (process.platform === "win32") {
+    const helper = Bun.spawn(["node", "scripts/build-pc-windows-helper.cjs"], { cwd: root, stdout: "inherit", stderr: "inherit" });
+    if (await helper.exited !== 0) throw new Error("Windows test helper build failed");
+  }
   await run(["run", "test"]);
   await run(["run", "launcher:typecheck"]);
   await run(["run", "launcher:test"]);
