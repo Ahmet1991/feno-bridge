@@ -114,6 +114,8 @@ jobs:
           cp LICENSE release-assets/LICENSE
           cp LICENSES/Bun-1.4.0.md release-assets/Bun-1.4.0.md
           cp LICENSES/libnotify-0.8.7-LGPL-2.1.md release-assets/libnotify-0.8.7-LGPL-2.1.md
+          cp LICENSES/libvips-LGPL-3.0.txt release-assets/libvips-LGPL-3.0.txt
+          cp LICENSES/libvips-GPL-3.0.txt release-assets/libvips-GPL-3.0.txt
           cp dist/THIRD_PARTY_NOTICES.txt release-assets/THIRD_PARTY_NOTICES.txt
           cp scripts/install.sh release-assets/install.sh
           cp scripts/install-launcher.sh release-assets/install-launcher.sh

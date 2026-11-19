@@ -131,6 +131,15 @@ export interface LauncherSnapshot {
 }
 
 export interface LauncherApi {
+  pcStatus():Promise<PcControlStatus>;
+  pcPickRoot():Promise<string|null>;
+  pcApprove(selection:PcApprovalSelection):Promise<PcControlStatus>;
+  pcRevoke():Promise<PcControlStatus>;
+  pcDisableFullAccess():Promise<PcControlStatus>;
+  pcRetireDev(retired:boolean):Promise<PcControlStatus>;
+  pcChromeToggle(enabled:boolean):Promise<{enabled:boolean;connected:boolean;version:string|null}>;
+  pcChromeFolder():Promise<boolean>;
+  pcChromeExtensions():Promise<boolean>;
   snapshot(): Promise<LauncherSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;
@@ -191,6 +200,18 @@ export interface LauncherApi {
   onOperation(listener: (state: OperationState) => void): () => void;
   onLog(listener: (record: LogRecord) => void): () => void;
   onUpdateState(listener: (state: UpdateState) => void): () => void;
+}
+
+export type PcCorePermission='files.read'|'files.write'|'jobs'|'terminal.exec'|'screen.read'|'desktop.input'|'desktop.advanced'|'apps.launch'|'screen.full'|'adb'|'runner'|'browser'|'chrome.user';
+export interface PcApprovalSelection {durationMs:number|null;roots:string[];permissions:PcCorePermission[];allowedApps:string[]}
+export interface PcControlStatus {
+  enabled:boolean;available:boolean;profileId?:'pc2-normal'|'pc2-dev';expiresAt?:number|null;fullAccess?:boolean;
+  coordinationReady?:boolean;lastAutoStop?:{at:number;reason:string;code:string};
+  devMode?:'not-installed'|'retired'|'running'|'compatible'|'unverified';devRetired?:boolean;
+  roots:string[];permissions:PcCorePermission[];allowedApps:string[];permanentApprovalSaved?:boolean;persistentRevocationPending?:boolean;
+  permissionDetails?:Record<string,{title:string;description:string;risk:string}>;
+  applicationCatalog?:{id:string;title:string;launchable:boolean}[];
+  chrome?:{enabled:boolean;connected:boolean;version:string|null};chromeAvailable?:boolean;
 }
 
 declare global {

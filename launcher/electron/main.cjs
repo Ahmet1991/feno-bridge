@@ -1,8 +1,7 @@
 const { configureWindowsTrust } = require("./windows-trust.cjs");
-configureWindowsTrust();
+const PROCESS_STARTED_AT=Date.now()-Math.round(process.uptime()*1000);
 const languages = require("./languages.json");
 const fs = require("node:fs");
-const net = require("node:net");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
@@ -14,13 +13,44 @@ const {
   Menu,
   nativeImage,
   nativeTheme,
+  powerMonitor,
+  safeStorage,
   screen,
   session,
   shell,
   Tray,
 } = require("electron");
+const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
+const { createLogger, exportSanitizedLogs, installProcessDiagnosticGuards, registerLoggedIpc } = require("./logging.cjs");
+const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
+const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
+if (process.argv.includes("--launcher-smoke-test")) {
+  const marker = process.env.CODEX_WEB_GPT_SMOKE_FILE;
+  const scratch = marker && path.dirname(marker);
+  const isolated = scratch && path.isAbsolute(scratch) && !IS_DEV_PROFILE
+    && path.basename(scratch).startsWith("codex-web-gpt-package-smoke-")
+    && LAUNCHER_PROFILE.legacyUserData === null
+    && LAUNCHER_PROFILE.coreHome === path.join(scratch, "core-home")
+    && LAUNCHER_PROFILE.userData === path.join(scratch, "launcher-data")
+    && LAUNCHER_PROFILE.codexHome === path.join(scratch, "codex-home")
+    && process.env.FENO_PC_COORDINATION_DIR === path.join(scratch, "coordination")
+    && process.env.CODEX_WEB_GPT_DEV_HOME === path.join(scratch, "dev-home");
+  if (!isolated) throw new Error("Packaged smoke requires an isolated launcher profile");
+}
+const {createBootReporter,browserInitializationAttempts}=require('./startup-timing.cjs');
+// Put the first event in the directory migration will carry to the new location.
+const bootLogHome=!fs.existsSync(LAUNCHER_PROFILE.userData)&&LAUNCHER_PROFILE.legacyUserData&&fs.existsSync(LAUNCHER_PROFILE.legacyUserData)
+  ?LAUNCHER_PROFILE.legacyUserData:LAUNCHER_PROFILE.userData;
+let bootLogger=createLogger({filePath:path.join(bootLogHome,'logs','launcher.jsonl')});
+const bootReporter=createBootReporter({info:(...args)=>bootLogger.info(...args)},{processStartedAt:PROCESS_STARTED_AT});
+const trustDone=bootReporter.begin('windows_trust');
+configureWindowsTrust();
+trustDone();
+const importsDone=bootReporter.begin('application_imports');
 const { BrowserHost, browserOperationBlockMessage, navigationErrorForLog } = require("./browser-host.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
+const { createPcLauncherService, registerPcIpc } = require("./pc-service.cjs");
+const { chromeDirectory } = require("./chrome-broker.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
   syncBundledGuidance,
@@ -29,20 +59,17 @@ const {
   syncCliToolsRouting,
   syncRoundTripsRouting,
 } = require("./guidance.cjs");
-const {
-  createLogger,
-  exportSanitizedLogs,
-  installProcessDiagnosticGuards,
-  registerLoggedIpc,
-} = require("./logging.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const {
-  ensurePackagedRuntime,
+  ensurePackagedRuntimeAsync,
+  createRuntimeReceipt,
+  inspectRuntimeMetadata,
+  inspectRuntimeSource,
   pruneRuntimeVersions,
   waitForPackagedRuntimeSource,
 } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
-const { DEVELOPMENT_PROFILE, migrateLegacyLauncherUserData, resolveLauncherProfile } = require("./profile.cjs");
+const { retryRuntimeStartup } = require("./runtime-startup-retry.cjs");
 const { runtimeBundlePaths } = require("./runtime-command.cjs");
 const { createUpdateController, waitForQuietRuntime } = require("./update.cjs");
 const { writeReadyMarker } = require("./update-ready.cjs");
@@ -56,16 +83,22 @@ const {
   readWindowState,
   trackWindowState,
 } = require("./window-state.cjs");
+importsDone();
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const SOURCE_ROOT = path.resolve(__dirname, "../..");
-const LAUNCHER_PROFILE = resolveLauncherProfile({ appData: app.getPath("appData") });
-const IS_DEV_PROFILE = LAUNCHER_PROFILE.kind === DEVELOPMENT_PROFILE;
 const CORE_HOME = LAUNCHER_PROFILE.coreHome;
 const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browser.json");
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
+// In the packaged launcher both helper files live in versioned application resources;
+// the separately installed Bun runtime is intentionally excluded from helper lookup.
+if (app.isPackaged) {
+  process.env.FENO_PC_HELPER_ROOT = path.join(process.resourcesPath, "runtime", "runtime");
+} else {
+  delete process.env.FENO_PC_HELPER_ROOT;
+}
 const GITHUB_URL = "https://github.com/Ahmet1991/feno-bridge";
 const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
@@ -85,6 +118,7 @@ app.setName(LAUNCHER_PROFILE.displayName);
 if (process.platform === "win32") {
   app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");
 }
+const migrationDone=bootReporter.begin('user_data_migration');
 const launcherUserData = !IS_DEV_PROFILE && LAUNCHER_PROFILE.legacyUserData
   ? migrateLegacyLauncherUserData({
       legacyPath: LAUNCHER_PROFILE.legacyUserData,
@@ -95,9 +129,11 @@ fs.mkdirSync(launcherUserData, { recursive: true, mode: 0o700 });
 if (process.platform !== "win32") fs.chmodSync(launcherUserData, 0o700);
 app.setPath("userData", launcherUserData);
 app.setAppLogsPath(path.join(launcherUserData, "logs"));
+bootLogger=createLogger({filePath:path.join(launcherUserData,'logs','launcher.jsonl')});
 installProcessDiagnosticGuards({
   filePath: path.join(launcherUserData, "logs", "process-stream-errors.log"),
 });
+migrationDone();
 
 let mainWindow = null;
 let mainWindowReadyToShow = false;
@@ -123,18 +159,26 @@ let catalogVerificationInFlight = false;
 let updateController = null;
 let startupReadiness = null;
 let launcherLogger = null;
+let pcService = null;
+let pcStartupRetry = null;
+let disposeTunnelWake = null;
+const runtimeStartupAbort = new AbortController();
 
 function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = address && typeof address === "object" ? address.port : 0;
-      server.close((error) => error ? reject(error) : resolve(port));
+  // Electron consumes Chromium switches at ready, not when whenReady() is awaited.
+  // The short synchronous probe lets the OS select a port without yielding the main thread.
+  const result = spawnSync(process.execPath, ["-e", `
+    const server = require('node:net').createServer();
+    server.listen(0, '127.0.0.1', () => {
+      console.log(server.address().port);
+      server.close();
     });
-  });
+  `], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8", timeout: 10000, windowsHide: true });
+  const port = Number(result.stdout?.trim());
+  if (result.error || result.status !== 0 || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Unable to select launcher CDP port synchronously", { cause: result.error });
+  }
+  return port;
 }
 
 function send(channel, value) {
@@ -609,6 +653,25 @@ function smokePassedForCurrentVersion(state) {
 }
 
 function registerIpc({ logger, stateStore }) {
+  registerPcIpc({
+    register: (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler),
+    getMainWindow: () => mainWindow,
+    rendererNavigationAllowed,
+    getService: () => pcService,
+    dialog,
+    openChromeExtensionFolder: async () => {
+      const directory=app.isPackaged?path.join(process.resourcesPath,"chrome-extension"):path.join(SOURCE_ROOT,"launcher","chrome-extension");
+      if(!fs.existsSync(path.join(directory,"manifest.json")))throw Error("pc_chrome_not_connected");
+      const error=await shell.openPath(directory);if(error)throw Error("pc_chrome_not_connected");
+      return true;
+    },
+    openChromeExtensions: () => {
+      const candidates=[process.env.ProgramFiles,process.env["ProgramFiles(x86)"],process.env.LOCALAPPDATA].filter(Boolean).map(root=>path.join(root,"Google","Chrome","Application","chrome.exe"));
+      const exe=candidates.find(p=>fs.existsSync(p));if(!exe)throw Error("pc_chrome_not_connected");
+      const child=require("node:child_process").spawn(exe,["chrome://extensions"],{detached:true,stdio:"ignore",windowsHide:true});
+      child.on("error",()=>{});child.unref();return true;
+    },
+  });
   const runtimeChannels = new Set([
     "launcher:setup-core", "launcher:setup-mcp", "launcher:uninstall-integration",
     "launcher:bigger-context", "launcher:skill-attachments", "launcher:zero-risk-pro", "launcher:codex-route",
@@ -1127,6 +1190,10 @@ async function requestQuit() {
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Feno Bridge`);
     }
+    pcService?.assertCanExit();
+    runtimeStartupAbort.abort();
+    pcStartupRetry?.stop();
+    pcService?.suspend();
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
@@ -1134,6 +1201,7 @@ async function requestQuit() {
     browserHost?.destroy();
     await browserControl?.close();
     exitCommitted = true;
+    disposeTunnelWake?.();
     app.quit();
     return { ok: true };
   } catch (error) {
@@ -1148,7 +1216,11 @@ async function requestQuit() {
 }
 
 async function start() {
+  const lockingDone=bootReporter.begin('single_instance_lock');
+  bootLogger.info('launcher.single_instance_lock_call', {});
   const gotLock = app.requestSingleInstanceLock();
+  bootLogger.info('launcher.single_instance_lock_return', {gotLock});
+  lockingDone();
   if (!gotLock) {
     app.quit();
     return;
@@ -1156,33 +1228,39 @@ async function start() {
   app.on("second-instance", () => showMainWindow());
   app.on("activate", () => showMainWindow());
 
-  await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
-  let installedRuntimeRoot = null;
-  let runtimeRootResolved = false;
-  const runtimeRootProvider = () => {
-    const packagedRuntimeWasRemoved = app.isPackaged
-      && (!installedRuntimeRoot || !fs.existsSync(installedRuntimeRoot));
-    if (!runtimeRootResolved || packagedRuntimeWasRemoved) {
-      installedRuntimeRoot = ensurePackagedRuntime({
-        app,
-        coreHome: CORE_HOME,
-        resourcesPath: process.resourcesPath,
-      });
-      runtimeRootResolved = true;
-    }
-    return installedRuntimeRoot;
-  };
-  installedRuntimeRoot = runtimeRootProvider();
-
-  cdpPort = await findFreePort();
+  const portDone=bootReporter.begin('debug_port');
+  cdpPort = findFreePort();
   if (process.platform === "linux") {
     app.commandLine.appendSwitch("class", IS_DEV_PROFILE ? "codex-web-gpt-dev" : "codex-web-gpt");
   }
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
   app.commandLine.appendSwitch("remote-debugging-port", String(cdpPort));
+  portDone();
+  if (app.isReady()) throw new Error("Electron became ready before launcher CDP configuration");
 
-  await app.whenReady();
+  const readyDone=bootReporter.begin('electron_ready');await app.whenReady();readyDone();
+  const receipt=app.isPackaged&&process.platform==='win32'&&!IS_DEV_PROFILE
+    ?createRuntimeReceipt({filePath:path.join(launcherUserData,'runtime-install.receipt'),protection:safeStorage}):null;
+  const sourceDone=bootReporter.begin('runtime_source');
+  const previousReceipt=await receipt?.read();
+  let sourceBundle;
+  try{
+    sourceBundle=await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath, returnBundle:true,
+      inspect:receipt?inspectRuntimeMetadata:inspectRuntimeSource,
+      onWait:waitMs=>bootReporter.wait('runtime_source','source_materializing',waitMs) });
+  }finally{sourceDone();}
+  let installedRuntimeRoot = null;
+  let runtimeIntegrityFailed = false;
+  const runtimeDone=bootReporter.begin('runtime_install');
+  const installation=await ensurePackagedRuntimeAsync({app,coreHome:CORE_HOME,resourcesPath:process.resourcesPath,sourceBundle,receipt,previousReceipt,begin:phase=>bootReporter.begin(phase)});
+  runtimeDone();
+  const runtimeRootProvider = () => {
+    if(runtimeIntegrityFailed||app.isPackaged&&!fs.existsSync(installation.runtimeRoot))throw new Error('Packaged runtime requires verification and restart');
+    return installation.runtimeRoot;
+  };
+  installedRuntimeRoot = runtimeRootProvider();
 
+  const stateDone=bootReporter.begin('state_and_autostart');
   const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
@@ -1209,6 +1287,7 @@ async function start() {
     && stateStore.read().autoStart !== autostart.enabled) {
     setAutostart(app, stateStore.read().autoStart);
   }
+  stateDone();
   const logger = createLogger({
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),
@@ -1256,7 +1335,8 @@ async function start() {
       }),
     );
   }
-  const startHidden =process.argv.includes("--hidden") && stateStore.read().onboardingComplete;
+  const startHidden = process.argv.includes("--launcher-smoke-test")
+    || (process.argv.includes("--hidden") && stateStore.read().onboardingComplete);
   nativeTheme.themeSource = "system";
   mainWindow = createWindow({
     logger,
@@ -1302,6 +1382,13 @@ async function start() {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
   }
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
+  if(!launcherSmokeTest&&!IS_DEV_PROFILE){
+    const {bindTunnelWake}=require('./tunnel-wake.cjs');
+    const powerEvent=()=>pcService?.powerEvent();
+    powerMonitor.on('resume',powerEvent);powerMonitor.on('unlock-screen',powerEvent);
+    const dispose=bindTunnelWake(powerMonitor,event=>runtimeSupervisor.checkTunnelAfterPowerEvent(event));
+    disposeTunnelWake=()=>{dispose();powerMonitor.removeListener('resume',powerEvent);powerMonitor.removeListener('unlock-screen',powerEvent);};
+  }
   browserHost = new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
@@ -1317,6 +1404,7 @@ async function start() {
     publishState: (state) => send("launcher:browser-state", state),
     showWindow: showMainWindow,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
+    initializationAttempts: browserInitializationAttempts(process.platform,launcherSmokeTest),
   });
   if (!launcherSmokeTest) await browserHost.ready();
   const updaterRuntimeRoot = runtimeRootProvider();
@@ -1333,9 +1421,63 @@ async function start() {
     publish: (state) => send("launcher:update-state", state),
     logger,
   });
+  if (process.platform === "win32" && !launcherSmokeTest) {
+    const { createPcStartupRetry } = require('./pc-startup-retry.cjs');
+    pcStartupRetry = createPcStartupRetry({ start() {
+    try {
+      const root = runtimeRootProvider();
+      const bunPath = app.isPackaged && root
+        ? runtimeBundlePaths(root).executable
+        : process.env.CODEX_CHATGPT_WEB_BUN || process.env.CODEX_WEB_GPT_BUN;
+      if (!bunPath || !path.isAbsolute(bunPath)) throw new Error("pc_trusted_runtime_required");
+      pcService = createPcLauncherService({
+        profile: { ...LAUNCHER_PROFILE, userData: launcherUserData }, bunPath,
+        ...(!IS_DEV_PROFILE&&app.isPackaged?{chromeOptions:{version:app.getVersion(),directory:chromeDirectory(),audit:record=>logger.info("pc_control.chrome",record)}}:{}),
+        confirmLocally: async selection => {
+          if (!mainWindow || mainWindow.isDestroyed()) return false;
+          const response = await dialog.showMessageBox(mainWindow, {
+            type: "warning", title: "Feno Bridge — Yerel PC onayı",
+            message: selection.durationMs === null ? "Bu profil için açıkça iptal edilene kadar PC erişimine izin verilsin mi?" : "Bu profil için bir saatlik PC erişimine izin verilsin mi?",
+            detail: `Profil: ${LAUNCHER_PROFILE.kind}\nProje: ${selection.roots.join(", ")}\nİzinler: ${selection.permissions.join(", ")}\n\nTerminal ve proje betikleri Windows hesabınızın yetkileriyle çalışır. Proje klasörü bir sandbox değildir; kişisel dosyalara ve ağa erişebilir, proje dışında değişiklik yapabilir. Mevcut DEV izni bu onaydan bağımsızdır.`,
+            buttons: ["İzin ver", "Vazgeç"], defaultId: 1, cancelId: 1, noLink: true,
+          });
+          return response.response === 0;
+        },
+        confirmRetirementLocally: async retired => {
+          if (!mainWindow || mainWindow.isDestroyed()) return false;
+          const response = await dialog.showMessageBox(mainWindow, {
+            type: "warning", title: "Feno Bridge — DEV kaynak koordinasyonu",
+            message: retired ? "DEV emekliye ayrılsın mı?" : "DEV emeklilik işareti kaldırılsın mı?",
+            detail: retired
+              ? "Yalnızca bu bilgisayardaki eski ve çalışmayan DEV kurulumu için geçerlidir. DEV yeniden başlatılırsa terminal ve işler güvenlik için durdurulur."
+              : "Bu işlem normal profilin tek başına iş ve terminal çalıştırmasını yeniden kısıtlayabilir.",
+            buttons: [retired ? "Emekliye ayır" : "Geri al", "Vazgeç"], defaultId: 1, cancelId: 1, noLink: true,
+          });
+          return response.response === 0;
+        },
+        audit: ({ action, reason, code, consecutiveFailures,op,nativeCode }) => {
+          if(action==='auto_suspended')logger.warn('pc_control.auto_suspended',{reason,code,consecutiveFailures,op,nativeCode});
+          else if(action==='expired')logger.info('pc_control.grant_expired',{reason:'expired'});
+          else if(action==='invalid_clock')logger.warn('pc_control.auto_suspended',{reason:'invalid_clock',code:'pc_access_denied',consecutiveFailures:0});
+          else if(action==='heartbeat_transient_error')logger.warn('pc_control.heartbeat_transient_error',{reason,code,consecutiveFailures,op,nativeCode});
+          else if(action==='full_access_enabled')logger.info('pc_control.full_access_enabled',{});
+          else if(action==='full_access_disabled')logger.info('pc_control.full_access_disabled',{});
+          else if(action==='full_access_recovery_failed')logger.warn('pc_control.full_access_recovery_failed',{code,op,nativeCode});
+          else if(action==='full_access_config_retry')logger.warn('pc_control.full_access_config_retry',{code});
+          else logger.info('pc_control.local_consent',{action});
+        },
+      });
+      pcService.start();
+    } catch (error) {
+      try { pcService?.suspend(); } catch {}
+      pcService = null;
+      throw error;
+    }
+    }, onFailure: error => logger.warn("pc_control.unavailable", error) });
+  }
   registerIpc({ logger, stateStore });
-  const trayAvailable = createTray(logger, stateStore.read().language);
-  if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
+  const trayAvailable = !launcherSmokeTest && createTray(logger, stateStore.read().language);
+  if (!launcherSmokeTest && startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   let startupAuthenticationRefresh = Promise.resolve();
   if (!launcherSmokeTest && stateStore.read().browserInteractionMode === "automatic") {
     startupAuthenticationRefresh = browserHost.refreshAuthentication().catch((error) => {
@@ -1344,13 +1486,16 @@ async function start() {
       });
     });
   }
+  const rendererDone = launcherSmokeTest ? bootReporter.begin('smoke_renderer') : () => {};
   await loadRenderer(mainWindow);
+  rendererDone();
   if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
     const smokeRuntimeRoot = runtimeRootProvider();
     if (app.isPackaged && !smokeRuntimeRoot) {
       throw new Error("Packaged launcher smoke test could not install its durable runtime");
     }
+    const versionDone = bootReporter.begin('smoke_runtime_version');
     const versionInvocation = runtimeSupervisor.runtimeCommand(["--version"]);
     const versionResult = spawnSync(versionInvocation.executable, versionInvocation.args, {
       cwd: versionInvocation.cwd,
@@ -1366,6 +1511,69 @@ async function start() {
         + ` stderr=${JSON.stringify(versionResult.stderr.trim())})`,
       );
     }
+    versionDone();
+    const browserDone = bootReporter.begin('smoke_browser');
+    // Exercise the real browser CDP server and the actual packaged daemon, with an
+    // isolated browser-only configuration. No account, tunnel or full-access grant.
+    await browserHost.ready();
+    const cdpResponse = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    const cdpVersion = await cdpResponse.json();
+    if (cdpResponse.status !== 200 || !cdpVersion.webSocketDebuggerUrl) {
+      throw new Error(`Packaged launcher CDP endpoint returned ${cdpResponse.status}`);
+    }
+    browserDone();
+    const configPath = path.join(CORE_HOME, "config.json");
+    const runtime = runtimeSupervisor.runtimeCommand([]);
+    const config = {
+      version: 3, releaseVersion: app.getVersion(), mode: "browser-only",
+      browserInteractionMode: "automatic", appName: "Feno Package Smoke",
+      host: "127.0.0.1", port: findFreePort(), contextWindow: 256000,
+      browserHost: "launcher", browserHostDescriptorPath: BROWSER_DESCRIPTOR_PATH,
+      chromeExecutablePath: process.execPath, storageStatePath: path.join(CORE_HOME, "storage-state.json"),
+      brokerSocketPath: process.platform === "win32"
+        ? `\\\\.\\pipe\\feno-package-smoke-${process.pid}` : path.join(CORE_HOME, "broker.sock"),
+      headed: true, solAvailable: true, proAvailable: true, autoApproveToolCalls: false,
+      controlToken: require("node:crypto").randomBytes(32).toString("hex"),
+      runtimeCommand: [runtime.executable, ...runtime.args],
+      acknowledgedUnofficialAt: new Date().toISOString(), pcFullAccess: false,
+    };
+    // Smoke is isolated and deliberately reuses the same durable runtime on its second launch.
+    fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+    fs.writeFileSync(config.storageStatePath, "{}", { mode: 0o600 });
+    let pcServiceStarted = false;
+    try {
+      const daemonDone = bootReporter.begin('smoke_daemon_start');
+      const startup = await runtimeSupervisor.startIfConfigured();
+      daemonDone();
+      if (startup.status !== "ready" || !startup.daemonPid) {
+        throw new Error(`Packaged runtime startup failed: ${JSON.stringify(startup)}`);
+      }
+      if (process.platform === "win32") {
+        pcService = createPcLauncherService({
+          profile: { ...LAUNCHER_PROFILE, userData: launcherUserData },
+          bunPath: runtime.executable,
+          confirmLocally: async () => false,
+          confirmRetirementLocally: async () => false,
+          testPeerEvidence: {
+            inspectDevLaunchers: () => ({ state: "absent", pids: [] }),
+            devHome: process.env.CODEX_WEB_GPT_DEV_HOME,
+            devInstallPaths: [path.join(path.dirname(process.env.CODEX_WEB_GPT_DEV_HOME), "dev-install")],
+          },
+        });
+        pcService.start();
+        pcServiceStarted = pcService.status().available === true;
+        if (!pcServiceStarted) throw new Error("Packaged PC service did not start");
+        logger.info("pc_control.smoke_service_started", {});
+      }
+      await installation.verifyInBackground?.();
+    } finally {
+      const shutdownDone = bootReporter.begin('smoke_daemon_stop');
+      try { pcService?.suspend(); }
+      finally { await runtimeSupervisor.shutdown({ cancelActiveTurns: true, force: true }); }
+      shutdownDone();
+    }
     const markerPath = process.env.CODEX_WEB_GPT_SMOKE_FILE?.trim();
     if (!markerPath || !path.isAbsolute(markerPath)) {
       throw new Error("Packaged launcher smoke test requires an absolute CODEX_WEB_GPT_SMOKE_FILE");
@@ -1377,10 +1585,15 @@ async function start() {
       platform: process.platform,
       packaged: app.isPackaged,
       runtimeVerified: true,
+      cdpStatus: cdpResponse.status,
+      runtimeStartupVerified: true,
+      pcServiceStarted,
     })}\n`);
+    const cleanupDone = bootReporter.begin('smoke_browser_cleanup');
     browserHost.destroy();
     await browserControl.close();
     mainWindow.destroy();
+    cleanupDone();
     app.quit();
     return;
   }
@@ -1411,6 +1624,7 @@ async function start() {
       coreHome: CORE_HOME,
       userData: launcherUserData,
     });
+    pcStartupRetry?.start();
     if (config?.mode === "full") {
       void startupAuthenticationRefresh.then(() => runtimeSupervisor.startIfConfigured()).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -1419,9 +1633,10 @@ async function start() {
         send("launcher:state-changed", failed);
       }).finally(finishRuntimeStartup);
     } else finishRuntimeStartup();
-  } else void (async () => {
+  } else void retryRuntimeStartup(async () => {
     await startupAuthenticationRefresh;
     const upgrade = await runtimeHost.upgradeManagedRuntime();
+    pcStartupRetry?.start();
     if (upgrade.updated) {
       const state = stateStore.update({
         coreSetupComplete: true,
@@ -1469,7 +1684,10 @@ async function start() {
     }
     const route = await runtimeHost.connectBridgeRoute();
     return { ...runtime, bridgeRouteChanged: route.changed === true };
-  })().then(async (runtime) => {
+  }, {
+    signal: runtimeStartupAbort.signal,
+    onRetry: detail => logger.warn("runtime.startup_retry", detail),
+  }).then(async (runtime) => {
     if (runtime.status === "ready") {
       const config = runtimeSupervisor.readConfig();
       const current = stateStore.read();
@@ -1555,6 +1773,7 @@ async function start() {
     }
     recordStartupReadiness("repair-required", `Unexpected runtime startup status: ${runtime.status || "unknown"}`);
   }).catch(async (error) => {
+    if (runtimeStartupAbort.signal.aborted) return;
     const primary = error instanceof Error ? error.message : String(error);
     const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
     const message = routeRecovery.error
@@ -1569,6 +1788,35 @@ async function start() {
     recordStartupReadiness("repair-required", message);
   }).finally(finishRuntimeStartup);
 
+  if(installation.verifyInBackground){
+    // Wait for the normal runtime/tunnel startup and briefly for asynchronously restored
+    // full access. Even unconfigured launchers verify within a bounded interval.
+    const verify=async()=>{
+      try{
+        await installation.verifyInBackground();
+        logger.info('launcher.runtime_background_verified',{});
+      }catch(error){
+        runtimeIntegrityFailed=true;
+        logger.error('launcher.runtime_background_rejected',{code:'runtime_integrity_mismatch'});
+        runtimeStartupAbort.abort();pcStartupRetry?.stop();
+        try{pcService?.suspend();}catch{}
+        try{await runtimeSupervisor?.shutdown({cancelActiveTurns:true,force:true});}finally{app.exit(1);}
+      }
+    };
+    void (async()=>{
+      let timeout;
+      try{
+        await Promise.race([runtimeStartup,new Promise(resolve=>{timeout=setTimeout(resolve,30000);})]);
+        if(runtimeHost.runtimeConfigSnapshot().config?.pcFullAccess===true){
+          const deadline=Date.now()+30000;
+          while(!pcService?.status()?.fullAccess&&Date.now()<deadline&&!quitting)await new Promise(resolve=>setTimeout(resolve,500));
+        }
+      }catch{/* A failed readiness check must not suppress integrity verification. */}
+      finally{clearTimeout(timeout);}
+      if(!quitting)await verify();
+    })();
+  }
+
   app.on("before-quit", (event) => {
     if (exitCommitted) return;
     event.preventDefault();
@@ -1580,6 +1828,8 @@ async function start() {
 
 void start().catch(async (error) => {
   startupFailed = true;
+  pcStartupRetry?.stop();
+  try { pcService?.suspend(); } catch {}
   const message = error instanceof Error ? error.message : String(error);
   try {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);
@@ -1587,10 +1837,12 @@ void start().catch(async (error) => {
   try {
     // Browser bootstrap can fail before the renderer is loaded. Keep the error reachable
     // through the existing instance, and release browser resources before a user retry.
+    const smoke = process.argv.includes("--launcher-smoke-test");
+    if (smoke) bootLogger.error('launcher.smoke_failed', {code:error?.code});
     const cleanupErrors = [];
     try { browserHost?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
     try { await browserControl?.close(); } catch (caught) { cleanupErrors.push(String(caught)); }
-    if (process.argv.includes("--launcher-smoke-test")) return;
+    if (smoke) { app.exit(1); return; }
     await app.whenReady();
     quitting = true;
     showMainWindow();

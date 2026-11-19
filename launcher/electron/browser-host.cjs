@@ -324,6 +324,25 @@ function loadCommittedBrowserSurface(
   });
 }
 
+async function initializeBrowserWithRetry(contents,logger,{load=loadCommittedBrowserSurface,pause=ms=>new Promise(resolve=>setTimeout(resolve,ms)),attempts=3}={}){
+  const started=Date.now();
+  for(let attempt=1;attempt<=attempts;attempt++){
+    const attemptStarted=Date.now();
+    try{
+      await load(contents,IDLE_BROWSER_URL);
+      if(attempt>1)logger.info('browser.initialization_recovered',{attempt,durationMs:Date.now()-started});
+      return;
+    }catch(error){
+      const retryable=/^Browser idle document did not commit within \d+ms$/.test(error?.message)||
+        /ERR_(INTERNET_DISCONNECTED|NETWORK_CHANGED|NAME_NOT_RESOLVED)/.test(error?.message);
+      if(!retryable||attempt===attempts||contents.isDestroyed())throw error;
+      const waitMs=1000*attempt;
+      logger.info('browser.initialization_retry',{attempt,durationMs:Date.now()-attemptStarted,waitMs});
+      await pause(waitMs);
+    }
+  }
+}
+
 function browserOperationBlockMessage(browserHost, settingName) {
   if (browserHost.activeTraceId) {
     return `Finish or cancel active ChatGPT turns before changing ${settingName}`;
@@ -349,6 +368,7 @@ class BrowserHost {
     showWindow = () => {},
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
+    initializationAttempts = 3,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -364,6 +384,7 @@ class BrowserHost {
     this.getConnectorName = getConnectorName;
     this.helper = helper;
     this.logger = logger;
+    this.initializationAttempts = initializationAttempts;
     this.loginWithPasskey = loginWithPasskey;
     if (profile !== "production" && profile !== "development") {
       throw new Error("Browser host profile is invalid");
@@ -466,7 +487,7 @@ class BrowserHost {
     this.view.setBounds(this.hiddenTurnBounds());
     this.view.setVisible(true);
     try {
-      await loadCommittedBrowserSurface(this.view.webContents, IDLE_BROWSER_URL);
+      await initializeBrowserWithRetry(this.view.webContents,this.logger,{attempts:this.initializationAttempts});
       if (browserInteractionModeFor(this) === "automatic") await this.markOwnedSurface();
     } finally {
       this.syncViewVisibility();
@@ -3362,6 +3383,7 @@ module.exports = {
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
+  initializeBrowserWithRetry,
   MANUAL_SUBMIT_TIMEOUT_MS,
   MANUAL_COMPACTION_SUBMIT_TIMEOUT_MS,
   navigationErrorForLog,

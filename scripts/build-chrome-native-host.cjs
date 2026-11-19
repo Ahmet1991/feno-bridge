@@ -1,0 +1,14 @@
+"use strict";
+const fs=require('node:fs'), path=require('node:path'), cp=require('node:child_process'), crypto=require('node:crypto');
+if(process.platform!=='win32')throw Error('Windows is required');
+const output=path.resolve(process.argv[2]||path.join(__dirname,'..','.cache','chrome-native-host.exe'));
+const system=process.env.SystemRoot||'C:\\Windows';
+const compiler=['Framework64','Framework'].map(folder=>path.join(system,'Microsoft.NET',folder,'v4.0.30319','csc.exe')).find(fs.existsSync);
+if(!compiler)throw Error('C# compiler not found');
+fs.mkdirSync(path.dirname(output),{recursive:true});
+const result=cp.spawnSync(compiler,['/nologo','/target:exe','/reference:System.Web.Extensions.dll','/out:'+output,path.join(__dirname,'..','launcher','electron','chrome-native-host.cs')],{stdio:'inherit',windowsHide:true});
+if(result.error)throw result.error;
+if(result.status!==0)process.exit(result.status||1);
+const hash=crypto.createHash('sha256').update(fs.readFileSync(output)).digest('hex');
+fs.writeFileSync(output.replace(/\.exe$/i,'.sha256'),hash+'\n');
+console.log('Native host SHA256='+hash);

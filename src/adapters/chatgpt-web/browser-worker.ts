@@ -188,6 +188,7 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "data-turn-id",
   "data-turn-id-container",
   "data-content-search-unit-key",
+  "data-content-search-turn-key",
   "data-turn-key",
   "data-conversation-role",
   "data-chatgpt-agent-turn-start",
@@ -220,9 +221,15 @@ export const CHATGPT_RETAINED_CONVERSATION_EVIDENCE_SELECTOR = [
 
 /** An assistant response that so far shows only agent activity; see submissionDomState. */
 const CHATGPT_AGENT_TURN_IDENTITY_PREFIX = "agent:";
+const CHATGPT_TOOL_TURN_IDENTITY_PREFIX = "tool:";
+const CHATGPT_DIRECT_TOOL_SELECTOR = '[data-content-search-unit-key$=":tool"], [data-conversation-role="tool"], [data-message-author-role="tool"]';
 
 /** Resolve either legacy turn IDs or unit keys without guessing their value format. */
 export function chatGptTurnIdentitySelector(identity: string): string {
+  if (identity.startsWith(CHATGPT_TOOL_TURN_IDENTITY_PREFIX)) {
+    const key=JSON.stringify(identity.slice(CHATGPT_TOOL_TURN_IDENTITY_PREFIX.length));
+    return `[data-content-search-turn-key=${key}]:not(:has([data-content-search-unit-key$=":assistant"])):not(:has([data-chatgpt-agent-turn-start])) :is(${CHATGPT_DIRECT_TOOL_SELECTOR}):not(:is(${CHATGPT_DIRECT_TOOL_SELECTOR}) *)`;
+  }
   if (identity.startsWith(CHATGPT_AGENT_TURN_IDENTITY_PREFIX)) {
     const quotedKey = JSON.stringify(identity.slice(CHATGPT_AGENT_TURN_IDENTITY_PREFIX.length));
     // The agent marker's own container holds the activity, never the user bubble of the same
@@ -235,7 +242,8 @@ export function chatGptTurnIdentitySelector(identity: string): string {
 }
 
 function chatGptTurnLocator(page: Page, identity: string): Locator {
-  return page.locator(chatGptTurnIdentitySelector(identity));
+  const locator=page.locator(chatGptTurnIdentitySelector(identity));
+  return identity.startsWith(CHATGPT_TOOL_TURN_IDENTITY_PREFIX)?locator.first():locator;
 }
 
 const settleChatGptUi = (): Promise<void> => (
@@ -3816,9 +3824,12 @@ export class ChatGptBrowserWorker {
       // ("did not expose its assistant turn"). The marker stands for the response until then.
       for (const exchange of document.querySelectorAll("[data-content-search-turn-key]")) {
         const key = exchange.getAttribute("data-content-search-turn-key")?.trim();
-        if (!key || !exchange.querySelector("[data-chatgpt-agent-turn-start]")) continue;
+        if (!key) continue;
         if (exchange.querySelector('[data-content-search-unit-key$=":assistant"]')) continue;
-        const agentIdentity = `${options.agentIdentityPrefix}${key}`;
+        const agent=exchange.querySelector("[data-chatgpt-agent-turn-start]");
+        const tool=exchange.querySelector(options.directToolSelector);
+        if(!agent&&!tool)continue;
+        const agentIdentity = `${agent?options.agentIdentityPrefix:options.toolIdentityPrefix}${key}`;
         if (knownTurns.has(agentIdentity)) continue;
         knownTurns.add(agentIdentity);
         turnIdentities.push(agentIdentity);
@@ -3840,6 +3851,8 @@ export class ChatGptBrowserWorker {
       assistantTurnSelector: CHATGPT_ASSISTANT_TURN_SELECTOR,
       stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR,
       agentIdentityPrefix: CHATGPT_AGENT_TURN_IDENTITY_PREFIX,
+      toolIdentityPrefix: CHATGPT_TOOL_TURN_IDENTITY_PREFIX,
+      directToolSelector: CHATGPT_DIRECT_TOOL_SELECTOR,
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
     }), signal), probeTimeoutMs);
@@ -4041,11 +4054,15 @@ export class ChatGptBrowserWorker {
         completionTracker.observeToolBatch(progress.lastToolBatchRevision, boundaryText);
         await externalProgress.acknowledgeToolBatch(progress.lastToolBatchRevision);
       }
-      if (identity) return {
+      if (identity) {
+        const users=state.userIdentities.filter(id=>!observationBaseline.initialTurnIdentities.includes(id));
+        if(users.length===1)observationBaseline.acceptedUserIdentity??=users[0];
+        return {
         identity,
         locator: chatGptTurnLocator(observationPage, identity),
         acceptedTurnIdentities: state.turnIdentities,
-      };
+        };
+      }
       // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
       // observation can prove it is still missing; the explicit turn deadline remains above.
       if (Date.now() >= responseDeadline
@@ -4092,6 +4109,9 @@ export class ChatGptBrowserWorker {
       ?? (sinceBaseline.length === 1 ? sinceBaseline[0] : undefined);
     const ownUserReturned = newUsers.length === 1 && newUsers[0] === submittedUser;
     if (hasNewUserTurn && !allowMcpContinuationUserTurn && !ownUserReturned) {
+      // On direct connector runs the renderer can remount the user before the answer. Do not
+      // consume an unproved identity while Stop is visible and the response is still absent.
+      if(state.visibleStopButtonCount>0&&!state.responseIdentities.some(id=>!baseline.initialTurnIdentities.includes(id)))return binding;
       throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
     }
     const acceptedTurnIdentities = hasNewUserTurn
@@ -5374,7 +5394,8 @@ export class ChatGptBrowserWorker {
         for (const heading of answerHeadings(copy)) heading.remove();
         return copy.innerHTML;
       };
-      const allMarkdownRoots = unitKeyAnswer
+      const toolOnly=root.matches('[data-content-search-unit-key$=":tool"], [data-conversation-role="tool"], [data-message-author-role="tool"]');
+      const allMarkdownRoots = toolOnly?[]:unitKeyAnswer
         ? [root].filter(renderedInDom)
         : [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
           .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))

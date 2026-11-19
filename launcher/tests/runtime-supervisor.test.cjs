@@ -1028,6 +1028,126 @@ test("fresh tunnel recovery discovers its official loopback diagnostics before p
   }
 });
 
+test("first-start MCP discovery retries incomplete inventory JSON until the tunnel is ready", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-upgrade-race-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "5.1.1", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  const healthFile = path.join(root, "health.url");
+  fs.writeFileSync(healthFile, "http://127.0.0.1:43127\n");
+  let calls = 0;
+  supervisor.runTunnelCommand = async () => ({
+    code: 0,
+    output: ++calls <= 2 ? "" : JSON.stringify({
+      aliases: [{ alias: "codex-chatgpt-web", health_url_file: healthFile }],
+    }),
+  });
+  supervisor.probeTunnelMcpTransport = async () => ({ observed: true, ok: true, fatal: false });
+  try {
+    await supervisor.waitForTunnelMcpTransport({ tunnel: { alias: "codex-chatgpt-web" } }, 5_000);
+    assert.equal(calls, 3);
+    assert.equal(supervisor.tunnelHealthBaseUrl, "http://127.0.0.1:43127");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("5.0.96 upgraded launcher reaches ready on the first start after transient local inventory and discovery JSON", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-upgrade-first-start-"));
+  const descriptor = path.join(root, "launcher.json");
+  const binaryPath = path.join(root, "tunnel-client.exe");
+  const key = path.join(root, "runtime.key");
+  const healthFile = path.join(root, "health.url");
+  fs.writeFileSync(binaryPath, "fixture");
+  fs.writeFileSync(key, "fixture");
+  fs.writeFileSync(healthFile, "http://127.0.0.1:43127\n");
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "5.1.1", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: descriptor,
+  });
+  const config = launcherConfig(descriptor, {
+    mode: "full", releaseVersion: "5.1.1", appName: "Codex Native2 PC2",
+    tunnel: { alias: "codex-chatgpt-web", profileName: "codex-chatgpt-web",
+      profileDir: root, binaryPath, runtimeKeyFile: key,
+      tunnelId: `tunnel_${"c".repeat(32)}` },
+  });
+  let inventoryCalls = 0;
+  let discoveryCalls = 0;
+  supervisor.readConfig = () => config;
+  supervisor.readState = () => null;
+  supervisor.writeState = () => {};
+  supervisor.proxyHealth = async () => false;
+  supervisor.startDaemon = async () => { supervisor.daemon = { pid: process.pid }; };
+  supervisor.startTunnelMonitor = () => {};
+  supervisor.probeTunnelMcpTransport = async () => ({ observed: true, ok: true, fatal: false });
+  supervisor.runTunnelCommand = async (_config, args) => {
+    if (args.includes("cleanup")) {
+      inventoryCalls += 1;
+      return { code: 0, output: inventoryCalls <= 2 ? "" : JSON.stringify({
+        entries: [{ alias: "codex-chatgpt-web", runtime_state: "ready",
+          live_runtime: { system: { pid: process.pid } } }],
+      }) };
+    }
+    discoveryCalls += 1;
+    return { code: 0, output: discoveryCalls <= 2 ? "" : JSON.stringify({
+      aliases: [{ alias: "codex-chatgpt-web", health_url_file: healthFile }],
+    }) };
+  };
+  try {
+    const result = await supervisor.startIfConfigured();
+    assert.equal(result.status, "ready");
+    assert.equal(inventoryCalls, 3);
+    assert.equal(discoveryCalls, 3);
+    assert.equal(supervisor.tunnelHealthBaseUrl, "http://127.0.0.1:43127");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("first-start stale owner waits for matching health from this launcher's daemon PID", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-delayed-daemon-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "5.1.2", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  const config = launcherConfig(path.join(root, "launcher.json"), { releaseVersion: "5.1.2" });
+  const events = [];
+  let healthCalls = 0;
+  supervisor.readConfig = () => config;
+  supervisor.readState = () => ({
+    version: 1, ownerPid: process.pid, daemonPid: process.pid, tunnelPid: null,
+    status: "starting", updatedAt: new Date().toISOString(),
+  });
+  supervisor.clearState = () => { events.push("clear"); };
+  supervisor.writeState = () => {};
+  supervisor.proxyHealth = async () => false;
+  supervisor.proxyHealthPayload = async () => {
+    healthCalls++;
+    return healthCalls <= 2 ? null : {
+      service: "codex-chatgpt-web", mode: config.mode,
+      version: config.releaseVersion, pid: process.pid,
+    };
+  };
+  supervisor.acquireDrain = async () => true;
+  supervisor.control = async () => ({ status: "ok" });
+  supervisor.waitForProcessExit = async () => { events.push("daemon-stopped"); };
+  supervisor.waitForPortRelease = async () => {};
+  supervisor.startTunnel = async () => {};
+  supervisor.startDaemon = async () => { events.push("daemon-started"); supervisor.daemon = { pid: process.pid }; };
+  try {
+    const result = await supervisor.startIfConfigured();
+    assert.equal(result.status, "ready");
+    assert.equal(healthCalls, 3);
+    assert.deepEqual(events, ["daemon-stopped", "clear", "daemon-started"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("tunnel diagnostics discovery rejects a non-loopback endpoint", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-tunnel-health-nonlocal-"));
   const supervisor = new RuntimeSupervisor({

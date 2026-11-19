@@ -8,6 +8,7 @@ import {
   defaultBrokerEndpoint,
   defaultConfig,
   getConfigPath,
+  isLegacyChatGptConnectorName,
   loadConfigForSetup,
   resolveInteractionConnectorIdentities,
   saveConfig,
@@ -249,7 +250,7 @@ async function waitForProxy(config: AppConfig, timeoutMs = 10_000): Promise<void
   throw new Error(`Responses proxy did not become ready: ${lastError}`);
 }
 
-function baseConfig(
+export function baseConfig(
   existing: AppConfig | undefined,
   options: SetupOptions,
   profile: "production" | "development" = "production",
@@ -257,10 +258,21 @@ function baseConfig(
   const config = existing ? structuredClone(existing) : defaultConfig(options.mode);
   config.mode = options.mode;
   if (options.browserInteractionMode) config.browserInteractionMode = options.browserInteractionMode;
-  Object.assign(config, resolveInteractionConnectorIdentities(
-    config.browserInteractionMode,
-    profile,
-  ));
+  // The setup CLI is also used by the launcher during automatic upgrades. Existing connector
+  // names identify specific tunnels in ChatGPT and must survive that transaction unchanged.
+  // Only first installs and the retired legacy identity require the current default.
+  const defaults = resolveInteractionConnectorIdentities(config.browserInteractionMode, profile);
+  const legacyIdentity = isLegacyChatGptConnectorName(config.automaticAppName);
+  const interactionModeChanged = Boolean(existing && options.browserInteractionMode
+    && options.browserInteractionMode !== existing.browserInteractionMode);
+  if (!existing || legacyIdentity) {
+    config.automaticAppName = defaults.automaticAppName;
+  }
+  config.manualAppName = existing?.manualAppName ?? defaults.manualAppName;
+  if (!existing || legacyIdentity || interactionModeChanged || isLegacyChatGptConnectorName(config.appName)) {
+    config.appName = config.browserInteractionMode === "manual"
+      ? config.manualAppName : config.automaticAppName;
+  }
   if (options.subagentProtocol) config.subagentProtocol = options.subagentProtocol;
   config.releaseVersion = VERSION;
   config.runtimeCommand = currentRuntimeCommand();

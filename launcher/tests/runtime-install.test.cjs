@@ -7,6 +7,9 @@ const path = require("node:path");
 const { runtimeInvocation } = require("../electron/runtime-command.cjs");
 const {
   ensurePackagedRuntime,
+  ensurePackagedRuntimeAsync,
+  inspectRuntimeMetadata,
+  inspectRuntimeSource,
   pruneRuntimeVersions,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
@@ -74,6 +77,9 @@ function runtimeFixture(root, version = "0.2.0") {
   fs.mkdirSync(path.dirname(executable), { recursive: true });
   fs.mkdirSync(path.join(source, "app"), { recursive: true });
   fs.writeFileSync(executable, "bun");
+  for(const name of require('../electron/private-acl-location.cjs').names){
+    fs.writeFileSync(path.join(source,'runtime',name),name);
+  }
   if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
   fs.writeFileSync(path.join(source, "app", "cli.js"), "cli");
   fs.writeFileSync(path.join(source, "app", "browser-helper.cjs"), "helper");
@@ -96,6 +102,37 @@ function runtimeFixture(root, version = "0.2.0") {
   writeRuntimeManifest(source, version);
   return path.join(root, "resources");
 }
+
+test('verified receipt defers hashes on repeated startup and detects later corruption', async (t) => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'runtime-fast-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const resourcesPath=runtimeFixture(root),coreHome=path.join(root,'core-home');
+  const app={isPackaged:true,getVersion:()=> '0.2.0'};
+  const identity={version:'0.2.0',platform:process.platform,arch:process.arch};
+  const source=path.join(resourcesPath,'runtime');
+  let saved=null,hashes=0;
+  const phases=[];
+  const receipt={save:async data=>{saved=data;},invalidate:async()=>{saved=null;}};
+  const inspect=async (...args)=>{hashes++;return inspectRuntimeSource(...args);};
+  const begin=phase=>()=>phases.push(phase);
+  const options={app,coreHome,resourcesPath,receipt,inspect,begin};
+  const first=await ensurePackagedRuntimeAsync({...options,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  assert.ok(saved);assert.ok(hashes>=2);assert.equal(first.verifyInBackground,null);
+  hashes=0;
+  const next=await ensurePackagedRuntimeAsync({...options,previousReceipt:saved,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  assert.equal(next.runtimeRoot,first.runtimeRoot);assert.equal(hashes,0);assert.equal(typeof next.verifyInBackground,'function');
+  assert.ok(phases.includes('runtime_install_metadata'));
+  await next.verifyInBackground();assert.equal(hashes,2);assert.ok(phases.includes('runtime_background_hash'));
+  fs.writeFileSync(path.join(next.runtimeRoot,'app','cli.js'),'bad');
+  await assert.rejects(next.verifyInBackground(),/checksum mismatch|changed/);assert.equal(saved,null);
+  const repaired=await ensurePackagedRuntimeAsync({...options,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  assert.equal(fs.readFileSync(path.join(repaired.runtimeRoot,'app','cli.js'),'utf8'),'cli');
+  const helper=path.join(repaired.runtimeRoot,'runtime','private-acl-cli.cjs');
+  const fast=await ensurePackagedRuntimeAsync({...options,previousReceipt:saved,sourceBundle:await inspectRuntimeMetadata(source,identity)});
+  fs.writeFileSync(helper,'tampered');
+  await assert.rejects(fast.verifyInBackground(),/checksum mismatch|changed|size mismatch/);
+  assert.equal(saved,null);
+});
 
 test("packaged runtime is installed once into a durable versioned directory", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-install-"));
@@ -211,6 +248,18 @@ test("packaged runtime rejects same-count content corruption", () => {
   }
 });
 
+test("packaged source hashes files with bounded parallel asynchronous reads", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runtime-parallel-"));
+  const resourcesPath = runtimeFixture(root);
+  const read = fs.promises.readFile;
+  let active=0, peak=0, count=0;
+  fs.promises.readFile=async function(...args){active++;count++;peak=Math.max(peak,active);try{return await read.apply(this,args);}finally{active--;}};
+  try {
+    await waitForPackagedRuntimeSource({app:{isPackaged:true,getVersion:()=>"0.2.0"},resourcesPath});
+    assert.ok(count>=6);assert.ok(peak>1 && peak<=8);
+  } finally {fs.promises.readFile=read;fs.rmSync(root,{recursive:true,force:true});}
+});
+
 test("packaged runtime source wait accepts a delayed final dependency within its bound", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-delayed-"));
   const resourcesPath = runtimeFixture(root);
@@ -260,6 +309,26 @@ test("packaged runtime source wait fails closed when materialization exceeds its
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("150 source inspections report waiting only once",async()=>{
+  let attempts=0;
+  const events=[];
+  const {createBootReporter}=require("../electron/startup-timing.cjs");
+  const reporter=createBootReporter({info:(event,details)=>events.push({event,...details})});
+  events.length=0;
+  const done=reporter.begin("runtime_source");
+  const bundle={runtimeRoot:"fixture"};
+  assert.equal(await waitForPackagedRuntimeSource({
+    app:{isPackaged:true,getVersion:()=>"5.1.26"},resourcesPath:".",
+    timeoutMs:10000,intervalMs:1,returnBundle:true,
+    inspect:async()=>{if(++attempts<150)throw Error("not ready");return bundle;},
+    onWait:ms=>reporter.wait("runtime_source","source_materializing",ms),
+  }),bundle);
+  done();
+  assert.equal(attempts,150);assert.equal(events.length,3);
+  const main=fs.readFileSync(path.join(__dirname,"../electron/main.cjs"),"utf8");
+  assert.match(main,/inspect:\s*receipt\?inspectRuntimeMetadata:inspectRuntimeSource/);
 });
 
 test("packaged runtime transactionally repairs an incomplete installed bundle", () => {

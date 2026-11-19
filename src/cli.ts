@@ -2,8 +2,9 @@
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { tmpdir } from "node:os";
 import { stderr, stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
 import { defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
@@ -575,6 +576,22 @@ async function main(): Promise<void> {
     throw new Error("--home does not apply to DEV mode; use CODEX_WEB_GPT_DEV_HOME for an explicit isolated DEV profile");
   }
   if (command === "help") stdout.write(HELP);
+  else if (command === "runtime-acl-smoke") {
+    assertNoArgs(args);
+    if(process.platform!=="win32")throw Error("Windows runtime required");
+    const acl=require("../launcher/electron/private-acl.cjs");
+    const context=acl.getNativeSecurityContext();
+    if(typeof context.helperPath!=="string")throw Error("Packaged helper required");
+    const root=mkdtempSync(join(tmpdir(),"feno-runtime-acl-smoke-"));
+    try{
+      const dir=join(root,"private"),file=join(dir,"test.txt");
+      acl.ensurePrivateDirectory(dir,context.userSid);
+      acl.writePrivateAtomic(file,"runtime-acl-smoke",context.userSid);
+      if(acl.readPrivateFile(file,context.userSid).toString()!=="runtime-acl-smoke")throw Error("ACL readback failed");
+      acl.removePrivateFile(file,context.userSid);
+      stdout.write(JSON.stringify({ok:true,helperPath:context.helperPath})+"\n");
+    }finally{rmSync(root,{recursive:true,force:true});}
+  }
   else if (command === "setup") await setupCommand(args);
   else if (command === "login") await loginCommand(args);
   else if (command === "doctor" || command === "status") await doctorCommand(args);

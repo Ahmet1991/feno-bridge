@@ -824,10 +824,21 @@ class RuntimeSupervisor {
   }
 
   async waitForTunnelMcpTransport(config, timeoutMs = 10_000) {
-    if (!this.tunnelHealthBaseUrl) await this.discoverTunnelHealthBaseUrl(config);
     const deadline = Date.now() + timeoutMs;
     let health;
+    let discoveryError;
     do {
+      if (!this.tunnelHealthBaseUrl) {
+        try {
+          await this.discoverTunnelHealthBaseUrl(config);
+          discoveryError = undefined;
+        } catch (error) {
+          discoveryError = errorMessage(error);
+          if (Date.now() >= deadline) break;
+          await sleep(Math.min(TUNNEL_HEALTH_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
+          continue;
+        }
+      }
       health = await this.probeTunnelMcpTransport();
       if (health.observed && health.ok) return health;
       if (health.fatal) {
@@ -838,7 +849,7 @@ class RuntimeSupervisor {
     } while (Date.now() < deadline);
     throw new Error(
       `Tunnel MCP transport could not be verified within ${timeoutMs}ms:`
-      + ` ${health?.detail || "no diagnostics returned"}`,
+      + ` ${health?.detail || discoveryError || "no diagnostics returned"}`,
     );
   }
 
@@ -915,6 +926,32 @@ class RuntimeSupervisor {
 
   async tunnelHealth(config) {
     return (await this.observeTunnelForMonitor(config)).ready;
+  }
+
+  checkTunnelAfterPowerEvent(event) {
+    if(this.stopping||this.startPromise||this.recoveryTasks.size||this.restartTimers.tunnel||!this.tunnel?.managed||!this.tunnelMonitorTimer)return Promise.resolve();
+    const started=Date.now();
+    const task=(async()=>{
+      let outcome='skipped';
+      try{
+        const config=this.readConfig();if(config?.mode!=='full')return;
+        this.stopTunnelMonitor();
+        const generation=this.tunnelMonitorGeneration;
+        const health=await this.observeTunnelForMonitor(config);
+        if(this.stopping||generation!==this.tunnelMonitorGeneration)return;
+        // Resume invalidates a previously ready WebSocket: loopback readiness alone cannot
+        // prove a remote TCP connection survived sleep. Reacquire the owned alias cleanly.
+        if(event==='resume'||(health.statusKnown&&!health.ready)){
+          await this.recover('tunnel');outcome='recovered';
+        }else{this.startTunnelMonitor(config);outcome=health.ready?'healthy':'unknown';}
+      }catch{
+        outcome='failed';
+        if(!this.stopping)this.scheduleRecovery('tunnel');
+      }finally{this.logger.info('runtime.tunnel_power_event',{event,outcome,elapsedMs:Date.now()-started});}
+    })();
+    this.recoveryTasks.add(task);
+    void task.finally(()=>this.recoveryTasks.delete(task));
+    return task;
   }
 
   async waitForKnownTunnelStatus(config, timeoutMs = 10_000) {
@@ -1728,10 +1765,23 @@ class RuntimeSupervisor {
     if (tunnelOnly && processRunning(state.daemonPid)) {
       throw new Error("DEV launcher ownership unexpectedly contains a Responses daemon");
     }
-    const health = tunnelOnly ? null : await this.proxyHealthPayload(config);
-    const daemonRunning = health?.service === "codex-chatgpt-web"
-      && health?.mode === config.mode
-      && health?.version === config.releaseVersion;
+    let health = tunnelOnly ? null : await this.proxyHealthPayload(config);
+    const matchingDaemon = value => value?.service === "codex-chatgpt-web"
+      && value?.mode === config.mode
+      && value?.version === config.releaseVersion;
+    // The launcher may have just spawned the recorded daemon: its health
+    // endpoint can lag the PID becoming visible. Give our own child time.
+    if (!tunnelOnly && !matchingDaemon(health) && state.ownerPid === process.pid
+      && processRunning(state.daemonPid)) {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && !matchingDaemon(health)
+        && processRunning(state.daemonPid)
+        && (!health?.pid || health.pid === state.daemonPid)) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        health = await this.proxyHealthPayload(config);
+      }
+    }
+    const daemonRunning = matchingDaemon(health);
     if (daemonRunning && health.pid !== state.daemonPid) {
       throw new Error("The process on the Responses port does not match the stale launcher marker");
     }

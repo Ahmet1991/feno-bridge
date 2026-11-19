@@ -7,6 +7,15 @@ function subscription(channel, listener) {
 }
 
 contextBridge.exposeInMainWorld("codexWebLauncher", {
+  pcStatus: () => ipcRenderer.invoke("launcher:pc-status"),
+  pcPickRoot: () => ipcRenderer.invoke("launcher:pc-pick-root"),
+  pcApprove: selection => ipcRenderer.invoke("launcher:pc-approve", selection),
+  pcRevoke: () => ipcRenderer.invoke("launcher:pc-revoke"),
+  pcDisableFullAccess: () => ipcRenderer.invoke("launcher:pc-disable-full"),
+  pcRetireDev: retired => ipcRenderer.invoke("launcher:pc-retire-dev", retired),
+  pcChromeToggle: enabled => ipcRenderer.invoke("launcher:pc-chrome-toggle",enabled),
+  pcChromeFolder: () => ipcRenderer.invoke("launcher:pc-chrome-folder"),
+  pcChromeExtensions: () => ipcRenderer.invoke("launcher:pc-chrome-extensions"),
   snapshot: () => ipcRenderer.invoke("launcher:snapshot"),
   setLanguage: (language) => ipcRenderer.invoke("launcher:set-language", language),
   openSocial: (target) => ipcRenderer.invoke("launcher:open-social", target),

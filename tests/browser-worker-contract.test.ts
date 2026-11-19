@@ -291,6 +291,10 @@ test("an exchange showing only agent activity stands for its response until the 
     state = await worker.submissionDomState(page, baseline.domCache);
     expect([...state.userIdentities]).toEqual(["fallback-turn-1:0:user"]);
     expect([...state.responseIdentities]).toEqual(["agent:fallback-turn-1"]);
+    // Direct connector activity can remain after the agent marker has detached.
+    change(`<div data-content-search-turn-key="fallback-turn-1"><div data-content-search-unit-key="fallback-turn-1:1:tool"><div data-conversation-role="tool">PC2</div></div></div>`);
+    state = await worker.submissionDomState(page, baseline.domCache);
+    expect([...state.responseIdentities]).toEqual(["tool:fallback-turn-1"]);
     // An exchange without the agent marker (a user turn not yet answered) stands for no response.
     change(`<div data-turn-key="k2"><div data-content-search-turn-key="k2">
       <div data-content-search-unit-key="k2:0:user"><div data-user-message-bubble="true">soru</div></div>

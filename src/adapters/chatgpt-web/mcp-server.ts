@@ -8,7 +8,10 @@ import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
 import { observeMcpToolCalls } from "./mcp-observation";
+import {observePcRequests} from "../../pc-control/request-log";
 import { searchCodexToolInventory } from "./tool-inventory-search";
+import { createDefaultPcRuntime } from "../../pc-control/runtime";
+import { registerPcTools } from "../../pc-control/mcp-tools";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -456,6 +459,17 @@ export async function runChatGptMcpServer(options: {
     { name: contract === "safe" ? "codex-safe" : "codex-native", version: VERSION },
     contract === "safe" ? { instructions: ZERO_RISK_MCP_INSTRUCTIONS } : undefined,
   );
+
+  // Additive PC namespace. Identity and approval are local; the six Codex schemas stay unchanged.
+  let requestLog:ReturnType<typeof createDefaultPcRuntime>['requestLog'];
+  if (contract === "native") {
+    const pc = createDefaultPcRuntime();
+    requestLog=pc.requestLog;
+    registerPcTools(server, { authorizer: pc.authorizer, host: pc.host, beforeRequest: pc.refresh, auditTool: pc.auditTool,
+      pcWidgetProbes:pc.pcWidgetProbes });
+    const previousClose = server.server.onclose;
+    server.server.onclose = () => { previousClose?.(); void pc.close().catch(() => {}); };
+  }
 
   const claimTurn = async (
     toolName: string,
@@ -971,5 +985,6 @@ export async function runChatGptMcpServer(options: {
     );
   }
 
-  await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES));
+  const transport=observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES);
+  await server.connect(requestLog?observePcRequests(transport,requestLog):transport);
 }

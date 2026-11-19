@@ -65,6 +65,14 @@ test("installed Bun discovery ignores a temporary self-extract executable", () =
   })).toBe(process.execPath);
 });
 
+test("installed Bun discovery prefers the current durable Bun over a different PATH Bun", () => {
+  const root = join(process.cwd(), `.runtime-bun-regression-${process.pid}`);
+  roots.push(root);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "bun.exe"), "other Bun on PATH");
+  expect(installedBunExecutable({ platform: "win32", pathValue: root })).toBe(process.execPath);
+});
+
 test("Windows uses a stable native named pipe for the outer Codex tool broker", () => {
   const first = defaultBrokerEndpoint("C:\\Users\\alice\\.codex-chatgpt-web", "win32");
   const second = defaultBrokerEndpoint("C:\\Users\\alice\\.codex-chatgpt-web", "win32");

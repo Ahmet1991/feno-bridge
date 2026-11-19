@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, spyOn, test, onTestFinished } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "./fixtures/isolated-mcp-transport";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2916,7 +2916,9 @@ describe("ChatGPT outer-native harness v4", () => {
     try {
       await client.connect(transport);
       const listed = await client.listTools();
-      expect(listed.tools.map(tool => tool.name).sort()).toEqual([
+      const codexTools = listed.tools.filter(tool => tool.name.startsWith("codex_"));
+      const pcTools = listed.tools.filter(tool => tool.name.startsWith("pc_"));
+      expect(codexTools.map(tool => tool.name).sort()).toEqual([
         "codex_apply_patch",
         "codex_exec",
         "codex_tool_call",
@@ -2924,7 +2926,24 @@ describe("ChatGPT outer-native harness v4", () => {
         "codex_view_image",
         "codex_write_stdin",
       ]);
-      const publicConnectorAbi = listed.tools.map(tool => ({
+      expect(pcTools.map(tool => tool.name).sort()).toEqual([
+        "pc_adb_devices", "pc_adb_input", "pc_adb_screencap",
+        "pc_browser_back", "pc_browser_click", "pc_browser_close_tab", "pc_browser_computer", "pc_browser_download_dir",
+        "pc_browser_find", "pc_browser_forward", "pc_browser_hide", "pc_browser_key",
+        "pc_browser_mode", "pc_browser_navigate", "pc_browser_open", "pc_browser_read", "pc_browser_reload",
+        "pc_browser_screenshot", "pc_browser_scroll", "pc_browser_show", "pc_browser_tabs", "pc_browser_type",
+        "pc_cancel_job",
+        "pc_capture_full_screen", "pc_capture_screen",
+        "pc_chrome_click", "pc_chrome_close", "pc_chrome_computer", "pc_chrome_console", "pc_chrome_find", "pc_chrome_form", "pc_chrome_go", "pc_chrome_js", "pc_chrome_navigate", "pc_chrome_network", "pc_chrome_open", "pc_chrome_read", "pc_chrome_tabs", "pc_chrome_type", "pc_chrome_upload",
+        "pc_clipboard_read", "pc_clipboard_write",
+        "pc_create_directory", "pc_create_file",
+        "pc_desktop_input", "pc_job_logs", "pc_job_status", "pc_launch_app",
+        "pc_list_files", "pc_list_jobs", "pc_list_project_tasks", "pc_list_windows", "pc_read_file",
+        "pc_runner_status", "pc_show_image", "pc_start_job", "pc_start_project_task", "pc_start_terminal",
+        "pc_status", "pc_write_patch",
+      ]);
+      expect(listed.tools).toHaveLength(codexTools.length + pcTools.length);
+      const publicConnectorAbi = codexTools.map(tool => ({
         name: tool.name,
         title: tool.title ?? null,
         description: tool.description ?? null,
@@ -2932,11 +2951,11 @@ describe("ChatGPT outer-native harness v4", () => {
         outputSchema: tool.outputSchema ?? null,
         annotations: tool.annotations ?? null,
       }));
-      // ChatGPT caches the complete tools/list contract under a connector identity.
-      // An intentional hash change therefore requires an explicit connector refresh or identity migration.
+      // Preserve the original six-tool ABI hash exactly. The additive PC namespace changes
+      // the full connector tool list and requires an explicit connector refresh at release.
       expect(createHash("sha256").update(canonicalJson(publicConnectorAbi)).digest("hex"))
         .toBe("9bb14902149337b52ce8598889497b1aba5a3265f28291df950bb38b5700a421");
-      for (const tool of listed.tools) {
+      for (const tool of codexTools) {
         const properties = tool.inputSchema.properties as Record<string, unknown>;
         expect(properties.turn_token).toEqual({ type: "string", minLength: 20, maxLength: 256 });
         expect(properties).not.toHaveProperty("binding_id");
@@ -3599,7 +3618,8 @@ describe("ChatGPT outer-native harness v4", () => {
     environment.tools = [
       { name: "exec_command", description: "Run a Codex command", parameters: { type: "object" } },
     ];
-    const abandonedToken = await broker.register(environment, 3_000);
+    // This test exercises explicit cancellation, not lease expiry. Allow slow Windows child startup.
+    const abandonedToken = await broker.register(environment, 30_000);
     const replacementToken = await broker.register(environment);
     const transport = new StdioClientTransport({
       command: process.execPath,

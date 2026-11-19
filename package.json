@@ -1,6 +1,6 @@
 {
   "name": "codex-chatgpt-web",
-  "version": "5.0.96",
+  "version": "5.1.26",
   "private": true,
   "description": "A focused local Responses bridge that runs Codex tasks through a user-authenticated ChatGPT web session.",
   "repository": {
@@ -60,6 +60,7 @@
     "chromium-bidi": "12.1.0",
     "fflate": "^0.8.2",
     "playwright-core": "^1.62.0",
+    "sharp": "^0.35.5",
     "tiktoken": "1.0.22",
     "turndown": "7.2.0",
     "turndown-plugin-gfm": "1.0.2",
@@ -68,16 +69,17 @@
   "devDependencies": {
     "@types/bun": "1.4.0",
     "@types/turndown": "5.0.5",
+    "happy-dom": "^21.0.4",
     "typescript": "5.9.3"
   },
   "engines": {
     "bun": "1.4.0"
   },
   "overrides": {
-    "@hono/node-server": "2.1.5",
+    "@hono/node-server": "2.1.6",
     "body-parser": "2.4.0",
     "fast-uri": "3.1.9",
-    "hono": "4.13.13",
+    "hono": "4.13.16",
     "ip-address": "10.7.4",
     "proxy-addr": "2.0.8",
     "qs": "6.16.1",

@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -42,12 +42,18 @@ const launcher = join(runtimeRoot, manifest.launcher);
 const runtimeExecutable = join(runtimeRoot, "runtime", process.platform === "win32" ? "bun.exe" : "bun");
 const entrypoint = join(runtimeRoot, manifest.entrypoint);
 const runtimeCommand = [runtimeExecutable, entrypoint];
-const cliBundle = readFileSync(join(runtimeRoot, "app", "cli.js"), "utf8");
-const launcherText = readFileSync(launcher, "utf8");
-for (const forbidden of [sourceRoot, dirname(sourceBundle), "/private/tmp/codex-chatgpt-web-verify", "/tmp/codex-chatgpt-web-verify"]) {
-  if (cliBundle.includes(forbidden) || launcherText.includes(forbidden)) {
-    throw new Error(`Runtime artifact embeds an ephemeral build path: ${forbidden}`);
-  }
+const sharpSmoke = Bun.spawnSync([runtimeExecutable, "-e", `const sharp = require('sharp'); const png = await sharp({create:{width:1600,height:900,channels:3,background:'#6789ab'}}).png().toBuffer(); const preview = await sharp(png,{limitInputPixels:100_000_000,failOn:'error'}).rotate().resize(1280,1280,{fit:'inside',withoutEnlargement:true}).jpeg({quality:80}).toBuffer(); const meta=await sharp(preview).metadata(); if(meta.width!==1280||meta.height!==720||preview.length>400000||!sharp.versions.vips) throw Error('Sharp preview failed'); console.log('SHARP_RUNTIME_OK '+sharp.versions.sharp+' '+sharp.versions.vips);`], { cwd: join(runtimeRoot, "app"), stdout: "inherit", stderr: "inherit" });
+if (sharpSmoke.exitCode !== 0) throw new Error("Relocated sharp runtime smoke failed");
+const {assertNoBuildPath,auditRuntimePaths}=require("./runtime-path-audit.cjs");
+const forbidden=[sourceRoot,dirname(sourceBundle),"/private/tmp/codex-chatgpt-web-verify","/tmp/codex-chatgpt-web-verify"];
+auditRuntimePaths(runtimeRoot,forbidden);
+assertNoBuildPath(readFileSync(launcher,"utf8"),forbidden,manifest.launcher);
+if(process.platform==="win32"){
+  const acl=Bun.spawnSync([...runtimeCommand,"runtime-acl-smoke"],{stdout:"pipe",stderr:"pipe"});
+  const result=JSON.parse(acl.stdout.toString());
+  const expected=realpathSync.native(join(runtimeRoot,"runtime","private-acl-cli.cjs"));
+  if(acl.exitCode!==0||result.ok!==true||typeof result.helperPath!=="string"||result.helperPath.toLowerCase()!==expected.toLowerCase())throw Error(`Relocated ACL smoke failed: ${acl.stderr.toString()}`);
+  console.log("RELOCATED_ACL_HELPER_OK "+result.helperPath);
 }
 
 const version = Bun.spawnSync([...runtimeCommand, "--version"], { stdout: "pipe", stderr: "pipe" });
@@ -84,7 +90,8 @@ const config = {
 writeFileSync(join(appHome, "config.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 writeFileSync(config.storageStatePath, "{}\n", { mode: 0o600 });
 
-const env = { ...process.env, CODEX_CHATGPT_WEB_HOME: appHome, CODEX_HOME: codexHome };
+const env = { ...process.env, CODEX_CHATGPT_WEB_HOME: appHome, CODEX_HOME: codexHome,
+  FENO_PC_COORDINATION_DIR: join(root, "coordination") };
 const child = Bun.spawn([...runtimeCommand, "serve"], { env, stdout: "pipe", stderr: "pipe" });
 let stoppedGracefully = false;
 try {
