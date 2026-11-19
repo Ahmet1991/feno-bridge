@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-launcher",
-  "version": "5.1.26",
+  "version": "5.1.27",
   "private": true,
   "description": "Feno Bridge desktop launcher",
   "author": "miuuyy",
@@ -85,7 +85,7 @@
       "minimumSystemVersion": "13.0",
       "hardenedRuntime": true,
       "signIgnore": [
-        "[/\\\\]Contents[/\\\\]Resources[/\\\\]runtime[/\\\\]runtime[/\\\\]bun$"
+        "[/\\\\]Contents[/\\\\]Resources[/\\\\]runtime[/\\\\]"
       ],
       "target": ["dmg", "zip"]
     },

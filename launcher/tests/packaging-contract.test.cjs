@@ -32,10 +32,26 @@ test("launcher publishes native packages for all supported desktop operating sys
   assert.equal(manifest.build.productName, "Feno Bridge");
   assert.equal(manifest.build.artifactName, "feno-bridge-${version}-${os}-${arch}.${ext}");
   assert.deepEqual(manifest.build.mac.target, ["dmg", "zip"]);
+  // electron-builder re-signs every Mach-O it finds, which rewrites embedded signatures and
+  // changes file sizes. The runtime is verified against its own manifest after packaging,
+  // so every file under it (bun, sharp's .node addon, libvips dylibs) must stay byte-identical.
   assert.deepEqual(
     manifest.build.mac.signIgnore,
-    ["[/\\\\]Contents[/\\\\]Resources[/\\\\]runtime[/\\\\]runtime[/\\\\]bun$"],
+    ["[/\\\\]Contents[/\\\\]Resources[/\\\\]runtime[/\\\\]"],
   );
+  const ignored = file => manifest.build.mac.signIgnore.some(pattern => new RegExp(pattern).test(file));
+  const app = "/tmp/x/Feno Bridge.app/Contents";
+  for (const file of [
+    `${app}/Resources/runtime/runtime/bun`,
+    `${app}/Resources/runtime/app/node_modules/@img/sharp-darwin-arm64/lib/sharp-darwin-arm64-0.35.5.node`,
+    `${app}/Resources/runtime/app/node_modules/@img/sharp-darwin-x64/lib/sharp-darwin-x64-0.35.5.node`,
+    `${app}/Resources/runtime/app/node_modules/@img/sharp-libvips-darwin-arm64/lib/libvips-cpp.8.18.7.dylib`,
+  ]) assert.ok(ignored(file), file);
+  for (const file of [
+    `${app}/MacOS/Feno Bridge`,
+    `${app}/Frameworks/Electron Framework.framework/Versions/A/Electron Framework`,
+    `${app}/Resources/app.asar.unpacked/assets/linux-appimage-runner.sh`,
+  ]) assert.ok(!ignored(file), file);
   assert.deepEqual(manifest.build.win.target, ["nsis"]);
   assert.equal(manifest.build.win.icon, "assets/icon.ico");
   assert.deepEqual(manifest.build.linux.target, ["AppImage"]);
