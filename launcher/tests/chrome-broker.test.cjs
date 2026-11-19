@@ -1,5 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path'),crypto=require('node:crypto');
 const {createChromeBroker,descriptorName,extensionId,hostName}=require('../electron/chrome-broker.cjs');
+
+const mkdtempSync = require('./temp-directories.cjs')(test.after);
 test('manifest locks the native origin and uses only HTTP(S) hosts',()=>{
   const m=require('../chrome-extension/manifest.json');
   const hash=crypto.createHash('sha256').update(Buffer.from(m.key,'base64')).digest('hex').slice(0,32).replace(/[0-9a-f]/g,c=>String.fromCharCode(97+parseInt(c,16)));
@@ -10,7 +12,7 @@ test('manifest locks the native origin and uses only HTTP(S) hosts',()=>{
   assert.ok(installer.includes('DeleteRegKey HKCU "Software\\Google\\Chrome\\NativeMessagingHosts\\'+hostName+'"'));
 });
 test('native port protocol enforces authorization, session ownership, cancellation and minimal audit',async()=>{
-  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'chrome-broker-test-'));
+  const directory=mkdtempSync(path.join(os.tmpdir(),'chrome-broker-test-'));
   const files={ensurePrivateDirectory(){},readPrivateFile:p=>fs.readFileSync(p),writePrivateAtomic:(p,b)=>fs.writeFileSync(p,b),removePrivateFile:p=>fs.unlinkSync(p)};
   let authorized=true,now=1000;const logs=[];
   const b=createChromeBroker({version:'5.1.19',directory,files,isAuthorized:()=>authorized,audit:r=>logs.push(r),clock:()=>now});
@@ -53,7 +55,7 @@ test('native port protocol enforces authorization, session ownership, cancellati
 });
 test('compiled native executable handles framed messages and creates a restricted manifest without registry changes',{skip:process.platform!=='win32',timeout:30000},async()=>{
   const cp=require('node:child_process');
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'feno-native-host-test-'));
+  const root=mkdtempSync(path.join(os.tmpdir(),'feno-native-host-test-'));
   const exe=path.join(root,'resources','runtime','runtime','chrome-native-host.exe');
   fs.mkdirSync(path.dirname(exe),{recursive:true});
   const compiler=['Framework64','Framework'].map(f=>path.join(process.env.SystemRoot,'Microsoft.NET',f,'v4.0.30319','csc.exe')).find(fs.existsSync);

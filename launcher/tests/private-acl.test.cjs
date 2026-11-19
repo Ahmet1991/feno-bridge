@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+
+const mkdtempSync = require('./temp-directories.cjs')(test.after);
 const sid = process.platform==='win32'?spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows','System32/whoami.exe'), ['/user','/fo','csv','/nh'], {encoding:'utf8',windowsHide:true}).stdout.match(/S-1-5-21-[0-9-]+/)?.[0]:undefined;
 const runtime=process.platform==='win32'?{bunPath:spawnSync('bun',['--print','process.execPath'],{encoding:'utf8',windowsHide:true}).stdout.trim()}:{};
 function storage() {
@@ -17,7 +19,7 @@ function storage() {
 }
 const fixture = (action, target) => {
   const exe=path.join(process.env.SystemRoot || 'C:\\Windows','System32/icacls.exe');
-  const saved=path.join(path.dirname(path.dirname(target)),'acl-'+Date.now()+'.txt');
+  const saved=action==='widen'?undefined:path.join(mkdtempSync(path.join(os.tmpdir(),'feno-acl-save-')),'acl.txt');
   const args=action==='widen'?[target,'/grant','*S-1-1-0:(R)','/q']:[target,'/save',saved,'/q'];
   const r=spawnSync(exe,args,{encoding:'utf8',windowsHide:true}); assert.equal(r.status,0,r.stderr);
   if(action==='widen')return;
@@ -29,7 +31,7 @@ const windows = {skip:process.platform !== 'win32'};
 
 test('private writes inherit no broad-reader access and remain private after replacement', windows, () => {
   const api = storage();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(),'feno-acl-'));
+  const root = mkdtempSync(path.join(os.tmpdir(),'feno-acl-'));
   const directory=path.join(root,'private');
   api.ensurePrivateDirectory(directory,sid);
   const file=path.join(directory,'fixture.json');
@@ -47,7 +49,7 @@ test('private writes inherit no broad-reader access and remain private after rep
 
 test('broad ACL, excessive reads and foreign owner policy fail closed without rewriting existing files', windows, () => {
   const api=storage();
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'feno-acl-deny-'));
+  const root=mkdtempSync(path.join(os.tmpdir(),'feno-acl-deny-'));
   const directory=path.join(root,'private'); api.ensurePrivateDirectory(directory,sid);
   const file=path.join(directory,'fixture.txt'); api.writePrivateAtomic(file,'unchanged',sid);
   assert.throws(()=>api.readPrivateFile(file,sid,2),/pc_private_storage/);
@@ -63,7 +65,7 @@ test('broad ACL, excessive reads and foreign owner policy fail closed without re
 
 test('junction targets cannot redirect a private write or read', windows, () => {
   const api=storage();
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'feno-acl-junction-'));
+  const root=mkdtempSync(path.join(os.tmpdir(),'feno-acl-junction-'));
   const directory=path.join(root,'private'); api.ensurePrivateDirectory(directory,sid);
   const alias=path.join(root,'alias'); fs.symlinkSync(directory,alias,'junction');
   assert.throws(()=>api.writePrivateAtomic(path.join(alias,'unexpected.txt'),'fixture',sid),/pc_private_storage/);

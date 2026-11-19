@@ -1,5 +1,6 @@
-import {expect,test} from 'bun:test';
-import {mkdtempSync,writeFileSync,readFileSync} from 'node:fs';
+import {afterAll,expect,test} from 'bun:test';
+import {writeFileSync,readFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {request} from 'node:http';
@@ -7,6 +8,8 @@ import {createPcBrowser,validateBrowserUrl,readBrowserEndpoint,PC_BROWSER_WARNIN
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 test('fake CDP websocket: launch, port, tabs, read, input, screenshot, stale ref and timeout',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'pc-browser-test-'));

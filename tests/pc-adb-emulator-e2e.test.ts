@@ -1,12 +1,15 @@
-import {test,expect} from 'bun:test';
+import {afterAll,test,expect} from 'bun:test';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
-import {mkdtempSync,mkdirSync,writeFileSync} from 'node:fs';
+import {mkdirSync,writeFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {defaultConfig} from '../src/config';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 const e2e=process.platform==='win32'&&process.env.FENO_PC_ADB_E2E==='1'?test:test.skip;
 e2e('isolated signed MCP permission controls only Android 15 emulator through real adb',async()=>{

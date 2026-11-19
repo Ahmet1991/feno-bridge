@@ -1,8 +1,11 @@
-import {test,expect} from 'bun:test';
+import {afterAll,test,expect} from 'bun:test';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {randomUUID} from 'node:crypto';
+import {mkdirSync,writeFileSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {randomUUID} from 'node:crypto';
+import { trackTempDirectories } from './support/temp-directories';
 import {defaultConfig} from '../src/config';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 const pcNames=['pc_status','pc_list_files','pc_read_file','pc_write_patch','pc_create_file','pc_create_directory','pc_start_job','pc_list_project_tasks','pc_start_project_task','pc_start_terminal','pc_job_status','pc_job_logs','pc_cancel_job','pc_list_jobs',
   'pc_list_windows','pc_capture_screen','pc_desktop_input','pc_clipboard_read','pc_clipboard_write','pc_adb_devices','pc_adb_screencap','pc_adb_input','pc_runner_status','pc_launch_app','pc_capture_full_screen','pc_show_image',
   ...['open','tabs','navigate','back','forward','reload','read','find','click','type','key','scroll','screenshot','close_tab','download_dir','show','hide','mode','computer'].map(action=>'pc_browser_'+action), ...['tabs','open','navigate','read','find','computer','click','type','close','go','form','upload','js','console','network'].map(action=>'pc_chrome_'+action)].sort();

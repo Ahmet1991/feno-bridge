@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { trackTempDirectories } from './support/temp-directories';
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +8,8 @@ import {
   parseRuntimeBuildStamp,
   runtimeBuildStamp,
 } from "../src/build-stamp";
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 function manifest(build: unknown): string {
   return JSON.stringify({ schemaVersion: 2, entrypoint: "app/cli.js", build });

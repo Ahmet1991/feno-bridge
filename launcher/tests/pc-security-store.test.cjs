@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=require('node:child_process');
+const mkdtempSync = require('./temp-directories.cjs')(test.after);
 const runtime=process.platform==='win32'?{bunPath:cp.spawnSync('bun',['--print','process.execPath'],{encoding:'utf8'}).stdout.trim()}:{};
 const sid=process.platform==='win32'?require('../electron/private-acl.cjs').getNativeSecurityContext(runtime).userSid:undefined;
 const windowsTest=(name,fn)=>test(name,{skip:process.platform!=='win32'},fn);
@@ -7,7 +8,7 @@ const selection={durationMs:null,roots:['D:\\GitHub\\fixture'],permissions:['fil
 function setup(profileId='pc2-normal') {
   const {createPrivateFileAccess,createWindowsDpapiProtection}=require('../electron/private-acl.cjs');
   const files=createPrivateFileAccess(sid,runtime);
-  const directory=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'pc-store-security-')),'private');files.ensurePrivateDirectory(directory);
+  const directory=path.join(mkdtempSync(path.join(os.tmpdir(),'pc-store-security-')),'private');files.ensurePrivateDirectory(directory);
   const encryption=createWindowsDpapiProtection(sid,profileId,runtime);
   return {profileId,files,encryption,filePath:path.join(directory,'consent.enc')};
 }

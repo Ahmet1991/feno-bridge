@@ -1,6 +1,7 @@
-import {expect,test} from 'bun:test';
+import {afterAll,expect,test} from 'bun:test';
 import sharp from 'sharp';
-import {mkdtempSync,writeFileSync} from 'node:fs';
+import {writeFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Window} from 'happy-dom';
@@ -9,6 +10,8 @@ import {PcAuthorizer} from '../src/pc-control/authorization';
 import {readPcImage} from '../src/pc-control/files';
 import {registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
 import {makePcScreenshotResult,PC_SCREENSHOT_HTML,PC_SCREENSHOT_MIME,PC_SCREENSHOT_URI,PC_SCREENSHOT_SKYBRIDGE_URI,PC_SCREENSHOT_SKYBRIDGE_MIME} from '../src/pc-control/screenshot-widget';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 const image = async () => sharp({create:{width:3200,height:1800,channels:3,background:'#6789ab'}}).png().toBuffer();
 

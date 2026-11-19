@@ -1,10 +1,12 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=require('node:child_process');
 const {createPcLauncherService}=require('../electron/pc-service.cjs');
+
+const mkdtempSync = require('./temp-directories.cjs')(test.after);
 const windowsTest=(name,run)=>test(name,{skip:process.platform!=='win32'},run);
 const bunPath=process.platform==='win32'?cp.spawnSync('bun',['--print','process.execPath'],{encoding:'utf8'}).stdout.trim():'';
 function fixture(enabled=true,kind='production'){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pc-full-access-'));
+  const root=mkdtempSync(path.join(os.tmpdir(),'pc-full-access-'));
   const profile={kind,coreHome:path.join(root,'home'),userData:path.join(root,'ui')};
   fs.mkdirSync(profile.coreHome);fs.mkdirSync(profile.userData);
   const configPath=path.join(profile.coreHome,'config.json');

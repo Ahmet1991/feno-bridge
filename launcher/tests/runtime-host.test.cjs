@@ -6,10 +6,13 @@ const path = require("node:path");
 const { CURRENT_CONNECTOR_NAME, DEV_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
 const { RuntimeHost } = require("../electron/runtime.cjs");
 
+const mkdtempSync = require("./temp-directories.cjs")(test.after);
+
 function hostFor(existingConfig, interactionMode = "automatic") {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-runtime-host-test-"));
   const host = new RuntimeHost({
     app: {
-      getPath: () => path.join(os.tmpdir(), "codex-web-gpt-runtime-host-test"),
+      getPath: () => directory,
       getVersion: () => "1.1.3",
     },
     logger: { info() {}, warn() {}, error() {} },
@@ -33,9 +36,10 @@ function hostFor(existingConfig, interactionMode = "automatic") {
 }
 
 function devHostFor(existingConfig, interactionMode = "automatic") {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-dev-runtime-host-test-"));
   const host = new RuntimeHost({
     app: {
-      getPath: () => path.join(os.tmpdir(), "codex-web-gpt-dev-runtime-host-test"),
+      getPath: () => directory,
       getVersion: () => "1.1.3",
     },
     logger: { info() {}, warn() {}, error() {} },

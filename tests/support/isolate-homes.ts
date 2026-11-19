@@ -22,5 +22,9 @@ export function restoreTestHomes(): void {
 restoreTestHomes();
 
 process.on("exit", () => {
-  rmSync(root, { recursive: true, force: true });
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    console.warn(`Could not remove test temp directory ${root}: ${String(error)}`);
+  }
 });

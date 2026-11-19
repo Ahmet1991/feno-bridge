@@ -3,8 +3,10 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createPcBrowser,readBrowserEndpoint} from '../src/pc-control/browser';
 import sharp from 'sharp';
+import { removeSmokeDirectory } from './smoke-temp';
 
 const directory=mkdtempSync(join(tmpdir(),'feno-pc-browser-smoke-'));
+try {
 const hiddenOnly=process.argv.includes('--hidden-only');
 const cache=join(import.meta.dir,'..','.cache');
 if(process.platform==='win32'){
@@ -197,4 +199,7 @@ try{
   }
   browser.disconnect();server.stop(true);
   if(focus){writeFileSync(join(directory,'foreground-stop'),'stop');await focus.exited;}
+}
+} finally {
+  removeSmokeDirectory(directory);
 }

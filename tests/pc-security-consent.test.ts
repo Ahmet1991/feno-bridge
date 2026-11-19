@@ -1,9 +1,11 @@
-import { test, expect } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
+import { afterAll, test, expect } from 'bun:test';
+import { trackTempDirectories } from './support/temp-directories';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PcAuthorizer } from '../src/pc-control/authorization';
 import { createPcPolicySync } from '../src/pc-control/consent-sync';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 const {createPrivateFileAccess}=require('../launcher/electron/private-acl.cjs');
 const {createPcConsentChannel}=require('../launcher/electron/pc-consent-channel.cjs');
 const files=process.platform==='win32'?createPrivateFileAccess(require('../launcher/electron/private-acl-native.cjs').getCurrentUserSid()):undefined;

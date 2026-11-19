@@ -1,11 +1,14 @@
-import {expect,test} from 'bun:test';
-import {mkdtempSync,readFileSync,readdirSync} from 'node:fs';
+import {afterAll,expect,test} from 'bun:test';
+import {readFileSync,readdirSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
 import {observePcRequests,createPcRequestLog} from '../src/pc-control/request-log';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 test('MCP request logging correlates metadata only and rotates',async()=>{
   const dir=mkdtempSync(join(tmpdir(),'pc-log-'));

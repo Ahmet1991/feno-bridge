@@ -1,7 +1,10 @@
-import {test,expect} from 'bun:test';
+import {afterAll,test,expect} from 'bun:test';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
-import {mkdtempSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';import {randomUUID} from 'node:crypto';
+import {join} from 'node:path';import {tmpdir} from 'node:os';import {randomUUID} from 'node:crypto';
+import { trackTempDirectories } from './support/temp-directories';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 test('actual isolated native MCP discovery preserves exactly the six 5.0.96 tools and their input contracts',async()=>{
   const root=mkdtempSync(join(tmpdir(),'pc2-mcp-contract-'));
   const broker=process.platform==='win32'?'\\\\.\\pipe\\pc2-contract-'+randomUUID():join(root,'broker.sock');

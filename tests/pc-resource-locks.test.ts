@@ -1,9 +1,12 @@
-import {test,expect} from 'bun:test';
-import {mkdtempSync,existsSync} from 'node:fs';
+import {afterAll,test,expect} from 'bun:test';
+import {existsSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {assertCompatiblePcResourcePeers} from '../src/pc-control/resource-protocol';
 import {acquirePcHostLease,recoverPcHostResource} from '../src/pc-control/resource-locks';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 const getCurrentUserSid=()=>require('../launcher/electron/private-acl-native.cjs').getCurrentUserSid();
 const windowsTest=process.platform==='win32'?test:test.skip;
 const peers={complete:true,peers:[{profileId:'pc2-normal',verified:true,state:'active',protocol:'pc-host-control-v1'},{profileId:'pc2-dev',verified:true,state:'inactive'}]};

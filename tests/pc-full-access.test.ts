@@ -1,5 +1,6 @@
-import {expect,test} from 'bun:test';
-import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {afterAll,expect,test} from 'bun:test';
+import {writeFileSync,rmSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -12,6 +13,8 @@ import {defaultConfig} from '../src/config';
 import {baseConfig} from '../src/setup';
 import {createLocalPcHost,registerPcTools,type PcHost} from '../src/pc-control/mcp-tools';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 const grant:PcGrant={profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,
   roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full',

@@ -1,9 +1,12 @@
-import {test, expect} from 'bun:test';
+import {afterAll,test, expect} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, linkSync, existsSync, renameSync} from 'node:fs';
+import {mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, linkSync, existsSync, renameSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {PcAuthorizer} from '../src/pc-control/authorization';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 // The Windows backend must not be imported while registering non-Windows tests.
 const modulePath='../src/pc-control/files';

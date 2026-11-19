@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import { augmentNativeModelCatalog } from "../src/model-catalog";
 import { parseRequest } from "../src/responses/parser";
 import { ChatGptThreadEnvironmentStore } from "../src/adapters/chatgpt-web/thread-environment";
 import type { AdapterEvent } from "../src/types";
+import { removeSmokeDirectory } from './smoke-temp';
 
 // Exercise the native ChatGPT-authenticated wire shape. A custom/API-key provider strips item
 // provenance and takes a different recovery path, hiding the same-turn steering regression.
@@ -19,6 +20,7 @@ const bundled = spawnSync(codex, ["debug", "models", "--bundled"], { encoding: "
 if (bundled.status !== 0) throw new Error(`Could not read bundled models: ${bundled.stderr}`);
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-web-environment-")));
+try {
 const codexHome = join(root, "codex");
 const project = join(root, "project");
 const auxiliary = join(root, "auxiliary");
@@ -181,5 +183,7 @@ try {
   childStarted();
   steeringQueued();
   await server.stop(true);
-  rmSync(root, { recursive: true, force: true });
+}
+} finally {
+  removeSmokeDirectory(root);
 }

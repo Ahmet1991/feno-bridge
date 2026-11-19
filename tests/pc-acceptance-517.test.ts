@@ -1,11 +1,14 @@
-import {expect,test} from 'bun:test';
-import {mkdtempSync,writeFileSync} from 'node:fs';
+import {afterAll,expect,test} from 'bun:test';
+import {writeFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController} from '../src/pc-control/windows';
 import {createPcApplicationLauncher} from '../src/pc-control/launch';
 import {PC_PERMISSIONS} from '../src/pc-control/types';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 function approved(fullAccess=true){
   const auth=new PcAuthorizer({profileId:'pc2-normal'});

@@ -1,5 +1,6 @@
-import {expect,test} from 'bun:test';
-import {readFileSync,mkdtempSync,writeFileSync} from 'node:fs';
+import {afterAll,expect,test} from 'bun:test';
+import {readFileSync,writeFileSync} from 'node:fs';
+import { trackTempDirectories } from './support/temp-directories';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
@@ -9,6 +10,8 @@ import {createPcApplicationLauncher} from '../src/pc-control/launch';
 import {pcResourceLockFile} from '../src/pc-control/resource-locks';
 import {containedWindowsTerminalSpec} from '../src/pc-control/terminal-containment';
 import {createPcFile,readPcFile,listPcFiles} from '../src/pc-control/files';
+
+const mkdtempSync = trackTempDirectories(afterAll);
 
 function full(root:string){
   const a=new PcAuthorizer({profileId:'pc2-normal'});
