@@ -33,7 +33,12 @@ const a=dlopen(path.join(root,'System32/advapi32.dll'),{
   GetTokenInformation:{args:['u64','u32','ptr','u32','ptr'],returns:'bool'},
   ConvertSidToStringSidW:{args:['ptr','ptr'],returns:'bool'},
   ConvertStringSecurityDescriptorToSecurityDescriptorW:{args:['ptr','u32','ptr','ptr'],returns:'bool'},
-  ConvertSecurityDescriptorToStringSecurityDescriptorW:{args:['ptr','u32','u32','ptr','ptr'],returns:'bool'},
+  GetSecurityDescriptorControl:{args:['ptr','ptr','ptr'],returns:'bool'},
+  GetSecurityDescriptorOwner:{args:['ptr','ptr','ptr'],returns:'bool'},
+  GetSecurityDescriptorDacl:{args:['ptr','ptr','ptr','ptr'],returns:'bool'},
+  GetAclInformation:{args:['ptr','ptr','u32','u32'],returns:'bool'},
+  GetAce:{args:['ptr','u32','ptr'],returns:'bool'},
+  IsValidSid:{args:['ptr'],returns:'bool'},
   GetSecurityInfo:{args:['u64','u32','u32','ptr','ptr','ptr','ptr','ptr'],returns:'u32'},
 }).symbols;
 const crypt=dlopen(path.join(root,'System32/crypt32.dll'),{
@@ -86,23 +91,53 @@ function descriptor(directory){
   const sd=address(out),sa=Buffer.alloc(24);sa.writeUInt32LE(24,0);sa.writeBigUInt64LE(BigInt(sd),8);
   return {sa,dispose:()=>k.LocalFree(sd)};
 }
+function aclDeny(reason){
+  if(process.env.GITHUB_ACTIONS==='true')process.stderr.write('pc_private_acl:'+reason+'\n');
+  throw deny();
+}
+// Compare canonical SID values from binary ACEs, never SDDL's localized
+// trustee aliases (e.g. LA/LG for the local Administrator/Guest).
+function assertDescriptorAcl(sd,userSid,directory){
+  const owner=Buffer.alloc(8),defaulted=Buffer.alloc(4),control=Buffer.alloc(2),revision=Buffer.alloc(4);
+  if(!a.GetSecurityDescriptorOwner(sd,owner,defaulted)||!address(owner)||sidText(address(owner))!==userSid)aclDeny('owner_mismatch');
+  if(!a.GetSecurityDescriptorControl(sd,control,revision))aclDeny('descriptor_control');
+  const bits=control.readUInt16LE();
+  if(!(bits&0x1000)||!(bits&4)||(bits&0x0500))aclDeny('not_protected');
+  const present=Buffer.alloc(4),dacl=Buffer.alloc(8);
+  if(!a.GetSecurityDescriptorDacl(sd,present,dacl,defaulted)||!present.readUInt32LE()||!address(dacl))aclDeny('missing_dacl');
+  const acl=address(dacl),size=Buffer.alloc(12);
+  if(!a.GetAclInformation(acl,size,12,2))aclDeny('acl_size');
+  const count=size.readUInt32LE(),expected=new Set([userSid,'S-1-5-18','S-1-5-32-544']);
+  if(count!==expected.size)aclDeny('ace_count');
+  for(let i=0;i<count;i++){
+    const entry=Buffer.alloc(8);
+    if(!a.GetAce(acl,i,entry)||!address(entry))aclDeny('ace_read');
+    const pointer=address(entry),header=Buffer.from(toArrayBuffer(pointer,0,8));
+    if(header[0]!==0)aclDeny('ace_type'); // ACCESS_ALLOWED_ACE only
+    if(header[1]!== (directory?3:0))aclDeny('ace_flags');
+    if(header.readUInt32LE(4)!==0x1f01ff)aclDeny('ace_rights'); // FILE_ALL_ACCESS
+    const length=header.readUInt16LE(2);
+    if(length<16||length>76)aclDeny('ace_size');
+    const sid=pointer+8,sidHeader=Buffer.from(toArrayBuffer(sid,0,8));
+    if(length!==16+4*sidHeader[1]||!a.IsValidSid(sid))aclDeny('ace_sid_invalid');
+    if(!expected.delete(sidText(sid)))aclDeny('ace_sid_mismatch');
+  }
+  if(expected.size)aclDeny('ace_missing');
+}
 function assertAcl(h,directory){
   handleKind(h,directory);
-  const owner=Buffer.alloc(8),sd=Buffer.alloc(8),out=Buffer.alloc(8),length=Buffer.alloc(4);
-  if(a.GetSecurityInfo(h,1,5,owner,null,null,null,sd)!==0)throw deny();
-  const descriptorPointer=address(sd);let sddlPointer;
-  try {
-    if(sidText(address(owner))!==USER_SID)throw deny();
-    checked(a.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptorPointer,1,4,out,length));
-    sddlPointer=address(out);const sddl=text(sddlPointer);
-    if(!/^D:P\(/.test(sddl))throw deny();
-    const entries=[...sddl.matchAll(/\(([^()]*)\)/g)];const expected=new Set([USER_SID,'SY','BA']);
-    if(entries.length!==expected.size)throw deny();
-    for(const [,entry] of entries){const [type,flags,rights,guid,inherited,sid]=entry.split(';');
-      if(type!=='A'||flags!==(directory?'OICI':'')||rights!=='FA'||guid||inherited||!expected.delete(sid))throw deny();
-    }
-    if(expected.size)throw deny();
-  }finally{if(sddlPointer)k.LocalFree(sddlPointer);k.LocalFree(descriptorPointer);}
+  const sd=Buffer.alloc(8);
+  if(a.GetSecurityInfo(h,1,5,null,null,null,null,sd)!==0)aclDeny('security_info');
+  const descriptorPointer=address(sd);
+  try{assertDescriptorAcl(descriptorPointer,USER_SID,directory);}
+  finally{k.LocalFree(descriptorPointer);}
+}
+// In-memory descriptor regression test seam; no file or grant mutation.
+function assertPrivateSddl(sddl,userSid,directory=false){
+  const out=Buffer.alloc(8);
+  checked(a.ConvertStringSecurityDescriptorToSecurityDescriptorW(wide(sddl),1,out,null));
+  const sd=address(out);
+  try{assertDescriptorAcl(sd,userSid,directory);}finally{k.LocalFree(sd);}
 }
 function assertPrivatePath(p,sid,{directory=false}={}){
   assertUser(sid);p=validPath(p);const release=fence(path.win32.dirname(p));let h;
@@ -300,4 +335,4 @@ function handleRequest(req){
   else if(req.action==='quarantine')return {ok:true,path:quarantinePrivateFile(p,sid)};
   else throw deny();return {ok:true};
 }
-module.exports={getCurrentUserSid:()=>USER_SID,inspectProcess,inputHelpersAbsent,inspectDevLauncherProcesses,ensurePrivateDirectory,assertPrivatePath,readPrivateFile,writePrivateAtomic,cleanupPrivateTemps,removePrivateFile,quarantinePrivateFile,acquireExclusivePrivateFile,handleRequest};
+module.exports={getCurrentUserSid:()=>USER_SID,inspectProcess,inputHelpersAbsent,inspectDevLauncherProcesses,ensurePrivateDirectory,assertPrivatePath,readPrivateFile,writePrivateAtomic,cleanupPrivateTemps,removePrivateFile,quarantinePrivateFile,acquireExclusivePrivateFile,handleRequest,assertPrivateSddl};

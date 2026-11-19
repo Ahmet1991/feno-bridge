@@ -20,6 +20,10 @@ function nativeImpl(request,options={}) {
   const result=spawnSync(executable,[helper],{
     input:JSON.stringify(request),encoding:'utf8',windowsHide:true,shell:false,timeout:3000,maxBuffer:4*1024*1024,
   });
+  return parseNativeResult(result);
+}
+// Pure translation of the verified helper's result; independent of host OS.
+function parseNativeResult(result){
   if(result.error){
     if(['ETIMEDOUT','EBUSY','EAGAIN','EACCES','EPERM'].includes(result.error.code))throw transient(result.error.code);
     throw deny();
@@ -118,4 +122,4 @@ function createWindowsDpapiProtection(userSid,profileId,options={}) {
   });
 }
 module.exports={getNativeSecurityContext,ensurePrivateDirectory,assertPrivatePath,writePrivateAtomic,readPrivateFile,
-  removePrivateFile,quarantinePrivateFile,createPrivateFileAccess,createWindowsDpapiProtection};
+  removePrivateFile,quarantinePrivateFile,createPrivateFileAccess,createWindowsDpapiProtection,parseNativeResult};

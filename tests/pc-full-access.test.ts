@@ -7,6 +7,7 @@ import {PcAuthorizer,validatePcGrant,isValidPcRoot} from '../src/pc-control/auth
 import {createPcApplicationLauncher} from '../src/pc-control/launch';
 import {createPcWindowsController} from '../src/pc-control/windows';
 import {resolveAllowedPath} from '../src/pc-control/paths';
+import {canonicalTemp} from './support/canonical-temp';
 import type {PcGrant} from '../src/pc-control/types';
 import {defaultConfig} from '../src/config';
 import {baseConfig} from '../src/setup';
@@ -100,7 +101,7 @@ test.skipIf(process.platform!=='win32')('full access identity rotation permits a
   }finally{await host.revokeActiveJobs();}
 });
 test.skipIf(process.platform!=='win32')('full access Notepad accepts an approved existing file argument',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'pc-notepad-file-'));
+  const root=canonicalTemp('pc-notepad-file-');
   const file=join(root,'large.log');writeFileSync(file,'some local text\n');
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({...grant,id:'full-access-notepad',roots:[root.slice(0,3)]});

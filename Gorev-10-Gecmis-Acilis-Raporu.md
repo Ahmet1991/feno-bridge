@@ -137,3 +137,79 @@ Paket: `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.968.770 bayt); S
 Değişen dosyalar: `README.md`, `README.ja.md`, `README.ko.md`, `README.zh-CN.md`, `package.json`, `bun.lock`, `launcher/package.json`, `launcher/chrome-extension/manifest.json`, `launcher/electron/pc-windows-helper.sha256`, `launcher/scripts/smoke-package.cjs`, `launcher/tests/chrome-worker.test.cjs`, `launcher/tests/runtime-install.test.cjs`, `scripts/install.sh`, `scripts/smoke-release.ts`, `scripts/verify.ts`, `src/version.ts`, `src/pc-control/screenshot-widget.ts`, `src/pc-control/widget-probe.ts`, `tests/pc-acceptance-515.test.ts`, `tests/pc-acceptance-516.test.ts`, `tests/pc-acceptance-517.test.ts`, `tests/pc-full-access.test.ts`, `tests/pc-mcp-core.test.ts`, `tests/pc-security-authorization.test.ts`, `tests/support/isolate-homes.ts` ve bu rapor.
 
 Defender tehdit tespit kaydı 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Canlı PC2 araçları kullanılmadı; canlı kurulum, profiller, izinler, tüneller ve diğer çalışma ağaçları kapsam dışı kaldı. PR #97 taslak kalacak; merge, etiket, yayın ve CI bekleme yok.
+
+### CI turu 2
+
+19.11.2026 — Taban `33da3ff`, uzak dal farkı 0/0; sürüm 5.1.26. CI 44497817881 günlüklerinde Windows'ta 35 kök hatası, Linux/macOS'ta üç launcher hatası incelendi.
+
+**B1:** `canonical-temp.ts` ile testlerin gerçek geçici dizin yolları `realpathSync.native` üzerinden eşitlendi. Üretimde `paths.ts` hem izinli kökü hem mevcut hedefi (yeni dosya için üst dizini) kanonikleştiriyor; `project-file-native.ts` açık dizin tanıtıcıları, gerçek dizin kimlikleri ve kanonik sınır ile kontrolü sürdürüyor. Üretim sınırı değiştirilmedi. Yeni 8.3 testi kısa ve uzun kökten okuma, kısa kökten oluşturma ve kardeş dizin/junction reddini doğruladı.
+
+**B2:** `private-acl-native.cjs` artık SDDL metnini değil, GetAclInformation/GetAce ile gerçek ACE'leri ve tam SID değerlerini karşılaştırıyor. Korumalı DACL, sahip, yalnız izin ACE'si, tam erişim maskesi, tam kullanıcı/SYSTEM/Administrators kümesi, dizin OICI ve dosyada sıfır bayrak koşulları korundu. RID-500 örneği ve Windows API ile açılan gerçek LA takma adı yerel regresyon testinde geçti; hatalı sahip, hak, bayrak, trustee, tür ve ACE sayısı reddedildi. CI hesabının gerçekten RID-500 olduğu henüz doğrudan ölçülmedi; eski metin karşılaştırmasının LA durumunda bozulduğu doğrulandı. CI için kimlik içermeyen ACL neden kodları eklendi. TS tarafında eşdeğer SDDL metin karşılaştırması bulunmadı.
+
+**35 Windows hatasının eşlemesi** (`windows-fail-list.txt` sırası; tümü son yerel kök koşusunda geçti):
+
+| No | Test | Düzeltme |
+|---|---|---|
+| 1 | Chrome upload holds native read boundaries | B1 pc-files |
+| 2 | T39: full-access Notepad filePath | B1 pc-acceptance-515 |
+| 3 | a compatible DEV record | B2 ACL |
+| 4 | a machine with no DEV home or peer | B2 ACL |
+| 5 | a stopped legacy DEV home or install | B2 ACL |
+| 6 | an elapsed waiting deadline | B2 ACL |
+| 7 | asynchronous revocation cleanup failure | B2 ACL |
+| 8 | crash releases the OS handle | B2 ACL (kilit edinimi) |
+| 9 | create never overwrites | B1 pc-files |
+| 10 | create publishes complete bytes | B1 pc-files |
+| 11 | failed replacement leaves no stage | B2 ACL |
+| 12 | full access Notepad accepts an approved existing file | B1 pc-full-access |
+| 13 | live DEV overrides retirement | B2 ACL |
+| 14 | local recovery cannot clear a live owner | B2 ACL |
+| 15 | locally verified retired DEV home | B2 ACL |
+| 16 | malformed legacy or private DEV evidence | B2 ACL |
+| 17 | missing LOCALAPPDATA | B2 ACL |
+| 18 | missing, invalid and legacy peer evidence | B2 ACL |
+| 19 | new files and directories have an explicit private Windows ACL | B2 ACL |
+| 20 | no DEV home, installation or live process | B2 ACL |
+| 21 | patch preserves CRLF semantics | B1 pc-files |
+| 22 | patch preserves LF semantics | B1 pc-files |
+| 23 | patch preserves empty file semantics | B1 pc-files |
+| 24 | patch preserves mixed endings semantics | B1 pc-files |
+| 25 | patch preserves no final newline semantics | B1 pc-files |
+| 26 | permanent lineage survives heartbeat and key rotation | B2 ACL |
+| 27 | portable Akentek DEV install root | B2 ACL |
+| 28 | release waits for real completion | B2 ACL |
+| 29 | revocation is irreversible by replaying an earlier signed grant | B2 ACL |
+| 30 | signed local approval drives real MCP files | B2 ACL |
+| 31 | signed private state authorizes only its own profile | B2 ACL |
+| 32 | stale heartbeat, rotated key and expired signed approval | B2 ACL |
+| 33 | two actual Windows processes racing across profiles | B2 ACL |
+| 34 | unknown process result and live legacy descriptor | B2 ACL |
+| 35 | wait cancellation, bounded timeout and grant revocation | B2 ACL |
+
+**B3 ve Linux/macOS:** İki heartbeat yarış testi gerçek platforma uygun geçici dizin kullanır; native helper hata dönüşümü saf `parseNativeResult` ayrıştırıcısıyla üç platformda test edilebilir. Üretimin native Windows güvenlik sınırı korunur; Windows dışında fail-closed testi eklendi. Üç eski başarısız test kapatılmadı, yerel odaklı koşuda 3/3 geçti. Launcher yolu karşılaştırmaları ve ACL testleri ayrıca tarandı: `pc-service.cjs` zaten native kanonik kök kullanıyor; `private-acl.test.cjs` icacls çıktısındaki LA/LG dahil gerçek SID'leri doğruluyor. Başka doğrudan kısa yol/metin SID hatası saptanmadı.
+
+Yerel atlamalar: kökte önceki beş (iki Unix sembolik bağ, macOS temizlik ve iki isteğe bağlı masaüstü/ADB E2E); launcher Node'da önceki üç (iki Linux AppImage, Unix shebang tünel başlangıcı) ve yeni Windows dışı fail-closed testi. 8.3 testi bu Windows koşusunda atlanmadı; kısa ad bulunmayan dosya sisteminde veya Windows dışında atlanır. Native ACL testleri Windows dışında koşmaz. Yeni üç platform bağımsız launcher regresyonu korunur.
+
+| Ayrı doğrulama kapısı | Sonuç |
+|---|---|
+| check-version | VERSION_SYNC_OK 5.1.26 bun@1.4.0 |
+| audit | 145 paket, sıfır bulgu |
+| launcher:audit | 351 paket, mevcut bir istisna dışında sıfır bulgu |
+| Kök typecheck / launcher:typecheck | Çıkış 0 |
+| Kök Bun | 1.235 başarılı, 5 atlanan, 0 başarısız; 7.861 assertion, 119 dosya |
+| Launcher Node / Bun | 442 başarılı, 4 atlanan / 46 başarılı, 0 hata |
+| Launcher build | Çıkış 0 |
+| Runtime bundle / notices | Çıkış 0, 114 paket bildirimi |
+| smoke-release | SHARP_RUNTIME_OK 0.35.5 8.18.7; RELOCATABLE_RUNTIME_SMOKE_OK |
+| app:package | Çıkış 0, EXE ve blockmap üretildi |
+| app:smoke | PACKAGED_LAUNCHER_SMOKE_OK win32/x64; CDP 200; PACKAGED_SHARP_OK 0.35.5 8.18.7 |
+| Gizli sekme | BROWSER_SMOKE_OK Chrome/157.0.8103.79; 97 örnek, 0 odak değişimi, 0 Chrome örneği |
+| git diff --check | Çıkış 0; yalnız Git çalışma kopyası satır sonu uyarıları |
+
+Önceki kesilen süreç kimlikleri yeniden bağlanamadığından kök ve runtime koşuları yeniden yapıldı; son koşuların gerçek çıkış kodları 0. PowerShell stderr yönlendirme uyarıları Bun'un gerçek çıkış kodunu değiştirmedi. Paket dumanı: 482 ön plan örneği, sıfır odak değişimi, sıfır yeni Chrome ve köprü örneği. İlk runtime kaynak/kurulum 45,401 s, ikinci 0,840 s. Gerçek açılış dumanında geçici çıkarılmış paket kullanıldı; kullanıcıya kurulum yapılmadı.
+
+Yeni paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (162.969.814 bayt). SHA-256: `6365ffd3505ebd6f31bd4505fc78a09e37426188b2ee1257851e4667476a1cae`; `.sha256` yeniden alınan karma ile eşleşti. Paket içinde Windows helper `46aa5354522b5ecd023bbf0d962f849a83a17eac75dc8b3ed50297d45ecfc073`, Chrome native host `0bfd6c94477c4ac18eefb64e2b6347d6cc70f73312c9ba31e6e813c25bc02252` doğrulandı.
+
+Değişen dosyalar: `launcher/electron/private-acl-native.cjs`, `launcher/electron/private-acl.cjs`, `launcher/electron/pc-windows-helper.sha256`, `launcher/tests/pc-consent-channel-race.test.cjs`, `launcher/tests/private-acl.test.cjs`, `launcher/tests/private-helper-errors.test.cjs`, `tests/pc-acceptance-515.test.ts`, `tests/pc-files.test.ts`, `tests/pc-full-access.test.ts`, `tests/support/canonical-temp.ts` ve bu rapor.
+
+Defender tehdit tespit sayısı 40 → 40. DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi. Canlı PC2 araçları kullanılmadı; kurulum, canlı izin/profil/runtime ve diğer çalışma ağaçları değiştirilmedi. Linux/macOS ve Windows runner'daki yeni CI sonucu henüz doğrulanmadı; CI beklenmeyecek. PR #97 taslak kalacak, merge/etiket/yayın yapılmayacak.

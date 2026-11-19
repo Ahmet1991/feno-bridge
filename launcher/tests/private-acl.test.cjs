@@ -23,7 +23,7 @@ const fixture = (action, target) => {
   if(action==='widen')return;
   const sddl=fs.readFileSync(saved,'utf16le').split(/\r?\n/).find(l=>l.startsWith('D:'));
   assert.ok(sddl);
-  return {protected:sddl.startsWith('D:P'),rules:[...sddl.matchAll(/\(([^;]+);[^;]*;[^;]*;[^;]*;[^;]*;([^)]*)\)/g)].map(m=>({type:m[1]==='A'?'Allow':m[1],sid:({SY:'S-1-5-18',BA:'S-1-5-32-544'})[m[2]]||m[2]}))};
+  return sddl;
 };
 const windows = {skip:process.platform !== 'win32'};
 
@@ -38,11 +38,57 @@ test('private writes inherit no broad-reader access and remain private after rep
   assert.equal(api.readPrivateFile(file,sid,1024).toString(),'second fixture');
   for(const target of [directory,file]) {
     const acl=fixture('inspect',target);
-    assert.equal(acl.protected,true);
-    assert.deepEqual(acl.rules.map(r=>r.sid).sort(),[sid,'S-1-5-18','S-1-5-32-544'].sort());
-    assert.ok(acl.rules.every(r=>r.type==='Allow'));
+    assert.ok(acl.startsWith('D:P'));
+    // icacls may serialize the same trustee as LA/LG. Validate the full
+    // independent saved DACL, plus the actual file's owner and ACL by handle.
+    require('../electron/private-acl-native.cjs').assertPrivateSddl('O:'+sid+acl,sid,target===directory);
+    api.assertPrivatePath(target,sid,{directory:target===directory});
   }
   assert.deepEqual(fs.readdirSync(directory),['fixture.json']);
+});
+
+test('binary ACL comparison accepts RID-500 and the local LA alias, rejects wrong trustees and weakened ACEs', windows, () => {
+  const native=require('../electron/private-acl-native.cjs');
+  const fake='S-1-5-21-12345-23456-34567-500';
+  const {dlopen,toArrayBuffer}=require('bun:ffi');
+  const sys=path.join(process.env.SystemRoot||'C:\\Windows','System32');
+  const adv=dlopen(path.join(sys,'advapi32.dll'),{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW:{args:['ptr','u32','ptr','ptr'],returns:'bool'},
+    GetSecurityDescriptorOwner:{args:['ptr','ptr','ptr'],returns:'bool'},
+    ConvertSidToStringSidW:{args:['ptr','ptr'],returns:'bool'},
+  });
+  const kernel=dlopen(path.join(sys,'kernel32.dll'),{LocalFree:{args:['ptr'],returns:'ptr'}});
+  const pointer=b=>Number(b.readBigUInt64LE());
+  let descriptor,ownerString;
+  try{
+    const sd=Buffer.alloc(8),owner=Buffer.alloc(8),out=Buffer.alloc(8);
+    assert.ok(adv.symbols.ConvertStringSecurityDescriptorToSecurityDescriptorW(Buffer.from('O:LA\0','utf16le'),1,sd,null));
+    descriptor=pointer(sd);
+    assert.ok(adv.symbols.GetSecurityDescriptorOwner(descriptor,owner,Buffer.alloc(4)));
+    assert.ok(adv.symbols.ConvertSidToStringSidW(pointer(owner),out));
+    ownerString=pointer(out);
+    let localAdmin='';
+    for(let i=0;i<256;i++){
+      const n=Buffer.from(toArrayBuffer(ownerString+i*2,0,2)).readUInt16LE();
+      if(!n)break;localAdmin+=String.fromCharCode(n);
+    }
+    assert.match(localAdmin,/^S-1-5-21-(?:\d+-){3}500$/);
+    const policy=(user,flags='',rights='FA')=>'O:'+user+'D:P(A;'+flags+';'+rights+';;;'+user+')(A;'+flags+';FA;;;SY)(A;'+flags+';FA;;;BA)';
+    assert.doesNotThrow(()=>native.assertPrivateSddl(policy(fake),fake));
+    assert.doesNotThrow(()=>native.assertPrivateSddl(policy('LA'),localAdmin));
+    assert.doesNotThrow(()=>native.assertPrivateSddl(policy('LA','OICI'),localAdmin,true));
+    for(const bad of [policy(fake).replace('D:P','D:'),policy(fake,'OI'),policy(fake,'','FR'),
+      policy(fake).replace(';;;BA',';;;WD'),policy(fake).replace(';;;BA',';;;SY'),
+      policy(fake).replace('(A;;FA;;;BA)','(D;;FA;;;BA)'),policy(fake)+'(A;;FA;;;WD)',
+      policy(fake).replace(';;;'+fake,';;;S-1-5-21-12345-23456-34567-501')]){
+      assert.throws(()=>native.assertPrivateSddl(bad,fake),/pc_private_storage/);
+    }
+    assert.throws(()=>native.assertPrivateSddl(policy('LA'),fake),/pc_private_storage/);
+  }finally{
+    if(ownerString)kernel.symbols.LocalFree(ownerString);
+    if(descriptor)kernel.symbols.LocalFree(descriptor);
+    adv.close();kernel.close();
+  }
 });
 
 test('broad ACL, excessive reads and foreign owner policy fail closed without rewriting existing files', windows, () => {

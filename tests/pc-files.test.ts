@@ -1,16 +1,61 @@
 import {test, expect} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, linkSync, existsSync, renameSync} from 'node:fs';
+import {mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, linkSync, existsSync, renameSync, rmSync} from 'node:fs';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
 import {PcAuthorizer} from '../src/pc-control/authorization';
+import {canonicalTemp} from './support/canonical-temp';
 
 // The Windows backend must not be imported while registering non-Windows tests.
 const modulePath='../src/pc-control/files';
 const api=await import(modulePath).catch(()=>undefined);
 const windowsTest=process.platform==='win32'?test:test.skip;
+function shortPathFixture(){
+  if(process.platform!=='win32')return undefined;
+  const base=canonicalTemp('pc-short-path-boundary-');
+  const root=join(base,'approved long directory'),outside=join(base,'outside long directory');
+  mkdirSync(root);mkdirSync(outside);
+  const {dlopen}=require('bun:ffi') as typeof import('bun:ffi');
+  const dll=dlopen(join(process.env.SystemRoot||'C:\\Windows','System32','kernel32.dll'),{
+    GetShortPathNameW:{args:['ptr','ptr','u32'],returns:'u32'},
+  });
+  try{
+    const short=(p:string)=>{
+      const buffer=Buffer.alloc(32768*2);
+      const n=dll.symbols.GetShortPathNameW(Buffer.from(p+'\0','utf16le'),buffer,32768);
+      if(!n||n>=32768)throw Error('GetShortPathNameW failed');
+      return buffer.toString('utf16le',0,n*2);
+    };
+    const alias=short(root),otherAlias=short(outside);
+    if(alias.toLowerCase()===root.toLowerCase()){
+      rmSync(base,{recursive:true,force:true});return undefined;
+    }
+    return {base,root,outside,alias,otherAlias};
+  }finally{dll.close();}
+}
+const shortFixture=shortPathFixture();
+test.skipIf(!shortFixture)('8.3 approved root matches its long identity but never grants sibling or junction access',async()=>{
+  const {base,root,outside,alias,otherAlias}=shortFixture!;
+  try{
+    const file=join(root,'inside.txt');writeFileSync(file,'inside');
+    writeFileSync(join(outside,'outside.txt'),'outside');
+    symlinkSync(outside,join(root,'escape'),'junction');
+    const {resolveAllowedPath}=await import('../src/pc-control/paths');
+    const auth=new PcAuthorizer({profileId:'pc2-normal'});
+    auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'short-root-fixture',expiresAt:Date.now()+60000,roots:[alias],permissions:['files.read','files.write'],allowedApps:[]});
+    const files=implementation();
+    for(const approved of [root,alias]){
+      expect(resolveAllowedPath(join(approved,'inside.txt'),[alias])).toBe(file);
+      expect((await files.readPcFile(join(approved,'inside.txt'),auth)).path).toBe(file);
+    }
+    expect((await files.createPcFile(join(alias,'new.txt'),'new',auth)).path).toBe(join(root,'new.txt'));
+    for(const denied of [join(outside,'outside.txt'),join(otherAlias,'outside.txt'),join(alias,'escape','outside.txt')]){
+      expect(()=>resolveAllowedPath(denied,[alias])).toThrow('pc_access_denied');
+      await expect(files.readPcFile(denied,auth)).rejects.toThrow('pc_access_denied');
+    }
+  }finally{rmSync(base,{recursive:true,force:true});}
+});
 function fixture(){
-  const base=mkdtempSync(join(tmpdir(),'pc-files-task4-'));
+  const base=canonicalTemp('pc-files-task4-');
   const root=join(base,'project');mkdirSync(root);
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'files-fixture-0001',expiresAt:Date.now()+60000,roots:[root],permissions:['files.read','files.write'],allowedApps:[]});

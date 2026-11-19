@@ -9,6 +9,7 @@ import {createPcApplicationLauncher} from '../src/pc-control/launch';
 import {pcResourceLockFile} from '../src/pc-control/resource-locks';
 import {containedWindowsTerminalSpec} from '../src/pc-control/terminal-containment';
 import {createPcFile,readPcFile,listPcFiles} from '../src/pc-control/files';
+import {canonicalTemp} from './support/canonical-temp';
 
 function full(root:string){
   const a=new PcAuthorizer({profileId:'pc2-normal'});
@@ -83,7 +84,7 @@ test('T25: only single GUI launches request safe breakaway from contained termin
 });
 
 win('T39: full-access Notepad filePath is accepted by launcher runtime',async()=>{
-  const root=mkdtempSync(join(tmpdir(),'pc-acceptance-notepad-'));
+  const root=canonicalTemp('pc-acceptance-notepad-');
   const file=join(root,'note.txt');writeFileSync(file,'data');const calls:string[][]=[];
   const launch=createPcApplicationLauncher({authorizer:full(root),resolve:()=> 'C:\\Windows\\System32\\notepad.exe',spawnApp:(_exe,args)=>{calls.push(args);}});
   expect(await launch.launchPcApp('notepad.exe',undefined,file)).toMatchObject({launched:true});
