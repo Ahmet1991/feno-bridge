@@ -6,4 +6,9 @@ function createBootReporter(logger,{clock=Date.now,processStartedAt=Date.now()-M
     wait(phase,reason,waitMs){logger.info('launcher.boot_wait',{phase,reason,waitMs,elapsedMs:clock()-processStartedAt});},
   };
 }
-module.exports={createBootReporter};
+// The packaged Linux smoke uses a local idle page, not network navigation.
+// Fail promptly on bootstrap failure; real launches retain transient retries.
+function browserInitializationAttempts(platform, smoke) {
+  return platform === 'linux' && smoke ? 1 : 3;
+}
+module.exports={createBootReporter,browserInitializationAttempts};

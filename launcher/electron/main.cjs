@@ -37,7 +37,7 @@ if (process.argv.includes("--launcher-smoke-test")) {
     && process.env.CODEX_WEB_GPT_DEV_HOME === path.join(scratch, "dev-home");
   if (!isolated) throw new Error("Packaged smoke requires an isolated launcher profile");
 }
-const {createBootReporter}=require('./startup-timing.cjs');
+const {createBootReporter,browserInitializationAttempts}=require('./startup-timing.cjs');
 // Put the first event in the directory migration will carry to the new location.
 const bootLogHome=!fs.existsSync(LAUNCHER_PROFILE.userData)&&LAUNCHER_PROFILE.legacyUserData&&fs.existsSync(LAUNCHER_PROFILE.legacyUserData)
   ?LAUNCHER_PROFILE.legacyUserData:LAUNCHER_PROFILE.userData;
@@ -1402,6 +1402,7 @@ async function start() {
     publishState: (state) => send("launcher:browser-state", state),
     showWindow: showMainWindow,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
+    initializationAttempts: browserInitializationAttempts(process.platform,launcherSmokeTest),
   });
   if (!launcherSmokeTest) await browserHost.ready();
   const updaterRuntimeRoot = runtimeRootProvider();
@@ -1483,13 +1484,16 @@ async function start() {
       });
     });
   }
+  const rendererDone = launcherSmokeTest ? bootReporter.begin('smoke_renderer') : () => {};
   await loadRenderer(mainWindow);
+  rendererDone();
   if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
     const smokeRuntimeRoot = runtimeRootProvider();
     if (app.isPackaged && !smokeRuntimeRoot) {
       throw new Error("Packaged launcher smoke test could not install its durable runtime");
     }
+    const versionDone = bootReporter.begin('smoke_runtime_version');
     const versionInvocation = runtimeSupervisor.runtimeCommand(["--version"]);
     const versionResult = spawnSync(versionInvocation.executable, versionInvocation.args, {
       cwd: versionInvocation.cwd,
@@ -1505,6 +1509,8 @@ async function start() {
         + ` stderr=${JSON.stringify(versionResult.stderr.trim())})`,
       );
     }
+    versionDone();
+    const browserDone = bootReporter.begin('smoke_browser');
     // Exercise the real browser CDP server and the actual packaged daemon, with an
     // isolated browser-only configuration. No account, tunnel or full-access grant.
     await browserHost.ready();
@@ -1515,6 +1521,7 @@ async function start() {
     if (cdpResponse.status !== 200 || !cdpVersion.webSocketDebuggerUrl) {
       throw new Error(`Packaged launcher CDP endpoint returned ${cdpResponse.status}`);
     }
+    browserDone();
     const configPath = path.join(CORE_HOME, "config.json");
     const runtime = runtimeSupervisor.runtimeCommand([]);
     const config = {
@@ -1535,7 +1542,9 @@ async function start() {
     fs.writeFileSync(config.storageStatePath, "{}", { mode: 0o600 });
     let pcServiceStarted = false;
     try {
+      const daemonDone = bootReporter.begin('smoke_daemon_start');
       const startup = await runtimeSupervisor.startIfConfigured();
+      daemonDone();
       if (startup.status !== "ready" || !startup.daemonPid) {
         throw new Error(`Packaged runtime startup failed: ${JSON.stringify(startup)}`);
       }
@@ -1558,8 +1567,10 @@ async function start() {
       }
       await installation.verifyInBackground?.();
     } finally {
+      const shutdownDone = bootReporter.begin('smoke_daemon_stop');
       try { pcService?.suspend(); }
       finally { await runtimeSupervisor.shutdown({ cancelActiveTurns: true, force: true }); }
+      shutdownDone();
     }
     const markerPath = process.env.CODEX_WEB_GPT_SMOKE_FILE?.trim();
     if (!markerPath || !path.isAbsolute(markerPath)) {
@@ -1576,9 +1587,11 @@ async function start() {
       runtimeStartupVerified: true,
       pcServiceStarted,
     })}\n`);
+    const cleanupDone = bootReporter.begin('smoke_browser_cleanup');
     browserHost.destroy();
     await browserControl.close();
     mainWindow.destroy();
+    cleanupDone();
     app.quit();
     return;
   }
@@ -1822,10 +1835,12 @@ void start().catch(async (error) => {
   try {
     // Browser bootstrap can fail before the renderer is loaded. Keep the error reachable
     // through the existing instance, and release browser resources before a user retry.
+    const smoke = process.argv.includes("--launcher-smoke-test");
+    if (smoke) bootLogger.error('launcher.smoke_failed', {code:error?.code});
     const cleanupErrors = [];
     try { browserHost?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
     try { await browserControl?.close(); } catch (caught) { cleanupErrors.push(String(caught)); }
-    if (process.argv.includes("--launcher-smoke-test")) { app.exit(1); return; }
+    if (smoke) { app.exit(1); return; }
     await app.whenReady();
     quitting = true;
     showMainWindow();

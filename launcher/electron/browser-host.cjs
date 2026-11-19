@@ -368,6 +368,7 @@ class BrowserHost {
     showWindow = () => {},
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
+    initializationAttempts = 3,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -383,6 +384,7 @@ class BrowserHost {
     this.getConnectorName = getConnectorName;
     this.helper = helper;
     this.logger = logger;
+    this.initializationAttempts = initializationAttempts;
     this.loginWithPasskey = loginWithPasskey;
     if (profile !== "production" && profile !== "development") {
       throw new Error("Browser host profile is invalid");
@@ -485,7 +487,7 @@ class BrowserHost {
     this.view.setBounds(this.hiddenTurnBounds());
     this.view.setVisible(true);
     try {
-      await initializeBrowserWithRetry(this.view.webContents,this.logger);
+      await initializeBrowserWithRetry(this.view.webContents,this.logger,{attempts:this.initializationAttempts});
       if (browserInteractionModeFor(this) === "automatic") await this.markOwnedSurface();
     } finally {
       this.syncViewVisibility();

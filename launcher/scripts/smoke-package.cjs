@@ -4,6 +4,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { validateRuntimeBundle } = require("../electron/runtime-install.cjs");
 const { stageWindowsSmoke } = require("./stage-windows-smoke.cjs");
+const { summarizeLauncherLog, runLinuxLauncher, safeErrorCode } = require('./package-smoke-diagnostics.cjs');
 
 const launcherRoot = path.resolve(__dirname, "..");
 const artifactsDirectory = path.join(launcherRoot, "artifacts");
@@ -24,6 +25,9 @@ let macAppBundle;
 let failed = false;
 
 const WINDOWS_LAUNCHER_SMOKE_TIMEOUT_MS = 480_000;
+// Cold installation performs the complete source, stage and final verification.
+// Allow extraction plus that work; phase timings distinguish a stall from I/O.
+const LINUX_LAUNCHER_SMOKE_TIMEOUT_MS = 120_000;
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -103,6 +107,7 @@ function smokeEnvironment() {
   };
 }
 
+async function main() {
 try {
   let executable;
   let command;
@@ -175,6 +180,10 @@ try {
       console.log('PACKAGED_STARTUP_TIMING '+JSON.stringify({attempt,phases,sourceAndInstallMs:phases.runtime_source+phases.runtime_install}));
     }
     } finally {stopSampler();}
+  } else if (process.platform === 'linux') {
+    const started = Date.now();
+    await runLinuxLauncher(command, args, { env, cwd: scratch, timeout: LINUX_LAUNCHER_SMOKE_TIMEOUT_MS });
+    console.log('PACKAGED_LINUX_STARTUP_TIMING '+JSON.stringify({ elapsedMs: Date.now()-started, phases: summarizeLauncherLog(path.join(env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR,'logs','launcher.jsonl')).phases }));
   } else {
     run(command, args, { env });
   }
@@ -253,7 +262,8 @@ try {
   process.stdout.write(`PACKAGED_LAUNCHER_SMOKE_OK ${process.platform}/${process.arch} ${JSON.stringify(marker)}\n`);
 } catch (error) {
   failed = true;
-  process.stderr.write(`Package smoke failed; isolated evidence retained at ${scratch}\n`);
+  console.log('PACKAGED_SMOKE_DIAGNOSTICS '+JSON.stringify(summarizeLauncherLog(path.join(scratch,'launcher-data','logs','launcher.jsonl'))));
+  process.stderr.write(`Package smoke failed (${safeErrorCode(error)}); isolated evidence retained under .cache/${path.basename(scratch)}\n`);
   throw error;
 } finally {
   try {
@@ -276,3 +286,5 @@ try {
     }
   }
 }
+}
+main().catch(error => { console.error('PACKAGED_SMOKE_ERROR '+safeErrorCode(error)); process.exitCode = 1; });

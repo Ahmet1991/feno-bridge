@@ -305,3 +305,33 @@ Kırmızı-yeşil: yeni tarayıcı eski `dist/runtime/app/cli.js` için `Runtime
 Paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (163.002.746 bayt), SHA-256 `e77be63f76a31eed23f54b8ca48262e58526777a856925be235a46556c5e0e85`; `.sha256` eşleşmesi True. Paket dumanı 454 ön plan örneğinde 0 odak değişimi, 0 Chrome ve 0 köprü örneği; ilk kaynak ve kurulum 46,768 s, ikinci 0,820 s. Windows helper SHA-256 `bb617e46c18dfc7bbe1b82daa619ae60eae5a0748850efb06e8bf06bf9fb10b4`, Chrome native host SHA-256 `be4cab7b840f9d2c436798b57e81637d6f9950e6a05e61ae48eba57b19f81ab4` doğrulandı. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi.
 
 Değişen dosyalar: `launcher/electron/private-acl.cjs`, `private-acl-cli.cjs`, yeni `private-acl-location.cjs`, `pc-windows-helper.sha256`, `launcher/tests/private-acl-location.test.cjs`, `launcher/tests/runtime-install.test.cjs`, `launcher/scripts/smoke-package.cjs`, `scripts/build-runtime-bundle.ts`, yeni `scripts/runtime-path-audit.cjs`, `scripts/smoke-release.ts`, `src/cli.ts` ve bu rapor. Yeni test atlaması yok. Canlı PC2/Chrome araçları, canlı kurulum, canlı koordinasyon/runtime, DEV, Defender ayarları ve başka worktree'ler değiştirilmedi. Linux/macOS gerçek runner sonucu CI'da doğrulanacak; bu turda CI bekleme, merge, etiket, yayın veya PR'ı hazır yapma yok.
+
+### Linux paket dumanı
+
+19.11.2026 — Taban `21d8703`, uzak dal farkı 0/0; sürüm 5.1.26. CI 44518866727'de Windows ve macOS geçmiş, Linux AppImage iki kez 45 saniyelik `xvfb-run` zaman sınırına takılmıştır. Linux yerelde bulunmadığından kesin takılma aşaması henüz ölçülememiştir.
+
+- K-2: mühürlü runtime makbuzu yalnız paketlenmiş normal Windows açılışında oluşturuluyor; Linux/macOS `safeStorage` çağırmıyor ve tam doğrulamayı kullanıyor. Güvenli olmayan anahtar deposuna geçiş gerekmez. Kaynak, geçici kopya ve nihai runtime doğrulaması korunuyor.
+- K-7: yerel boş tarayıcı belgesinin açılış yeniden denemesi gerçek kullanımdaki üç denemeyi koruyor; Linux paket dumanı tek (10 saniye sınırındaki) denemeyle başarısızlığı hemen bildiriyor. Platform taklidiyle Linux dumanı, Linux normal açılışı, Windows ve macOS için kontrol edildi.
+- K-4/K-6, özel ACL ve izin: PC hizmeti başlatma Windows ile sınırlı; Linux dumanı PC hizmeti başlatmıyor. İlgili kilit taraması ve geçici dosya bakımı `pcService.start()` içinde kalıyor. Güvenlik denetimleri değiştirilmedi.
+- Soğuk açılışın meşru maliyeti: bir önceki Windows paketinde kaynak ve kurulum 46,768 s, bu pakette 46,039 s (kopya 9,980 s, geçici kopya hash 29,274 s, nihai hash 2,137 s); bunlara Electron, sürüm, CDP ve daemon dumanı da ekleniyor. AppImage çıkarma dahil Linux'a 120 s toplam sınır verildi; bu Linux'ta ölçülmüş bir süre veya kesin kök neden değildir. macOS 45 s ve Windows 480 s sınırları değişmedi.
+- `package-smoke-diagnostics.cjs` döndürülmüş ve güncel `launcher.jsonl` dosyalarından son 60 olayla tamamlanan açılış aşamalarının sürelerini güvenli alanlardan özetler. Bilinmeyen olaylar `other` olur; serbest mesaj, yol, token, PID ve kimlik alanları yazılmaz. Başarısızlıkta `PACKAGED_SMOKE_DIAGNOSTICS`, Linux başarısında `PACKAGED_LINUX_STARTUP_TIMING` üretilir. Renderer, runtime sürümü, tarayıcı/CDP, daemon başlatma/durdurma ve tarayıcı temizliği ölçümleri eklendi. Linux'ta asenkron duman çalıştırıcısı `/proc` ebeveyn, oturum ve başlangıç kimlikleriyle izole süreçleri izler, hata/zaman aşımında SIGTERM, ardından SIGKILL uygular; logların yazılması için kısa süre tanır. Süreç adı üzerinden genel öldürme yoktur. Log gizliliği ve PID yeniden kullanımına karşı izleme birim testleri geçti; gerçek Linux süreç ağacı testi Windows'ta atlandı, Linux CI'da çalışacak.
+
+| Kapı | Sonuç |
+| --- | --- |
+| check-version | VERSION_SYNC_OK 5.1.26, Bun 1.4.0 |
+| audit | 0 bulgu, 145 paket |
+| launcher:audit | 0 bulgu, 351 paket, mevcut 1 ignore |
+| typecheck / launcher:typecheck | Geçti / geçti |
+| bun test ./tests | 1.237 pass, 5 skip, 0 fail |
+| launcher testleri | Node 446 pass, 5 skip, 0 fail; Bun 46 pass, 0 fail |
+| launcher:build | Geçti |
+| runtime bundle / notices / smoke-release | Geçti; SHARP_RUNTIME_OK 0.35.5 8.18.7; RELOCATED_ACL_HELPER_OK; RELOCATABLE_RUNTIME_SMOKE_OK |
+| licenses | Geçti; 114 runtime paketi |
+| app:package | Geçti; 5.1.26 Windows EXE |
+| app:smoke | Geçti; iki açılış, CDP 200, runtimeVerified / runtimeStartupVerified / pcServiceStarted true; 454 örnek, sıfır odak değişimi |
+| gizli sekme dumanı | BROWSER_SMOKE_OK, 95 örnek, sıfır odak değişimi |
+| git diff --check | Geçti |
+
+Paket `launcher/artifacts/feno-bridge-5.1.26-win-x64.exe` (163.003.488 bayt); SHA-256 `a751f50c66da34ed6d09ccd1c5227b1b1670f74fcf97b4d6fdecef36983a5ec8`, `.sha256` yeniden hesaplamayla eşleşti. Windows helper `bef733e68726aa1fe68c8808de556b6321ace2c124cb618bbcb64b08b0fc5133`, native host `a5841a8300c19ee2d96fc6c6accea640f3c5adbd58d3331e6ce4687afdd68b53` paket dumanında eşleşti. İkinci açılış kaynak ve kurulum 0,776 s, arka plan hash 3,545 s. Defender 40 → 40; DEV kalıcı izin SHA-256 `5a19c30d19650dcb0250d61fc6e53836e356b3152f6300e620113913113e4bef` değişmedi.
+
+Değişen dosyalar: `launcher/electron/browser-host.cjs`, `main.cjs`, `startup-timing.cjs`, `pc-windows-helper.sha256`, `launcher/scripts/smoke-package.cjs`, yeni `package-smoke-diagnostics.cjs`, `launcher/tests/browser-host.test.cjs`, yeni `package-smoke-diagnostics.test.cjs` ve bu rapor. Windows yerel kapıları yeşil; yeni Linux ve macOS CI sonucu beklenmedi. Canlı profil/kurulum/koordinasyon/runtime ve güvenlik ayarlarına dokunulmadı; kurulum, merge, etiket ve yayın yapılmadı.

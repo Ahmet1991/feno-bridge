@@ -4032,6 +4032,13 @@ test("idle bootstrap retries transient errors within the same contents and propa
   calls=0;
   await assert.rejects(initializeBrowserWithRetry(contents,logger,{load:async()=>{calls++;throw timeout;},pause:async()=>{}}),/did not commit/);
   assert.equal(calls,3);
+  calls=0; waits.length=0;
+  const {browserInitializationAttempts}=require('../electron/startup-timing.cjs');
+  await assert.rejects(initializeBrowserWithRetry(contents,logger,{attempts:browserInitializationAttempts('linux',true),load:async()=>{calls++;throw timeout;},pause:async ms=>waits.push(ms)}),/did not commit/);
+  assert.equal(calls,1); assert.deepEqual(waits,[]);
+  assert.equal(browserInitializationAttempts('linux',false),3);
+  assert.equal(browserInitializationAttempts('win32',true),3);
+  assert.equal(browserInitializationAttempts('darwin',true),3);
   calls=0;
   await assert.rejects(initializeBrowserWithRetry(contents,logger,{load:async()=>{calls++;throw Error("renderer crashed");},pause:async()=>{}}),/renderer crashed/);
   assert.equal(calls,1);
