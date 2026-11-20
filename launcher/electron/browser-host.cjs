@@ -1,7 +1,8 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { createHash, randomBytes } = require("node:crypto");
-const { clipboard, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
+const { app, clipboard, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const {
   runBrowserHelperOperation,
@@ -65,6 +66,23 @@ const TURN_TAB_BOOTSTRAP_TIMEOUT_MS = 120_000;
 // through a normal workday so a later Codex turn can resume the same conversation. The existing
 // five-tab cap still evicts the oldest idle retained tab when capacity is needed.
 const RETAINED_TURN_TAB_TTL_MS = 12 * 60 * 60 * 1000;
+// 20.11 live: completed automatic tabs were kept for the same 12 hours and only ever left at the
+// five-tab cap or a restart (157 retained, 3 closed since 08.11). A long Codex conversation holds
+// 300-700 MB in its renderer, so the launcher reached 1.5 GB while the machine had 2.9 GB free.
+// A running Codex job asks again within minutes (long commands are polled), so an automatic tab
+// idle this long belongs to a finished job. If that job is resumed later, the next turn falls back
+// to the full prompt in a fresh tab, the same path a launcher restart already takes. Zero Risk tabs
+// keep the 12-hour window because the user drives those conversations by hand.
+const AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS = 45 * 60 * 1000;
+// Memory guard for idle automatic tabs, sampled at most once a minute.
+const RETAINED_TAB_MEMORY_SWEEP_MS = 60 * 1000;
+// Never reclaim a tab for memory before it has been idle this long, however low memory is.
+const RETAINED_TAB_MEMORY_MIN_IDLE_MS = 10 * 60 * 1000;
+// A renderer this large that has been idle this long is closed even when memory is not low.
+const RETAINED_TAB_HEAVY_BYTES = 600 * 1024 * 1024;
+const RETAINED_TAB_HEAVY_IDLE_MS = 15 * 60 * 1000;
+// Below this share of free physical memory, the longest-idle tab is closed (one per sample).
+const RETAINED_TAB_LOW_MEMORY_FREE_RATIO = 0.12;
 // A reused conversation whose page could not be acquired is kept for this many retries.
 const MAX_UNTOUCHED_RETAINED_FAILURES = 1;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
@@ -349,6 +367,37 @@ function browserOperationBlockMessage(browserHost, settingName) {
   }
   const operation = browserHost.currentOperation();
   return operation ? `Wait for ${operation} to finish before changing ${settingName}` : null;
+}
+
+/**
+ * Renderer memory per browser tab plus the share of free physical memory. A tab whose renderer
+ * process is shared with another tab reports shared=true: closing it would not free that process.
+ * Missing Electron APIs (the plain Node test harness) or a failed reading yield no numbers.
+ */
+function sampleTurnTabMemory(tabs) {
+  const metrics = typeof app?.getAppMetrics === "function" ? app.getAppMetrics() : [];
+  const bytesByPid = new Map();
+  for (const metric of metrics) {
+    const kilobytes = metric?.memory?.workingSetSize;
+    if (Number.isFinite(metric?.pid) && Number.isFinite(kilobytes)) bytesByPid.set(metric.pid, kilobytes * 1024);
+  }
+  const pidByTab = new Map();
+  const tabsByPid = new Map();
+  for (const tab of tabs) {
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed?.() || typeof contents.getOSProcessId !== "function") continue;
+    const pid = contents.getOSProcessId();
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    pidByTab.set(tab.id, pid);
+    tabsByPid.set(pid, (tabsByPid.get(pid) ?? 0) + 1);
+  }
+  const tabMemory = new Map();
+  for (const [tabId, pid] of pidByTab) {
+    const bytes = bytesByPid.get(pid);
+    if (bytes !== undefined) tabMemory.set(tabId, { bytes, shared: tabsByPid.get(pid) > 1 });
+  }
+  const total = os.totalmem();
+  return { tabMemory, freeRatio: total > 0 ? os.freemem() / total : null };
 }
 
 class BrowserHost {
@@ -1398,6 +1447,9 @@ class BrowserHost {
   }
 
   refreshTurnLeases(reason, now = Date.now()) {
+    // The idle clock of retained automatic tabs restarts at a wake-up too: the Codex job that owns
+    // a tab was suspended with the machine and needs a moment to send its next request.
+    this.lastLeaseRefreshAt = now;
     const refreshed = refreshTurnLeasesAfterSuspension(
       [...this.turnTabs.values()],
       now,
@@ -1455,8 +1507,13 @@ class BrowserHost {
         continue;
       }
       if (tab.status === "ready") {
-        if (now - (tab.lastHeartbeatAt ?? 0) < RETAINED_TURN_TAB_TTL_MS) continue;
-        this.logger.info("browser.retained_tab_expired", { tabId: tab.id, traceId: tab.traceId });
+        const idleMs = BrowserHost.prototype.retainedTabIdleMs.call(this, tab, now);
+        if (idleMs < AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS) continue;
+        this.logger.info("browser.retained_tab_expired", {
+          tabId: tab.id,
+          traceId: tab.traceId,
+          idleMinutes: Math.round(idleMs / 60_000),
+        });
         this.removeTurnTab(tab, false);
         continue;
       }
@@ -1504,7 +1561,60 @@ class BrowserHost {
       });
       cancellations.push(tab.expiryCancellation);
     }
+    try {
+      BrowserHost.prototype.reclaimRetainedTabMemory.call(this, now);
+    } catch (error) {
+      this.logger.warn?.("browser.retained_tab_memory_check_failed", { errorType: error?.name || "Error" });
+    }
     return Promise.all(cancellations);
+  }
+
+  retainedTabIdleMs(tab, now) {
+    return now - Math.max(tab.lastHeartbeatAt ?? 0, this.lastLeaseRefreshAt ?? 0);
+  }
+
+  /**
+   * Closes idle automatic tabs that hold too much memory. Only completed (ready) automatic tabs
+   * idle for at least RETAINED_TAB_MEMORY_MIN_IDLE_MS qualify; running and Zero Risk tabs are never
+   * touched. A heavy renderer of its own is closed after RETAINED_TAB_HEAVY_IDLE_MS; when free
+   * physical memory is low, the longest-idle candidate is closed as well. Returns the closed tabs.
+   */
+  reclaimRetainedTabMemory(now = Date.now(), sample = this.tabMemorySampler ?? sampleTurnTabMemory) {
+    if (now - (this.lastTabMemorySweepAt ?? Number.NEGATIVE_INFINITY) < RETAINED_TAB_MEMORY_SWEEP_MS) return [];
+    this.lastTabMemorySweepAt = now;
+    const candidates = [...this.turnTabs.values()]
+      .filter(tab => tab.interactionMode !== "manual" && tab.status === "ready")
+      .map(tab => ({ tab, idleMs: BrowserHost.prototype.retainedTabIdleMs.call(this, tab, now) }))
+      .filter(candidate => candidate.idleMs >= RETAINED_TAB_MEMORY_MIN_IDLE_MS)
+      .sort((left, right) => right.idleMs - left.idleMs);
+    if (candidates.length === 0) return [];
+    const { tabMemory, freeRatio } = sample([...this.turnTabs.values()]);
+    const closed = [];
+    const close = (candidate, reason) => {
+      const memory = tabMemory.get(candidate.tab.id);
+      this.logger.info("browser.retained_tab_memory_reclaimed", {
+        tabId: candidate.tab.id,
+        traceId: candidate.tab.traceId,
+        reason,
+        idleMinutes: Math.round(candidate.idleMs / 60_000),
+        rendererMb: memory ? Math.round(memory.bytes / (1024 * 1024)) : null,
+        freePercent: freeRatio === null ? null : Math.round(freeRatio * 100),
+      });
+      this.removeTurnTab(candidate.tab, false);
+      closed.push(candidate.tab);
+    };
+    for (const candidate of candidates) {
+      const memory = tabMemory.get(candidate.tab.id);
+      if (!memory || memory.shared) continue;
+      if (candidate.idleMs >= RETAINED_TAB_HEAVY_IDLE_MS && memory.bytes >= RETAINED_TAB_HEAVY_BYTES) {
+        close(candidate, "heavy_renderer");
+      }
+    }
+    if (freeRatio !== null && freeRatio < RETAINED_TAB_LOW_MEMORY_FREE_RATIO) {
+      const longestIdle = candidates.find(candidate => this.turnTabs.has(candidate.tab.id));
+      if (longestIdle) close(longestIdle, "low_system_memory");
+    }
+    return closed;
   }
 
   setBounds(bounds, rendererZoomFactor = 1) {
@@ -3380,6 +3490,14 @@ module.exports = {
   HEAVY_PHASE_WAIT_TIMEOUT_MS,
   IDLE_BROWSER_URL,
   MAX_BROWSER_TABS,
+  AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS,
+  RETAINED_TAB_HEAVY_BYTES,
+  RETAINED_TAB_HEAVY_IDLE_MS,
+  RETAINED_TAB_LOW_MEMORY_FREE_RATIO,
+  RETAINED_TAB_MEMORY_MIN_IDLE_MS,
+  RETAINED_TAB_MEMORY_SWEEP_MS,
+  RETAINED_TURN_TAB_TTL_MS,
+  sampleTurnTabMemory,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,

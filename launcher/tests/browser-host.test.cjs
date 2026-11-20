@@ -19,6 +19,14 @@ const {
   HEAVY_PHASE_WAIT_TIMEOUT_MS,
   IDLE_BROWSER_URL,
   MAX_BROWSER_TABS,
+  AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS,
+  RETAINED_TAB_HEAVY_BYTES,
+  RETAINED_TAB_HEAVY_IDLE_MS,
+  RETAINED_TAB_LOW_MEMORY_FREE_RATIO,
+  RETAINED_TAB_MEMORY_MIN_IDLE_MS,
+  RETAINED_TAB_MEMORY_SWEEP_MS,
+  RETAINED_TURN_TAB_TTL_MS,
+  sampleTurnTabMemory,
   isChatGptCloudflareChallengeResponse,
   isTemporaryChatUrl,
   loadCommittedBrowserSurface,
@@ -2819,31 +2827,140 @@ test("a completed keyed turn is retained for twelve hours and preserves its ackn
   assert.deepEqual(throttling, [true]);
 
   const retainedAt = tab.lastHeartbeatAt;
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, retainedAt + (12 * 60 * 60 * 1000) - 1);
+  fixture.tabMemorySampler = () => ({ tabMemory: new Map(), freeRatio: 0.5 });
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, retainedAt + AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS - 1);
   assert.equal(fixture.turnTabs.has(tab.id), true);
 });
 
-test("a retained browser tab expires after twelve hours", () => {
+function retainedTabFixture(tabs, sampler = () => ({ tabMemory: new Map(), freeRatio: 0.5 })) {
   const removed = [];
-  const tab = {
-    id: "tab-expired",
-    traceId: "trace_expired",
-    status: "ready",
-    lastHeartbeatAt: 100,
-  };
+  const logged = [];
   const fixture = {
-    turnTabs: new Map([[tab.id, tab]]),
-    logger: { info() {} },
+    turnTabs: new Map(tabs.map(tab => [tab.id, tab])),
+    logger: { info(event, detail) { logged.push([event, detail]); }, warn() {} },
+    tabMemorySampler: sampler,
     removeTurnTab(candidate, abortRunning) {
       removed.push([candidate.id, abortRunning]);
       this.turnTabs.delete(candidate.id);
     },
   };
+  return { fixture, removed, logged };
+}
 
-  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + (12 * 60 * 60 * 1000));
+test("a retained automatic tab expires after forty-five idle minutes", () => {
+  const tab = { id: "tab-expired", traceId: "trace_expired", status: "ready", lastHeartbeatAt: 100 };
+  const { fixture, removed, logged } = retainedTabFixture([tab]);
 
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS - 1);
+  assert.deepEqual(removed, []);
+
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS);
   assert.deepEqual(removed, [[tab.id, false]]);
   assert.equal(fixture.turnTabs.size, 0);
+  assert.deepEqual(logged.at(-1), ["browser.retained_tab_expired", { tabId: tab.id, traceId: tab.traceId, idleMinutes: 45 }]);
+});
+
+test("a retained Zero Risk tab still keeps its twelve-hour window", () => {
+  const tab = { id: "tab-manual", traceId: "trace_manual", status: "ready", interactionMode: "manual", lastHeartbeatAt: 100 };
+  const { fixture, removed } = retainedTabFixture([tab]);
+
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + RETAINED_TURN_TAB_TTL_MS - 1);
+  assert.deepEqual(removed, []);
+
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, 100 + RETAINED_TURN_TAB_TTL_MS);
+  assert.deepEqual(removed, [[tab.id, false]]);
+});
+
+test("a wake-up restarts the idle clock of retained automatic tabs", () => {
+  const tab = { id: "tab-asleep", traceId: "trace_asleep", status: "ready", lastHeartbeatAt: 100 };
+  const { fixture, removed } = retainedTabFixture([tab]);
+  const wokeAt = 100 + (8 * 60 * 60 * 1000);
+  BrowserHost.prototype.refreshTurnLeases.call(fixture, "system_resume", wokeAt);
+
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, wokeAt + 5_000);
+  assert.deepEqual(removed, []);
+
+  // The five-second sweep kept running after the wake-up, so the last gap is not a suspension.
+  fixture.lastTurnSweepAt = wokeAt + AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS - 5_000;
+  BrowserHost.prototype.reapExpiredTurnTabs.call(fixture, wokeAt + AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS);
+  assert.deepEqual(removed, [[tab.id, false]]);
+});
+
+test("an idle heavy renderer is reclaimed but a recently used or shared one is kept", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const heavy = RETAINED_TAB_HEAVY_BYTES;
+  const tabs = [
+    { id: "heavy-idle", traceId: "t1", status: "ready", lastHeartbeatAt: now - RETAINED_TAB_HEAVY_IDLE_MS },
+    { id: "heavy-recent", traceId: "t2", status: "ready", lastHeartbeatAt: now - RETAINED_TAB_HEAVY_IDLE_MS + 1 },
+    { id: "heavy-shared", traceId: "t3", status: "ready", lastHeartbeatAt: now - RETAINED_TAB_HEAVY_IDLE_MS },
+    { id: "light-idle", traceId: "t4", status: "ready", lastHeartbeatAt: now - RETAINED_TAB_HEAVY_IDLE_MS },
+    { id: "heavy-running", traceId: "t5", status: "running", lastHeartbeatAt: now - RETAINED_TAB_HEAVY_IDLE_MS },
+    { id: "heavy-manual", traceId: "t6", status: "ready", interactionMode: "manual", lastHeartbeatAt: now - RETAINED_TAB_HEAVY_IDLE_MS },
+  ];
+  const { fixture, logged } = retainedTabFixture(tabs, () => ({
+    tabMemory: new Map([
+      ["heavy-idle", { bytes: heavy, shared: false }],
+      ["heavy-recent", { bytes: heavy * 2, shared: false }],
+      ["heavy-shared", { bytes: heavy * 2, shared: true }],
+      ["light-idle", { bytes: heavy - 1, shared: false }],
+      ["heavy-running", { bytes: heavy * 2, shared: false }],
+      ["heavy-manual", { bytes: heavy * 2, shared: false }],
+    ]),
+    freeRatio: 0.5,
+  }));
+
+  const closed = BrowserHost.prototype.reclaimRetainedTabMemory.call(fixture, now);
+
+  assert.deepEqual(closed.map(tab => tab.id), ["heavy-idle"]);
+  assert.deepEqual([...fixture.turnTabs.keys()], ["heavy-recent", "heavy-shared", "light-idle", "heavy-running", "heavy-manual"]);
+  assert.deepEqual(logged.at(-1), ["browser.retained_tab_memory_reclaimed", {
+    tabId: "heavy-idle", traceId: "t1", reason: "heavy_renderer", idleMinutes: 15, rendererMb: 600, freePercent: 50,
+  }]);
+});
+
+test("low system memory reclaims the longest-idle automatic tab once per sample", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const tabs = [
+    { id: "idle-11", traceId: "t1", status: "ready", lastHeartbeatAt: now - (11 * 60 * 1000) },
+    { id: "idle-30", traceId: "t2", status: "ready", lastHeartbeatAt: now - (30 * 60 * 1000) },
+    { id: "idle-5", traceId: "t3", status: "ready", lastHeartbeatAt: now - (5 * 60 * 1000) },
+  ];
+  let samples = 0;
+  const { fixture } = retainedTabFixture(tabs, () => {
+    samples += 1;
+    return { tabMemory: new Map(), freeRatio: RETAINED_TAB_LOW_MEMORY_FREE_RATIO - 0.01 };
+  });
+
+  assert.deepEqual(BrowserHost.prototype.reclaimRetainedTabMemory.call(fixture, now).map(tab => tab.id), ["idle-30"]);
+  assert.deepEqual(BrowserHost.prototype.reclaimRetainedTabMemory.call(fixture, now + RETAINED_TAB_MEMORY_SWEEP_MS - 1), []);
+  assert.equal(samples, 1);
+  assert.deepEqual(
+    BrowserHost.prototype.reclaimRetainedTabMemory.call(fixture, now + RETAINED_TAB_MEMORY_SWEEP_MS).map(tab => tab.id),
+    ["idle-11"],
+  );
+  assert.equal(samples, 2);
+  assert.deepEqual([...fixture.turnTabs.keys()], ["idle-5"]);
+});
+
+test("the memory guard never samples or closes tabs idle under ten minutes", () => {
+  const now = 10 * 60 * 60 * 1000;
+  const tab = { id: "fresh", traceId: "t1", status: "ready", lastHeartbeatAt: now - RETAINED_TAB_MEMORY_MIN_IDLE_MS + 1 };
+  let samples = 0;
+  const { fixture } = retainedTabFixture([tab], () => {
+    samples += 1;
+    return { tabMemory: new Map([["fresh", { bytes: RETAINED_TAB_HEAVY_BYTES * 3, shared: false }]]), freeRatio: 0.01 };
+  });
+
+  assert.deepEqual(BrowserHost.prototype.reclaimRetainedTabMemory.call(fixture, now), []);
+  assert.equal(samples, 0);
+  assert.equal(fixture.turnTabs.has("fresh"), true);
+});
+
+test("tab memory sampling without Electron metrics reports no renderer sizes", () => {
+  const sample = sampleTurnTabMemory([{ id: "tab", view: { webContents: { isDestroyed: () => false, getOSProcessId: () => 1234 } } }]);
+  assert.equal(sample.tabMemory.size, 0);
+  assert.equal(typeof sample.freeRatio, "number");
+  assert.ok(sample.freeRatio > 0 && sample.freeRatio <= 1);
 });
 
 test("a completed connector turn without binding is released instead of retained", async () => {
