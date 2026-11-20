@@ -1,6 +1,7 @@
 // Executed in Chrome's isolated world. No page-supplied code is evaluated.
 export function pageOperation(action, args = {}) {
-  const state = globalThis.__fenoPc2State ||= { id: crypto.randomUUID(), refs: new Map(), seq: 0 };
+  // HTTP device interfaces lack randomUUID; getRandomValues also works there.
+  const state = globalThis.__fenoPc2State ||= { id: Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,'0')).join(''), refs: new Map(), seq: 0 };
   const sensitive = e => !!e && (e.type === 'password' || (e.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).some(s => /^(cc-number|cc-csc|cc-exp|cc-exp-month|cc-exp-year|cc-name|current-password|new-password)$/.test(s)));
   function deep(point) {
     let e = point ? document.elementFromPoint(point.x, point.y) : document.activeElement;
