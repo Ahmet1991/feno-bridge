@@ -29,9 +29,24 @@ function conversationIdFromUrl(raw) {
   return match && CONVERSATION_ID.test(match[1]) ? match[1] : null;
 }
 
-/** A new-chat document (saved or temporary), before ChatGPT assigns the conversation an address. */
+// ChatGPT gives a new chat a provisional address until the server assigns its id. On 21.11 every
+// Feno tab went from / to /c/local-chatgpt:<uuid> and about a second later to /c/<uuid>, so a check
+// for a direct / -> /c/<uuid> step recorded nothing and 5.1.30 deleted none of its chats.
+const PROVISIONAL_CONVERSATION_PATH = /^\/c\/[a-z][a-z0-9-]*:[^/]+$/i;
+
+/**
+ * A new-chat document (saved or temporary), or the provisional address ChatGPT shows for it
+ * before the conversation has its own id. Nobody opens a provisional address from outside.
+ */
 function isNewChatUrl(raw) {
-  return chatGptUrl(raw)?.pathname === "/";
+  const url = chatGptUrl(raw);
+  if (!url) return false;
+  if (url.pathname === "/") return true;
+  try {
+    return PROVISIONAL_CONVERSATION_PATH.test(decodeURIComponent(url.pathname));
+  } catch {
+    return false;
+  }
 }
 
 /**
