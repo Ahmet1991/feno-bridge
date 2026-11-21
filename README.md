@@ -161,6 +161,8 @@ Read the complete [architecture](docs/architecture.md) and
 
 Temporary Chat is a [ChatGPT privacy mode](https://help.openai.com/en/articles/8914046-temporary-chat-faq); prompts are still processed by OpenAI.
 
+Feno opens a saved ChatGPT chat for each Codex task and permanently deletes the chats it created once their tab closes. Chats you open yourself are never touched.
+
 Validation coverage: [release validation](docs/release-validation.md).
 
 This is independent software and is not affiliated with or endorsed by OpenAI. Use it only with

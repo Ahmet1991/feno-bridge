@@ -5,6 +5,11 @@ const { createHash, randomBytes } = require("node:crypto");
 const { app, clipboard, WebContentsView, powerMonitor, powerSaveBlocker, shell } = require("electron");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const {
+  conversationIdFromUrl,
+  createConversationCleanup,
+  isNewChatUrl,
+} = require("./conversation-cleanup.cjs");
+const {
   runBrowserHelperOperation,
   verifyConnectorWithBrowserHelper,
 } = require("./browser-helper-verifier.cjs");
@@ -83,6 +88,10 @@ const RETAINED_TAB_HEAVY_BYTES = 600 * 1024 * 1024;
 const RETAINED_TAB_HEAVY_IDLE_MS = 15 * 60 * 1000;
 // Below this share of free physical memory, the longest-idle tab is closed (one per sample).
 const RETAINED_TAB_LOW_MEMORY_FREE_RATIO = 0.12;
+// Feno's own finished chats are deleted shortly after their tab closes; failures retry on the
+// regular sweep (also after a restart, from the list kept next to the browser descriptor).
+const OWNED_CONVERSATION_SWEEP_DELAY_MS = 5_000;
+const OWNED_CONVERSATION_SWEEP_MS = 5 * 60 * 1000;
 // A reused conversation whose page could not be acquired is kept for this many retries.
 const MAX_UNTOUCHED_RETAINED_FAILURES = 1;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
@@ -418,6 +427,7 @@ class BrowserHost {
     clipboardApi = clipboard,
     getBrowserInteractionMode = () => "automatic",
     initializationAttempts = 3,
+    conversationCleanup,
   }) {
     if (typeof getConnectorName !== "function") {
       throw new Error("Browser host connector-name resolver is unavailable");
@@ -454,6 +464,15 @@ class BrowserHost {
     this.visible = false;
     this.surfaceActive = true;
     this.turnTabs = new Map();
+    this.conversationCleanup = conversationCleanup !== undefined
+      ? conversationCleanup
+      : typeof descriptorPath === "string"
+        ? createConversationCleanup({
+          file: path.join(path.dirname(descriptorPath), "owned-conversations.json"),
+          logger,
+          writeFileAtomic: writePrivateFileAtomic,
+        })
+        : null;
     this.automaticTurnHandoffs = new Map();
     this.heavyPhase = { holder: null, queue: [] };
     this.closedTurnOwners = new Map();
@@ -891,6 +910,7 @@ class BrowserHost {
     contents.on("will-redirect", blockAuthenticationNavigation);
     contents.on("did-start-navigation", (_event, url, inPlace, mainFrame) => {
       if (!mainFrame) return;
+      BrowserHost.prototype.recordOwnedConversation.call(this, tab, tab.url, url);
       tab.url = url;
       tab.loading = true;
       if (!inPlace) {
@@ -1566,6 +1586,7 @@ class BrowserHost {
     } catch (error) {
       this.logger.warn?.("browser.retained_tab_memory_check_failed", { errorType: error?.name || "Error" });
     }
+    void BrowserHost.prototype.sweepOwnedConversations.call(this, now);
     return Promise.all(cancellations);
   }
 
@@ -1792,6 +1813,7 @@ class BrowserHost {
     }
     try { this.window.contentView.removeChildView(tab.view); } catch {}
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+    if (tab.ownedConversationIds?.size) BrowserHost.prototype.scheduleOwnedConversationSweep.call(this);
     if (this.selectedTabId === tab.id) {
       this.selectedTabId = [...this.turnTabs.keys()].at(-1) || "home";
       const homeContents = this.view?.webContents;
@@ -1808,6 +1830,57 @@ class BrowserHost {
     this.syncViewVisibility();
     this.publishState?.(this.snapshot());
     this.writeDescriptor();
+  }
+
+  /**
+   * Remembers the chat a running automatic turn created: the tab moved from a new chat to /c/<id>.
+   * A chat the user opens in the tab (from /c/<a> to /c/<b>), a ready tab and Zero Risk tabs are
+   * never recorded, so only Feno's own chats can be deleted.
+   */
+  recordOwnedConversation(tab, previousUrl, nextUrl) {
+    if (tab.interactionMode !== "automatic" || tab.status !== "running") return false;
+    const id = conversationIdFromUrl(nextUrl);
+    if (!id || !isNewChatUrl(previousUrl)) return false;
+    if (!tab.ownedConversationIds) tab.ownedConversationIds = new Set();
+    if (tab.ownedConversationIds.has(id)) return false;
+    tab.ownedConversationIds.add(id);
+    this.conversationCleanup?.record(id);
+    this.logger?.info?.("browser.owned_conversation_recorded", { tabId: tab.id, traceId: tab.traceId });
+    return true;
+  }
+
+  /** A signed-in chatgpt.com page to send deletions from: the home view, else an idle tab. */
+  ownedConversationCleanupPage() {
+    const pages = [
+      this.view?.webContents,
+      ...[...this.turnTabs.values()].filter(tab => tab.status === "ready").map(tab => tab.view?.webContents),
+    ];
+    return pages.find(contents => contents
+      && typeof contents.getURL === "function"
+      && !contents.isDestroyed?.()
+      && navigationOriginForLog(contents.getURL()) === CHATGPT_ORIGIN) ?? null;
+  }
+
+  sweepOwnedConversations(now = Date.now(), force = false) {
+    const cleanup = this.conversationCleanup;
+    if (!cleanup || cleanup.pendingIds().length === 0) return null;
+    if (!force && now - (this.lastOwnedConversationSweepAt ?? 0) < OWNED_CONVERSATION_SWEEP_MS) return null;
+    this.lastOwnedConversationSweepAt = now;
+    const page = BrowserHost.prototype.ownedConversationCleanupPage.call(this);
+    const ownedByOpenTab = id => [...this.turnTabs.values()].some(tab => tab.ownedConversationIds?.has(id));
+    return cleanup.sweep(page, ownedByOpenTab).catch(error => {
+      this.logger?.warn?.("browser.owned_conversations_sweep_failed", { errorType: error?.name || "Error" });
+      return null;
+    });
+  }
+
+  scheduleOwnedConversationSweep() {
+    if (!this.conversationCleanup || this.ownedConversationSweepTimer) return;
+    this.ownedConversationSweepTimer = setTimeout(() => {
+      this.ownedConversationSweepTimer = null;
+      void BrowserHost.prototype.sweepOwnedConversations.call(this, Date.now(), true);
+    }, OWNED_CONVERSATION_SWEEP_DELAY_MS);
+    this.ownedConversationSweepTimer.unref?.();
   }
 
   rememberUserCancelledTurn(traceId, helperPid) {

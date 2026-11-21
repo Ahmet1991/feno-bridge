@@ -158,6 +158,8 @@ Full モードを有効にする前に、完全な[アーキテクチャ](docs/a
 
 一時チャットは [ChatGPT のプライバシーモード](https://help.openai.com/en/articles/8914046-temporary-chat-faq)です。プロンプトは引き続き OpenAI によって処理されます。
 
+Feno は Codex タスクごとに保存済みの ChatGPT チャットを開き、そのタブが閉じると自分が作成したチャットを完全に削除します。ご自身で開いたチャットには触れません。
+
 検証範囲：[リリース検証](docs/release-validation.md)。
 
 これは独立したソフトウェアであり、OpenAI との提携や OpenAI による推奨を受けたものではありません。

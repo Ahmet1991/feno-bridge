@@ -156,6 +156,8 @@ codex-chatgpt-web subagents native
 
 临时聊天是 [ChatGPT 隐私模式](https://help.openai.com/en/articles/8914046-temporary-chat-faq)，提示词仍由 OpenAI 处理。
 
+Feno 会为每个 Codex 任务打开一个已保存的 ChatGPT 对话，并在其标签页关闭后永久删除它创建的对话。您自己打开的对话不会受到影响。
+
 验证范围：[发布验证](docs/release-validation.md)。
 
 本项目是独立软件，与 OpenAI 无关联，也未获得 OpenAI 背书。请仅使用自己的账户，并遵守适用的

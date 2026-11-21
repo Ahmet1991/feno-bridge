@@ -155,6 +155,8 @@ Full 모드를 활성화하기 전에 전체 [아키텍처](docs/architecture.md
 
 Temporary Chat은 [ChatGPT의 개인정보 보호 모드](https://help.openai.com/en/articles/8914046-temporary-chat-faq)이며, 프롬프트는 여전히 OpenAI에서 처리됩니다.
 
+Feno는 Codex 작업마다 저장된 ChatGPT 채팅을 열고, 해당 탭이 닫히면 자신이 만든 채팅을 영구 삭제합니다. 사용자가 직접 연 채팅은 건드리지 않습니다.
+
 검증 범위: [release validation](docs/release-validation.md).
 
 이 프로젝트는 OpenAI와 제휴하거나 OpenAI의 보증을 받은 소프트웨어가 아닌 독립적인 소프트웨어입니다.
