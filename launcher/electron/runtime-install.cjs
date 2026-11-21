@@ -6,6 +6,9 @@ const { runtimeBundlePaths } = require("./runtime-command.cjs");
 
 const DEFAULT_SOURCE_WAIT_TIMEOUT_MS = 30_000;
 const DEFAULT_SOURCE_WAIT_INTERVAL_MS = 50;
+// The packaged runtime was still being written (typically: Windows installer running) when the
+// launcher started. The launcher treats this failure as transient; see main.cjs.
+const RUNTIME_SOURCE_NOT_READY = "RUNTIME_SOURCE_NOT_READY";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 function comparePaths(left, right) {
@@ -377,7 +380,9 @@ async function waitForPackagedRuntimeSource({
     await new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, remaining)));
   }
   const detail = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(`Packaged runtime did not fully materialize within ${timeoutMs}ms: ${detail}`);
+  const error = new Error(`Packaged runtime did not fully materialize within ${timeoutMs}ms: ${detail}`);
+  error.code = RUNTIME_SOURCE_NOT_READY;
+  throw error;
 }
 
 function ensurePackagedRuntime({ app, coreHome, resourcesPath, sourceBundle: previouslyInspected }) {
@@ -558,6 +563,7 @@ module.exports = {
   createRuntimeReceipt,
   metadataMatches,
   pruneRuntimeVersions,
+  RUNTIME_SOURCE_NOT_READY,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 };

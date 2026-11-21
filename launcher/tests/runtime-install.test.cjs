@@ -11,6 +11,7 @@ const {
   inspectRuntimeMetadata,
   inspectRuntimeSource,
   pruneRuntimeVersions,
+  RUNTIME_SOURCE_NOT_READY,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 } = require("../electron/runtime-install.cjs");
@@ -304,7 +305,8 @@ test("packaged runtime source wait fails closed when materialization exceeds its
         timeoutMs: 30,
         intervalMs: 5,
       }),
-      /did not fully materialize within 30ms.*Runtime bundle file is missing/,
+      error => /did not fully materialize within 30ms.*Runtime bundle file is missing/.test(error.message)
+        && error.code === RUNTIME_SOURCE_NOT_READY,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -320,7 +322,7 @@ test("150 source inspections report waiting only once",async()=>{
   const done=reporter.begin("runtime_source");
   const bundle={runtimeRoot:"fixture"};
   assert.equal(await waitForPackagedRuntimeSource({
-    app:{isPackaged:true,getVersion:()=>"5.1.30"},resourcesPath:".",
+    app:{isPackaged:true,getVersion:()=>"5.1.31"},resourcesPath:".",
     timeoutMs:10000,intervalMs:1,returnBundle:true,
     inspect:async()=>{if(++attempts<150)throw Error("not ready");return bundle;},
     onWait:ms=>reporter.wait("runtime_source","source_materializing",ms),

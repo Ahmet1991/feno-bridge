@@ -66,6 +66,7 @@ const {
   inspectRuntimeMetadata,
   inspectRuntimeSource,
   pruneRuntimeVersions,
+  RUNTIME_SOURCE_NOT_READY,
   waitForPackagedRuntimeSource,
 } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
@@ -139,6 +140,7 @@ let mainWindow = null;
 let mainWindowReadyToShow = false;
 let mainWindowShowRequested = false;
 let startupFailed = false;
+let startupFailureTransient = false;
 let browserHost = null;
 let runtimeHost = null;
 // Renderer actions can arrive as soon as loadRenderer starts, before startup has acquired any
@@ -491,6 +493,30 @@ function showMainWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+function relaunchAfterFailedStart() {
+  // Internal child commands use the resolved profile. A fresh launcher must instead
+  // resolve the original launch environment, especially for the isolated DEV profile.
+  for (const [key, value] of Object.entries(launchEnvironment)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  app.relaunch({ args: process.argv.slice(1).filter(argument => argument !== "--hidden") });
+}
+
+function handleSecondInstance() {
+  // A launcher opened while the Windows installer was still writing the update fails with the
+  // runtime not ready, then waits on its error dialog holding the single-instance lock. The
+  // updater's own launch lands here once the install is complete; showing the stale error would
+  // swallow it (21.11: v5.1.30 "did not become functionally ready", Feno stayed down). That
+  // failure is transient, so a new launch retries it. Other failures keep their error window.
+  if (startupFailed && startupFailureTransient) {
+    relaunchAfterFailedStart();
+    app.exit(1);
+    return;
+  }
+  showMainWindow();
 }
 
 async function openWebUrl(url) {
@@ -1225,7 +1251,7 @@ async function start() {
     app.quit();
     return;
   }
-  app.on("second-instance", () => showMainWindow());
+  app.on("second-instance", () => handleSecondInstance());
   app.on("activate", () => showMainWindow());
 
   const portDone=bootReporter.begin('debug_port');
@@ -1828,6 +1854,7 @@ async function start() {
 
 void start().catch(async (error) => {
   startupFailed = true;
+  startupFailureTransient = error?.code === RUNTIME_SOURCE_NOT_READY;
   pcStartupRetry?.stop();
   try { pcService?.suspend(); } catch {}
   const message = error instanceof Error ? error.message : String(error);
@@ -1861,15 +1888,7 @@ void start().catch(async (error) => {
     const result = mainWindow && !mainWindow.isDestroyed()
       ? await dialog.showMessageBox(mainWindow, options)
       : await dialog.showMessageBox(options);
-    if (result.response === 0) {
-      // Internal child commands use the resolved profile. A fresh launcher must instead
-      // resolve the original launch environment, especially for the isolated DEV profile.
-      for (const [key, value] of Object.entries(launchEnvironment)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
-      app.relaunch({ args: process.argv.slice(1).filter(argument => argument !== "--hidden") });
-    }
+    if (result.response === 0) relaunchAfterFailedStart();
   } finally {
     // A failed dialog or relaunch must not leave a headless single-instance owner behind.
     app.exit(1);
