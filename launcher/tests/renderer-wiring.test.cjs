@@ -107,7 +107,7 @@ test("a foreground launch request survives hidden startup until the launcher win
     /mainWindowReadyToShow = true;[\s\S]*?if \(mainWindowShowRequested\) showMainWindow\(\);/,
   );
 
-  const secondInstance = electronMain.indexOf('app.on("second-instance", () => showMainWindow())');
+  const secondInstance = electronMain.indexOf('app.on("second-instance", () => handleSecondInstance())');
   const runtimeMaterialization = electronMain.indexOf("await waitForPackagedRuntimeSource", secondInstance);
   assert.ok(secondInstance >= 0, "the second-instance foreground request must be registered");
   assert.ok(
@@ -166,25 +166,28 @@ test("setup preserves session-check failures and never installs without verified
   }
 });
 
-test("startup failure stays visible on another launch and Retry exits the failed instance", async () => {
+// Runs the launcher's failed-start path (showMainWindow, the second-instance handler, and the
+// start().catch handler) in a sandbox whose start() throws `startError`.
+function failedStartSandbox(startError) {
   const vm = require("node:vm");
   const source = electronMain.slice(electronMain.indexOf("function showMainWindow()"), electronMain.indexOf("async function openWebUrl"))
     + electronMain.slice(electronMain.indexOf("void start().catch("));
   const events = [];
-  let visible = false;
+  const shown = { visible: false };
   let answer;
   const dialogOpened = new Promise(resolve => {
     answer = { opened: resolve };
   });
   const window = { isDestroyed: () => false, isMinimized: () => false,
-    show: () => { visible = true; }, focus() {}, };
+    show: () => { shown.visible = true; }, focus() {}, };
   const sandbox = {
     mainWindow: window, mainWindowReadyToShow: false, mainWindowShowRequested: false,
-    startupFailed: false, quitting: false,
+    startupFailed: false, startupFailureTransient: false, quitting: false,
+    RUNTIME_SOURCE_NOT_READY: "RUNTIME_SOURCE_NOT_READY",
     pcStartupRetry: { stop() {} },
     browserHost: { destroy: () => events.push("destroy") },
     browserControl: { close: async () => events.push("control closed") },
-    start: async () => { throw new Error("Browser idle document did not commit within 10000ms"); },
+    start: async () => { throw startError; },
     app: { getPath: () => "/unused", whenReady: async () => {},
       relaunch: options => events.push(["relaunch", options.args]), exit: code => events.push(["exit", code]) },
     fs: { appendFileSync() {} }, path,
@@ -208,19 +211,43 @@ test("startup failure stays visible on another launch and Retry exits the failed
   };
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox);
-  await dialogOpened;
-  assert.equal(visible, true, "the failed startup must expose its error owner without renderer readiness");
-  assert.deepEqual(events.slice(0, 2), ["destroy", "control closed"]);
-  visible = false;
-  sandbox.showMainWindow();
-  assert.equal(visible, true, "a second launch must restore the existing startup error window");
-  assert.equal(events.some(event => Array.isArray(event) && event[0] === "exit"), false);
-  answer.resolve({ response: 0 });
+  return { sandbox, events, shown, dialogOpened, answer: response => answer.resolve({ response }) };
+}
+
+test("startup failure stays visible on another launch and Retry exits the failed instance", async () => {
+  const run = failedStartSandbox(new Error("Browser idle document did not commit within 10000ms"));
+  await run.dialogOpened;
+  assert.equal(run.shown.visible, true, "the failed startup must expose its error owner without renderer readiness");
+  assert.deepEqual(run.events.slice(0, 2), ["destroy", "control closed"]);
+  run.shown.visible = false;
+  run.sandbox.handleSecondInstance();
+  assert.equal(run.shown.visible, true, "a second launch must restore the existing startup error window");
+  assert.equal(run.events.some(event => Array.isArray(event) && event[0] === "exit"), false);
+  run.answer(0);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(events.at(-2)[0], "relaunch");
-  assert.deepEqual(Array.from(events.at(-2)[1]), []);
-  assert.deepEqual(events.at(-1), ["exit", 1]);
-  assert.deepEqual(sandbox.process.env, { CODEX_HOME: "original-codex-home" });
+  assert.equal(run.events.at(-2)[0], "relaunch");
+  assert.deepEqual(Array.from(run.events.at(-2)[1]), []);
+  assert.deepEqual(run.events.at(-1), ["exit", 1]);
+  assert.deepEqual(run.sandbox.process.env, { CODEX_HOME: "original-codex-home" });
+});
+
+test("a launch while the failed start waits on an unfinished install replaces the failed instance (21.11)", async () => {
+  // The user opened Feno while the v5.1.30 installer was still writing files; the updater's own
+  // launch afterwards was swallowed by the failed instance's single-instance lock.
+  const notReady = Object.assign(
+    new Error("Packaged runtime did not fully materialize within 30000ms: Runtime bundle file is missing: bun.exe"),
+    { code: "RUNTIME_SOURCE_NOT_READY" },
+  );
+  const run = failedStartSandbox(notReady);
+  await run.dialogOpened;
+  assert.equal(run.sandbox.startupFailureTransient, true);
+  assert.equal(run.events.some(event => Array.isArray(event) && event[0] === "exit"), false,
+    "without another launch the failed instance keeps its error dialog");
+  run.sandbox.handleSecondInstance();
+  assert.equal(run.events.at(-2)[0], "relaunch");
+  assert.deepEqual(Array.from(run.events.at(-2)[1]), [], "the relaunch must open the window, not start hidden");
+  assert.deepEqual(run.events.at(-1), ["exit", 1]);
+  assert.deepEqual(run.sandbox.process.env, { CODEX_HOME: "original-codex-home" });
 });
 
 test("CDP switches precede ready while packaged runtime verification precedes launcher browser surfaces", () => {
