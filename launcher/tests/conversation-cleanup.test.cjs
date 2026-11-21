@@ -43,6 +43,14 @@ test("only a new chat moving to its own /c/<uuid> address names a Feno conversat
   assert.equal(isNewChatUrl("https://chatgpt.com/?temporary-chat=true"), true);
   assert.equal(isNewChatUrl(`https://chatgpt.com/c/${id(1)}`), false);
   assert.equal(isNewChatUrl("data:text/html,idle"), false);
+  // 21.11: the provisional address ChatGPT shows before the server assigns the chat's id.
+  assert.equal(isNewChatUrl(`https://chatgpt.com/c/local-chatgpt%3A${id(2)}`), true);
+  assert.equal(isNewChatUrl(`https://chatgpt.com/c/local-chatgpt:${id(2)}`), true);
+  assert.equal(conversationIdFromUrl(`https://chatgpt.com/c/local-chatgpt%3A${id(2)}`), null);
+  for (const url of ["https://chatgpt.com/c/not-a-uuid", `https://chatgpt.com/c/local-chatgpt%3A${id(2)}/x`,
+    `https://evil.example/c/local-chatgpt%3A${id(2)}`, "https://chatgpt.com/c/%E0%A4%A"]) {
+    assert.equal(isNewChatUrl(url), false, url);
+  }
 });
 
 test("recorded conversations survive a restart and are deleted once no open tab owns them", async () => {
@@ -138,6 +146,13 @@ test("browser host records only chats its running automatic tabs create and swee
   assert.equal(record({ ...tab, interactionMode: "manual" }, "https://chatgpt.com/", `https://chatgpt.com/c/${id(7)}`), false);
   assert.equal(record(tab, "https://chatgpt.com/", `https://chatgpt.com/c/${id(1)}`), false, "recorded once");
   assert.deepEqual(recorded, [id(1)]);
+  // 21.11: the address sequence a real Feno tab showed: / -> provisional -> /c/<uuid>.
+  const live = { id: "t3", status: "running", interactionMode: "automatic" };
+  const provisional = `https://chatgpt.com/c/local-chatgpt%3A${id(4)}`;
+  assert.equal(record(live, "https://chatgpt.com/", provisional), false, "the provisional address names no chat yet");
+  assert.equal(record(live, provisional, `https://chatgpt.com/c/${id(3)}`), true);
+  assert.deepEqual(recorded, [id(1), id(3)]);
+  recorded.splice(1);
 
   host.turnTabs.set(tab.id, tab);
   await BrowserHost.prototype.sweepOwnedConversations.call(host, 0, true);
