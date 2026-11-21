@@ -16,12 +16,12 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
     console.log('TOOLS_LIST_BYTES',Buffer.byteLength(JSON.stringify({tools}),'utf8'),'COUNT',tools.length);
     expect(tools.filter(t=>t.name.startsWith('pc_')).map(t=>t.name).sort()).toEqual(pcNames);
     const resources=await client.listResources();
-    expect(resources.resources.some(r=>r.uri==='ui://widget/pc-screenshot-v5.1.31.html')).toBe(true);
-    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-mcpapp-v5.1.31.html')).toBe(true);
-    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-skybridge-v5.1.31.html')).toBe(true);
+    expect(resources.resources.some(r=>r.uri==='ui://widget/pc-screenshot-v5.1.32.html')).toBe(true);
+    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-mcpapp-v5.1.32.html')).toBe(true);
+    expect(resources.resources.some(r=>r.uri==='ui://widget/probe-skybridge-v5.1.32.html')).toBe(true);
     for(const name of ['pc_capture_screen','pc_capture_full_screen','pc_adb_screencap','pc_show_image','pc_browser_screenshot','pc_browser_computer','pc_chrome_computer']){
-      expect(tools.find(t=>t.name===name)?._meta?.['openai/outputTemplate']).toBe('ui://widget/pc-screenshot-skybridge-v5.1.31.html');
-      expect(tools.find(t=>t.name===name)?._meta?.ui).toMatchObject({resourceUri:'ui://widget/pc-screenshot-v5.1.31.html'});
+      expect(tools.find(t=>t.name===name)?._meta?.['openai/outputTemplate']).toBe('ui://widget/pc-screenshot-skybridge-v5.1.32.html');
+      expect(tools.find(t=>t.name===name)?._meta?.ui).toMatchObject({resourceUri:'ui://widget/pc-screenshot-v5.1.32.html'});
     }
     const schema=(name:string)=>tools.find(t=>t.name===name)!.inputSchema;
     expect(Object.keys(schema('pc_launch_app').properties??{})).toContain('filePath');

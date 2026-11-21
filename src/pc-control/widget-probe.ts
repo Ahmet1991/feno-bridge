@@ -1,6 +1,6 @@
 /** Minimal, dependency-free cards to identify which ChatGPT iframe bridge is working. */
-export const PC_PROBE_MCP_APP_URI = 'ui://widget/probe-mcpapp-v5.1.31.html';
-export const PC_PROBE_SKYBRIDGE_URI = 'ui://widget/probe-skybridge-v5.1.31.html';
+export const PC_PROBE_MCP_APP_URI = 'ui://widget/probe-mcpapp-v5.1.32.html';
+export const PC_PROBE_SKYBRIDGE_URI = 'ui://widget/probe-skybridge-v5.1.32.html';
 
 function makeProbeHtml(mode:'mcpapp'|'skybridge') {
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -22,7 +22,7 @@ let connection=false;let nextId=1;let initId=null;let version='2026-01-26';let l
 const parent=window.parent;
 function notify(method,params){parent.postMessage({jsonrpc:'2.0',method,params},'*')}
 function send(method,params){const id=nextId++;parent.postMessage({jsonrpc:'2.0',id,method,params},'*');return id}
-function initialize(protocolVersion){return send('ui/initialize',{protocolVersion,appInfo:{name:'feno-pc-probe',version:'5.1.31'},
+function initialize(protocolVersion){return send('ui/initialize',{protocolVersion,appInfo:{name:'feno-pc-probe',version:'5.1.32'},
   appCapabilities:{availableDisplayModes:['inline']}})}
 function toolResult(result){if(result&&typeof result==='object'){
   const key=JSON.stringify(result);if(key===lastResult)return;lastResult=key;line('araç sonucu geldi');
