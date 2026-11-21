@@ -7,13 +7,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">All releases</a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">All releases</a>
 </p>
 
 <p align="center">
@@ -160,6 +160,8 @@ Read the complete [architecture](docs/architecture.md) and
 [SECURITY.md](SECURITY.md).
 
 Temporary Chat is a [ChatGPT privacy mode](https://help.openai.com/en/articles/8914046-temporary-chat-faq); prompts are still processed by OpenAI.
+
+Feno opens a saved ChatGPT chat for each Codex task and permanently deletes the chats it created once their tab closes. Chats you open yourself are never touched.
 
 Validation coverage: [release validation](docs/release-validation.md).
 

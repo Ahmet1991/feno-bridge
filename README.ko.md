@@ -5,13 +5,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">모든 릴리스</a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">모든 릴리스</a>
 </p>
 
 <p align="center">
@@ -154,6 +154,8 @@ Full 모드를 활성화하기 전에 전체 [아키텍처](docs/architecture.md
 보고해 주세요.
 
 Temporary Chat은 [ChatGPT의 개인정보 보호 모드](https://help.openai.com/en/articles/8914046-temporary-chat-faq)이며, 프롬프트는 여전히 OpenAI에서 처리됩니다.
+
+Feno는 Codex 작업마다 저장된 ChatGPT 채팅을 열고, 해당 탭이 닫히면 자신이 만든 채팅을 영구 삭제합니다. 사용자가 직접 연 채팅은 건드리지 않습니다.
 
 검증 범위: [release validation](docs/release-validation.md).
 

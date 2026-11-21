@@ -28,7 +28,7 @@ test('cached widget URIs resolve to the current resource without advertising ali
         const result=await client.readResource({uri:alias});
         expect(result).toEqual({...actual,contents:[{...actual.contents[0],uri:alias}]});
       }
-      for(const invalid of ['','5.1','5.1.29.1','9.9.9','5.1.30','0000.1.1','../5.1.23','%35.1.23','5.1.23\n']){
+      for(const invalid of ['','5.1','5.1.30.1','9.9.9','5.1.31','0000.1.1','../5.1.23','%35.1.23','5.1.23\n']){
         await expect(client.readResource({uri:uri.replace(`v${version}.html`,`v${invalid}.html`)})).rejects.toMatchObject({code:ErrorCode.InvalidParams});
       }
       for(const malformed of [uri+'?x=1',uri+'#x',uri+'\n',' '+uri,uri.replace('ui:','UI:'),uri.replace('widget','WIDGET'),uri.replace('/widget/','/widget/../'),uri.replace('/widget/','/widget/./'),uri.replace('/widget/','/widget/sub/../')]){

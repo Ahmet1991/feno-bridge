@@ -7,13 +7,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-mac-arm64.zip"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.29/feno-bridge-5.1.29-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">すべてのリリース</a>
+  <a href="https://github.com/Ahmet1991/feno-bridge/releases/download/v5.1.30/feno-bridge-5.1.30-mac-x64.zip">macOS Intel</a> · <a href="https://github.com/Ahmet1991/feno-bridge/releases/latest">すべてのリリース</a>
 </p>
 
 <p align="center">
@@ -157,6 +157,8 @@ Full モードを有効にする前に、完全な[アーキテクチャ](docs/a
 [セキュリティモデル](docs/security-model.md)をお読みください。脆弱性は [SECURITY.md](SECURITY.md) から報告してください。
 
 一時チャットは [ChatGPT のプライバシーモード](https://help.openai.com/en/articles/8914046-temporary-chat-faq)です。プロンプトは引き続き OpenAI によって処理されます。
+
+Feno は Codex タスクごとに保存済みの ChatGPT チャットを開き、そのタブが閉じると自分が作成したチャットを完全に削除します。ご自身で開いたチャットには触れません。
 
 検証範囲：[リリース検証](docs/release-validation.md)。
 
