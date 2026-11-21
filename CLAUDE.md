@@ -16,7 +16,7 @@ modelinde ver. İstisnalar: sohbet, kısa sorular ve köprünün kendi onarımı
   (Bash `run_in_background`):
 
       D=~/.feno-gorev/<kısa-ad>
-      codex exec -m chatgpt-web/high -c model_reasoning_effort=high --full-auto \
+      codex exec -m chatgpt-web/high -c model_reasoning_effort=high \
         -c 'openai_base_url="http://127.0.0.1:17841/v1"' \
         -c 'model_catalog_json="C:/Users/ahmet/.feno-gorev/feno-models.json"' \
         -C "<çalışma klasörü>" -o "$D/son.md" - < "$D/gorev.md" > "$D/log.txt" 2>&1
@@ -24,6 +24,12 @@ modelinde ver. İstisnalar: sohbet, kısa sorular ve köprünün kendi onarımı
 - Kullanıcının kendi Codex'i Feno'ya bağlı değildir (Ayarlar → "Codex'i Feno üzerinden yönlendir"
   kapalı). Köprüyü yalnız bu komut kullanır; iki `-c` satırından biri eksikse çağrı doğrudan
   OpenAI'ye gider ve `chatgpt-web/high` modelini tanımaz. Bu köprü arızası değildir.
+- Komuta sandbox ya da onay flag'i ekleme. `~/.codex/config.toml` içindeki `approval_policy = "never"`
+  ve `sandbox_mode = "danger-full-access"` geçerlidir; log başında `sandbox: danger-full-access`
+  görünür. `-s workspace-write` `.git`'i salt-okunur yapıp ağı kapatır, Codex'i yavaşlatır.
+  Codex 0.154'te `--full-auto` yoktur; verilirse komut Feno'ya ulaşmadan düşer (21.11).
+- Çalışma klasörü git deposu değilse `--skip-git-repo-check` ekle; yoksa Codex "Not inside a
+  trusted directory" deyip hemen çıkar.
 - `--dangerously-bypass-approvals-and-sandbox` kullanma. Modeli değiştirme, başka modele düşme.
   Bir flag tutmazsa `codex exec --help` ile doğrula.
 - Codex'in yaptığını kendin yeniden yapma. Sonucu `son.md` dosyasından oku; logu yalnızca hata
