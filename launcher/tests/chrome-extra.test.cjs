@@ -100,3 +100,31 @@ test('upload direct and intercepted chooser use CDP and JS exceptions/timeouts r
     jsMode='ok';assert.equal(JSON.parse((await engine.run('js',{tabId:1,code:'12'})).json),12);
   }finally{await engine.disconnect();}
 });
+test('a tab Chrome put to sleep reports pc_chrome_tab_sleeping and can still be reloaded',async()=>{
+  const {engine,chrome,tabs}=await fixture();
+  chrome.windows={getAll:async()=>[{id:1,focused:true,tabs:[...tabs.values()]}]};
+  chrome.tabs.update=async(id,o)=>Object.assign(tabs.get(id),o);
+  try{
+    for(const state of ['discarded','frozen']){
+      tabs.get(1)[state]=true;
+      const listed=(await engine.run('tabs',{})).windows[0].tabs;
+      assert.equal(listed.find(t=>t.tabId===1).sleeping,true);
+      assert.equal('sleeping' in listed.find(t=>t.tabId===2),false);
+      for(const action of ['read','find','form','js','console','network','click','type','upload'])
+        await assert.rejects(engine.run(action,{tabId:1,mode:'text',ref:'ref_1',code:'1'}),/pc_chrome_tab_sleeping/);
+      await assert.rejects(engine.run('computer',{tabId:1,action:'screenshot'}),/pc_chrome_tab_sleeping/);
+      assert.deepEqual(await engine.run('go',{tabId:1,action:'reload'}),{ok:true,domain:'example.test'});
+      assert.equal((await engine.run('navigate',{tabId:1,url:'https://example.test/next'})).ok,true);
+      delete tabs.get(1)[state];
+      assert.equal(typeof (await engine.run('read',{tabId:1})).nodes,'object');
+    }
+    // Chrome can discard the tab after the state check; the failed injection then names the cause.
+    const inject=chrome.scripting.executeScript;
+    chrome.scripting.executeScript=async()=>{tabs.get(1).discarded=true;throw Error('Cannot access contents of the page');};
+    await assert.rejects(engine.run('read',{tabId:1}),/pc_chrome_tab_sleeping/);
+    delete tabs.get(1).discarded;
+    chrome.scripting.executeScript=async()=>{throw Error('Frame with ID 0 is showing error page');};
+    await assert.rejects(engine.run('read',{tabId:1}),/pc_chrome_blocked_page/);
+    chrome.scripting.executeScript=inject;
+  }finally{await engine.disconnect();}
+});

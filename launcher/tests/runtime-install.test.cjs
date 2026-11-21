@@ -320,7 +320,7 @@ test("150 source inspections report waiting only once",async()=>{
   const done=reporter.begin("runtime_source");
   const bundle={runtimeRoot:"fixture"};
   assert.equal(await waitForPackagedRuntimeSource({
-    app:{isPackaged:true,getVersion:()=>"5.1.28"},resourcesPath:".",
+    app:{isPackaged:true,getVersion:()=>"5.1.29"},resourcesPath:".",
     timeoutMs:10000,intervalMs:1,returnBundle:true,
     inspect:async()=>{if(++attempts<150)throw Error("not ready");return bundle;},
     onWait:ms=>reporter.wait("runtime_source","source_materializing",ms),

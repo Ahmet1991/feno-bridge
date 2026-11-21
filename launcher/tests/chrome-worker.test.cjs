@@ -31,7 +31,7 @@ test('extension native worker sends hello, dispatches only host commands, reconn
     assert.deepEqual(first.sent[2],{type:'result',id:'hang',ok:false,code:'pc_chrome_timeout'});
     assert.equal(first.sent[3].id,'after');assert.equal(first.sent[3].ok,true);assert.equal(ports.length,1);
     first.onMessage.fire({type:'reload',version:'5.1.19'});assert.equal(reloads,0);
-    first.onMessage.fire({type:'reload',version:'5.1.28'});assert.equal(reloads,1);
+    first.onMessage.fire({type:'reload',version:'5.1.29'});assert.equal(reloads,1);
     first.onDisconnect.fire();alarms.fire({name:'feno-reconnect'});
     assert.equal(ports.length,2);assert.deepEqual(ports[1].sent,[{type:'hello',version:'5.1.19'}]);
   }finally{globalThis.chrome=previous;}

@@ -11,6 +11,7 @@ windowsTest('own Chrome client returns Turkish action hints and preserves access
   try{
     await expect(run()).rejects.toMatchObject({code,details:{reason:'Önce screenshot al'}});
     code='pc_chrome_disabled';await expect(run()).rejects.toMatchObject({code,details:{reason:'Feno Bridge → Ayarlar → Chrome uzantısı → Chrome erişimini aç'}});
+    code='pc_chrome_tab_sleeping';await expect(run()).rejects.toMatchObject({code,details:{reason:expect.stringContaining('pc_chrome_go')}});
     code='pc_access_denied';await expect(run()).rejects.toThrow('pc_access_denied');
   }finally{server.stop(true);}
 });

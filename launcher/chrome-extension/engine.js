@@ -3,6 +3,9 @@ import {createRecord,recordEvent,textualMime,boundedJson,consoleEntries,networkE
 const fail = (code,reason) => { throw Object.assign(new Error(code),reason?{reason}:{}); };
 const reject=reason=>fail('pc_chrome_rejected',reason);
 const warning = 'Şifre ve ödeme alanları için kullanıcı onayı gerekir.';
+// Memory Saver discards or freezes background tabs. Page scripts and the debugger cannot reach
+// them until the tab is reloaded or the user opens it, so report that instead of a blocked page.
+const asleep=t=>t?.discarded===true||t?.frozen===true;
 export function allowedUrl(raw) {
   try {
     const u = new URL(raw);
@@ -51,7 +54,12 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
     try {
       const [v]=await wait(chrome.scripting.executeScript({target:{tabId:id},func:pageOperation,args:[action,args||{}],world:'ISOLATED'}));
       check();return v?.result;
-    } catch { check();fail('pc_chrome_blocked_page'); }
+    } catch {
+      check();
+      // Chrome may discard the tab between the state check and the injection.
+      let t;try{t=await wait(chrome.tabs.get(id));}catch{check();}
+      fail(asleep(t)?'pc_chrome_tab_sleeping':'pc_chrome_blocked_page');
+    }
   }
   async function command(id,method,params={}) {
     await tab(id);
@@ -252,7 +260,7 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
     check();
     if(action==='tabs'){
       const windows=await wait(chrome.windows.getAll({populate:true,windowTypes:['normal']}));check();
-      return {windows:windows.filter(w=>!w.incognito).map(w=>({windowId:w.id,focused:w.focused,tabs:(w.tabs||[]).filter(t=>!t.incognito&&allowedUrl(t.url)).map(t=>({tabId:t.id,title:t.title||'',domain:new URL(t.url).hostname,active:t.active}))}))};
+      return {windows:windows.filter(w=>!w.incognito).map(w=>({windowId:w.id,focused:w.focused,tabs:(w.tabs||[]).filter(t=>!t.incognito&&allowedUrl(t.url)).map(t=>({tabId:t.id,title:t.title||'',domain:new URL(t.url).hostname,active:t.active,...(asleep(t)?{sleeping:true}:{})}))}))};
     }
     if(action==='open'){
       if(!allowedUrl(a.url))fail('pc_chrome_blocked_page');
@@ -278,6 +286,8 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
       if(!allowedUrl(a.url))fail('pc_chrome_blocked_page');
       invalidate(id);if(!sessions.get(id)?.recording)await detach(id);check();await chrome.tabs.update(id,{url:a.url});return {ok:true,domain:new URL(a.url).hostname};
     }
+    // Closing, history and navigation work on a sleeping tab; everything below needs its live page.
+    if(asleep(t))fail('pc_chrome_tab_sleeping');
     if(action==='read'||action==='find'){
       const result=await page(id,action,a);refs.set(id,result.documentId);delete result.documentId;
       return {...result,domain};
