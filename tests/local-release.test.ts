@@ -1,9 +1,27 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
+
+test("release bump synchronizes the Chrome manifest alongside runtime and launcher", async () => {
+  const { updateVersions } = await import("../scripts/release-windows");
+  const scratch = mkdtempSync(join(tmpdir(), "feno-version-bump-"));
+  const current = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+  const files = ["package.json", "launcher/package.json", "launcher/chrome-extension/manifest.json", "src/version.ts", "scripts/install.sh", "README.md", "README.zh-CN.md", "README.ja.md", "README.ko.md"];
+  try {
+    for (const name of files) {
+      mkdirSync(join(scratch, name, ".."), { recursive: true });
+      copyFileSync(join(ROOT, name), join(scratch, name));
+    }
+    updateVersions(current, "9.8.7", scratch);
+    for (const name of files.filter(name => name.endsWith("package.json") || name.endsWith("manifest.json"))) {
+      expect(JSON.parse(readFileSync(join(scratch, name), "utf8")).version).toBe("9.8.7");
+    }
+    expect(readFileSync(join(scratch, "src/version.ts"), "utf8")).toContain('VERSION = "9.8.7"');
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
 
 test("local Windows release chooses the next patch version", async () => {
   const { nextPatchVersion, releaseRuntimeIsMutableBuildPath, RELEASE_REPOSITORY, SOURCE_REPOSITORY } = await import("../scripts/release-windows");

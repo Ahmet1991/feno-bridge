@@ -1,8 +1,9 @@
 import sharp from 'sharp';
+import { VERSION } from '../version';
 
-export const PC_SCREENSHOT_URI = 'ui://widget/pc-screenshot-v5.1.32.html';
+export const PC_SCREENSHOT_URI = `ui://widget/pc-screenshot-v${VERSION}.html`;
 export const PC_SCREENSHOT_MIME = 'text/html;profile=mcp-app';
-export const PC_SCREENSHOT_SKYBRIDGE_URI = 'ui://widget/pc-screenshot-skybridge-v5.1.32.html';
+export const PC_SCREENSHOT_SKYBRIDGE_URI = `ui://widget/pc-screenshot-skybridge-v${VERSION}.html`;
 export const PC_SCREENSHOT_SKYBRIDGE_MIME = 'text/html+skybridge';
 const MAX_EDGE = 1280;
 const MAX_WIDGET_BYTES = 400_000;
@@ -167,7 +168,7 @@ function render(event){
   diagnostic();
 }
 const initializeId=embedded?send('ui/initialize',{
-  protocolVersion:'2026-01-26',appInfo:{name:'feno-pc-screenshot',title:'Feno Bridge Ekran Görüntüsü',version:'5.1.32'},
+  protocolVersion:'2026-01-26',appInfo:{name:'feno-pc-screenshot',title:'Feno Bridge Ekran Görüntüsü',version:'${VERSION}'},
   appCapabilities:{availableDisplayModes:['inline','fullscreen']}}):null;
 window.addEventListener('message',event=>{
   if(event.source!==parent||!event.data||event.data.jsonrpc!=='2.0')return;

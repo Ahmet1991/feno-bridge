@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=require('node:child_process');
-const runtime=process.platform==='win32'?{bunPath:cp.spawnSync('bun',['--print','process.execPath'],{encoding:'utf8'}).stdout.trim()}:{};
+const runtime=process.platform==='win32'?{bunPath:process.versions.bun?process.execPath:cp.spawnSync('bun',['--print','process.execPath'],{encoding:'utf8'}).stdout.trim()}:{};
 const sid=process.platform==='win32'?require('../electron/private-acl.cjs').getNativeSecurityContext(runtime).userSid:undefined;
 const windowsTest=(name,fn)=>test(name,{skip:process.platform!=='win32'},fn);
 const selection={durationMs:null,roots:['D:\\GitHub\\fixture'],permissions:['files.read'],allowedApps:[]};

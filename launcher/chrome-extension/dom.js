@@ -2,7 +2,7 @@
 export function pageOperation(action, args = {}) {
   // HTTP device interfaces lack randomUUID; getRandomValues also works there.
   const state = globalThis.__fenoPc2State ||= { id: Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,'0')).join(''), refs: new Map(), seq: 0 };
-  const sensitive = e => !!e && (e.type === 'password' || (e.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).some(s => /^(cc-number|cc-csc|cc-exp|cc-exp-month|cc-exp-year|cc-name|current-password|new-password)$/.test(s)));
+  const sensitive = e => !!e && (e.type === 'password' || (e.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).some(s => /^cc-/.test(s) || /^(current-password|new-password)$/.test(s)));
   function deep(point) {
     let e = point ? document.elementFromPoint(point.x, point.y) : document.activeElement;
     for (let i = 0; e && i < 16; i++) {
@@ -105,7 +105,9 @@ export function pageOperation(action, args = {}) {
       }
       e=e.control;via={via:'label'};
     }
-    if(sensitive(e))return {ok:false,sensitive:true,reason:'Şifre ve ödeme alanları için kullanıcı onayı gerekir.'};
+    // Page event handlers may change type/autocomplete during a form update.
+    const wasSensitive=sensitive(e);
+    const conceal=value=>(wasSensitive||sensitive(e))?'[REDACTED]':value;
     if((action==='form'||via.via)&&(e.disabled||e.readOnly))return {ok:false,reason:'Alan değiştirilemez.'};
     if(action==='uploadTarget'){
       const direct=e.tagName==='INPUT'&&e.type==='file';
@@ -120,7 +122,7 @@ export function pageOperation(action, args = {}) {
       if(!e.multiple&&values.length!==1)return {ok:false,reason:'Bu liste tek seçim kabul eder.'};
       const enabled=o=>!o.disabled&&!(o.parentElement?.tagName==='OPTGROUP'&&o.parentElement.disabled);
       const selected=values.map(v=>options.find(o=>enabled(o)&&o.value===String(v))||options.find(o=>enabled(o)&&o.text.trim()===String(v)));
-      if(selected.some(o=>!o))return {ok:false,reason:'Seçenek bulunamadı. Mevcut seçenekler: '+JSON.stringify(options.slice(0,100).map(o=>({value:o.value,text:o.text,disabled:o.disabled}))).slice(0,3000)};
+      if(selected.some(o=>!o))return {ok:false,reason:wasSensitive?'Seçenek bulunamadı.':'Seçenek bulunamadı. Mevcut seçenekler: '+JSON.stringify(options.slice(0,100).map(o=>({value:o.value,text:o.text,disabled:o.disabled}))).slice(0,3000)};
       if(e.multiple)for(const option of options)set(option,'selected',selected.includes(option));else set(e,'value',selected[0].value);
       actual=e.multiple?[...e.selectedOptions].map(o=>o.value):e.value;
     }else if(e.tagName==='INPUT'&&['checkbox','radio'].includes(e.type)){
@@ -128,17 +130,18 @@ export function pageOperation(action, args = {}) {
       // React's checkbox/radio change plugin observes click. Native activation
       // emits input/change itself, updates the radio group and never focuses a tab.
       if(e.checked!==value&&(e.type==='checkbox'||value)&&typeof e.click==='function'){
-        e.click();return e.checked===value?{ok:true,value:e.checked,...via}:{ok:false,reason:'Sayfa form değişikliğini kabul etmedi.'};
+        e.click();return e.checked===value?{ok:true,value:conceal(e.checked),...via}:{ok:false,reason:'Sayfa form değişikliğini kabul etmedi.'};
       }
       set(e,'checked',value);actual=e.checked;
-    }else if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'&&['text','search','email','tel','url','date','datetime-local','time','month','week','range','number','color'].includes(e.type)){
+    }else if(e.tagName==='TEXTAREA'||e.tagName==='INPUT'&&['text','password','search','email','tel','url','date','datetime-local','time','month','week','range','number','color'].includes(e.type)){
       if(typeof value!=='string'&&typeof value!=='number')return {ok:false,reason:'Metin veya sayı gerekli.'};
       set(e,'value',String(value));actual=e.value;
     }else if(e.isContentEditable){
       if(typeof value!=='string')return {ok:false,reason:'Metin gerekli.'};e.textContent=value;actual=e.textContent;
     }else return {ok:false,reason:'Bu öğe desteklenen bir form alanı değil.'};
     e.dispatchEvent(new Event('input',{bubbles:true,composed:true}));e.dispatchEvent(new Event('change',{bubbles:true,composed:true}));
-    return {ok:true,value:actual,...via};
+    // Sensitive fields can be filled, but their contents must not be echoed in tool results.
+    return {ok:true,value:conceal(actual),...via};
   }
   if (action === 'ref') {
     const e=state.refs.get(args.ref);

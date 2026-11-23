@@ -10,6 +10,7 @@ const STABLE_INSTALLER_NAME = "feno-bridge-setup.exe";
 const VERSION_FILES = [
   "package.json",
   "launcher/package.json",
+  "launcher/chrome-extension/manifest.json",
   "src/version.ts",
   "scripts/install.sh",
   "README.md",
@@ -151,8 +152,8 @@ async function gitTagExists(tag: string): Promise<boolean> {
   return (await run("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}`], true)).exitCode === 0;
 }
 
-function replaceExactly(path: string, from: string, to: string): void {
-  const absolute = join(ROOT, path);
+function replaceExactly(path: string, from: string, to: string, root = ROOT): void {
+  const absolute = join(root, path);
   const original = readFileSync(absolute, "utf8");
   if (!original.includes(from)) throw new Error(`${path} does not contain expected version text: ${from}`);
   writeFileSync(absolute, original.replace(from, to), "utf8");
@@ -169,17 +170,19 @@ export function updateReadmeDownloadLinks(text: string, fromVersion: string, toV
   return updated;
 }
 
-function updateVersions(fromVersion: string, toVersion: string): void {
-  replaceExactly("package.json", `\"version\": \"${fromVersion}\"`, `\"version\": \"${toVersion}\"`);
-  replaceExactly("launcher/package.json", `\"version\": \"${fromVersion}\"`, `\"version\": \"${toVersion}\"`);
-  replaceExactly("src/version.ts", `export const VERSION = \"${fromVersion}\";`, `export const VERSION = \"${toVersion}\";`);
+export function updateVersions(fromVersion: string, toVersion: string, root = ROOT): void {
+  for (const file of ["package.json", "launcher/package.json", "launcher/chrome-extension/manifest.json"]) {
+    replaceExactly(file, `\"version\": \"${fromVersion}\"`, `\"version\": \"${toVersion}\"`, root);
+  }
+  replaceExactly("src/version.ts", `export const VERSION = \"${fromVersion}\";`, `export const VERSION = \"${toVersion}\";`, root);
   replaceExactly(
     "scripts/install.sh",
     `VERSION=\"\${CODEX_CHATGPT_WEB_VERSION:-${fromVersion}}\"`,
     `VERSION=\"\${CODEX_CHATGPT_WEB_VERSION:-${toVersion}}\"`,
+    root,
   );
   for (const path of VERSION_FILES.filter(file => file.startsWith("README"))) {
-    const absolute = join(ROOT, path);
+    const absolute = join(root, path);
     writeFileSync(absolute, updateReadmeDownloadLinks(readFileSync(absolute, "utf8"), fromVersion, toVersion), "utf8");
   }
 }

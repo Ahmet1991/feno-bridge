@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=require('node:child_process');
 const windowsTest=(name,fn)=>test(name,{skip:process.platform!=='win32'},fn);
-const bunPath=process.platform==='win32'?cp.spawnSync('bun',['--print','process.execPath'],{encoding:'utf8'}).stdout.trim():'';
+const bunPath=process.platform==='win32'?(process.versions.bun?process.execPath:cp.spawnSync('bun',['--print','process.execPath'],{encoding:'utf8'}).stdout.trim()):'';
 function fixture(kind='production',clock=Date.now,confirmLocally=async()=>true,audit=()=>{}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'pc-service-test-'));
   for(const name of ['home','ui','project'])fs.mkdirSync(path.join(root,name));

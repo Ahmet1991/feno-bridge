@@ -2,7 +2,6 @@ import {pageOperation} from './dom.js';
 import {createRecord,recordEvent,textualMime,boundedJson,consoleEntries,networkEntries} from './recording.js';
 const fail = (code,reason) => { throw Object.assign(new Error(code),reason?{reason}:{}); };
 const reject=reason=>fail('pc_chrome_rejected',reason);
-const warning = 'Şifre ve ödeme alanları için kullanıcı onayı gerekir.';
 // Memory Saver discards or freezes background tabs. Page scripts and the debugger cannot reach
 // them until the tab is reloaded or the user opens it, so report that instead of a blocked page.
 const asleep=t=>t?.discarded===true||t?.frozen===true;
@@ -140,8 +139,7 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
     const marker=crypto.randomUUID();
     const target=await page(id,'uploadTarget',{ref:a.ref,documentId:refs.get(id),marker});
     if(!target)fail('pc_chrome_ref_stale');
-    if(target.sensitive)reject(warning);
-    if(target.ok===false)reject(target.reason||warning);
+    if(target.ok===false)reject(target.reason||'Dosya alanı kullanılamıyor.');
     let node;
     try{
       if(target.direct){
@@ -154,7 +152,7 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
         await command(id,'Page.enable');
         await command(id,'Page.setInterceptFileChooserDialog',{enabled:true});
         const p=await page(id,'ref',{ref:a.ref,documentId:refs.get(id)});if(!p)fail('pc_chrome_ref_stale');
-        if(p.sensitive||await guard(id,p))reject(warning);
+        await guard(id,p);
         await click(id,{x:p.x,y:p.y});
         const event=await wait(deadline(opened,Math.min(5000,Math.max(500,(a.timeoutSeconds||30)*1000-1000))));
         if(!event.backendNodeId)reject('Dosya seçici girdisi bulunamadı.');node={backendNodeId:event.backendNodeId};
@@ -237,12 +235,12 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
     if(a.action==='screenshot')return screenshot(id,a.includeCursor===true);
     const p=a.x===undefined?undefined:await point(id,a.x,a.y);
     if(!p&&!['type','key'].includes(a.action))fail('pc_invalid_argument');
-    let sensitive=p?await guard(id,p):false;
+    if(p)await guard(id,p);
     if(['click','double_click','right_click'].includes(a.action))await click(id,p,a.action==='right_click'?'right':'left',a.action==='double_click'?2:1);
     else if(a.action==='hover'){await cursor(id,p);await mouseFrames(id,()=>mouse(id,'mouseMoved',p));}
     else if(a.action==='scroll'){await cursor(id,p);return {ok:true,...await page(id,'scroll',{point:p,deltaX:a.deltaX??0,delta:a.delta??600})};}
     else if(a.action==='drag'){
-      const end=await point(id,a.endX,a.endY);sensitive=(await guard(id,end))||sensitive;
+      const end=await point(id,a.endX,a.endY);await guard(id,end);
       await cursor(id,p,true);await mouseFrames(id,async()=>{
       await mouse(id,'mouseMoved',p);await mouse(id,'mousePressed',p,{button:'left',buttons:1,clickCount:1});
       let last=p;
@@ -250,12 +248,11 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
       finally{await mouse(id,'mouseReleased',last,{button:'left',buttons:0,clickCount:1});}
       });
     } else if(a.action==='type'||a.action==='key'){
-      if(sensitive)return {ok:false,warning};
       if(p)await click(id,p);
-      if(await guard(id))return {ok:false,warning};
+      await guard(id);
       if(a.action==='type')await command(id,'Input.insertText',{text:a.text});else await key(id,a.key);
     } else fail('pc_invalid_argument');
-    return {ok:true,...(sensitive?{warning}:{})};
+    return {ok:true};
   }
     check();
     if(action==='tabs'){
@@ -294,7 +291,7 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
     }
     if(action==='form'){
       const result=await page(id,'form',{ref:a.ref,documentId:refs.get(id),value:a.value});
-      if(!result)fail('pc_chrome_ref_stale');if(!result.ok)reject(result.reason||warning);return {...result,domain};
+      if(!result)fail('pc_chrome_ref_stale');if(!result.ok)reject(result.reason||'Form alanı değiştirilemedi.');return {...result,domain};
     }
     // DOM scrolling does not need a debugger attachment.
     if(action==='computer'&&a.x!==undefined&&!shots.has(id))fail('pc_chrome_screenshot_required');
@@ -302,7 +299,7 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
     const result=await using(id,async()=>{
       if(action==='upload')return upload(id,a);
       if(action==='js'){
-        if(await page(id,'sensitivePage')===true||await guard(id))reject(warning);
+        await guard(id);
         let r;
         try{r=await bounded(id,'Runtime.evaluate',{expression:a.code,awaitPromise:true,returnByValue:true,timeout:Math.max(100,(a.timeoutSeconds||30)*1000-500)},Math.max(100,(a.timeoutSeconds||30)*1000-250));}
         catch(e){if(e.message==='pc_chrome_timeout'||/timed out|timeout|terminated/i.test(e.message)){await detach(id);fail('pc_chrome_timeout');}throw e;}
@@ -322,13 +319,13 @@ export function createChromeEngine(chrome,{idleMs=15000,captureMs=1300,recordIdl
       if(!['click','type'].includes(action))fail('pc_invalid_argument');
       const p=await page(id,'ref',{ref:a.ref,documentId:refs.get(id)});
       if(!p)fail('pc_chrome_ref_stale');
-      if(action==='type'&&(p.sensitive||await guard(id,p)))return {ok:false,warning};
+      if(action==='type')await guard(id,p);
       await click(id,{x:p.x,y:p.y});
       if(action==='type'){
-        if(await guard(id))return {ok:false,warning};
+        await guard(id);
         await command(id,'Input.insertText',{text:a.text});
       }
-      return {ok:true,...(p.sensitive?{warning}:{})};
+      return {ok:true};
     });
     return {...result,domain};
   }

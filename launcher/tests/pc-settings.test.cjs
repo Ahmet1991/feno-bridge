@@ -3,7 +3,7 @@ const {spawnSync}=require('node:child_process');
 const fs=require('node:fs');
 
 test('PC settings renders all closed permission toggles, application catalog and high-risk warnings',()=>{
-  const result=spawnSync('bun',[path.join(__dirname,'fixtures/pc-settings-render.tsx')],{encoding:'utf8',windowsHide:true});
+  const result=spawnSync(process.versions.bun?process.execPath:'bun',[path.join(__dirname,'fixtures/pc-settings-render.tsx')],{encoding:'utf8',windowsHide:true});
   assert.equal(result.status,0,result.stderr);
   assert.match(result.stdout,/PC erişimi kapalı/);
   assert.match(result.stdout,/Windows hesabınızın yetkileriyle/);

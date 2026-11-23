@@ -20,7 +20,9 @@ test('cached widget URIs resolve to the current resource without advertising ali
   try{
     await client.connect(clientTransport);
     expect((await client.listResources()).resources.map(r=>r.uri).sort()).toEqual([...current].sort());
+    const nextVersion=version.replace(/\d+$/,patch=>String(Number(patch)+1));
     for(const uri of current){
+      expect(uri.endsWith(`-v${version}.html`)).toBeTrue();
       const actual=await client.readResource({uri});
       expect(actual.contents[0].uri).toBe(uri);
       for(const old of ['5.1.23','5.0.96']){
@@ -28,7 +30,7 @@ test('cached widget URIs resolve to the current resource without advertising ali
         const result=await client.readResource({uri:alias});
         expect(result).toEqual({...actual,contents:[{...actual.contents[0],uri:alias}]});
       }
-      for(const invalid of ['','5.1','5.1.32.1','9.9.9','5.1.33','0000.1.1','../5.1.23','%35.1.23','5.1.23\n']){
+      for(const invalid of ['','5.1','5.1.32.1','9.9.9',nextVersion,'0000.1.1','../5.1.23','%35.1.23','5.1.23\n']){
         await expect(client.readResource({uri:uri.replace(`v${version}.html`,`v${invalid}.html`)})).rejects.toMatchObject({code:ErrorCode.InvalidParams});
       }
       for(const malformed of [uri+'?x=1',uri+'#x',uri+'\n',' '+uri,uri.replace('ui:','UI:'),uri.replace('widget','WIDGET'),uri.replace('/widget/','/widget/../'),uri.replace('/widget/','/widget/./'),uri.replace('/widget/','/widget/sub/../')]){

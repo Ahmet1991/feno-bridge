@@ -45,7 +45,7 @@ test('recording masks network secrets, bounds buffers, and detaches after inacti
     await new Promise(r=>setTimeout(r,60));assert.ok(calls.includes('detach'));
   }finally{await engine.disconnect();}
 });
-test('form DOM enforces selection, sensitive fields, and emits both events',async()=>{
+test('form DOM fills password fields with redacted results and emits both events',async()=>{
   const {pageOperation}=await import('../chrome-extension/dom.js');const previous=globalThis.__fenoPc2State;
   const events=[];const element=(fields)=>({isConnected:true,getAttribute:()=>null,dispatchEvent:e=>events.push(e.type),...fields});
   const options=[{value:'a',text:'Alpha',selected:false},{value:'b',text:'Beta',selected:false}];
@@ -55,7 +55,7 @@ test('form DOM enforces selection, sensitive fields, and emits both events',asyn
   const checkbox=element({tagName:'INPUT',type:'checkbox',checked:false}),password=element({tagName:'INPUT',type:'password'});
   globalThis.__fenoPc2State={id:'fixture',refs:new Map([['ref_1',select],['ref_2',checkbox],['ref_3',password]])};
   const form=(ref,value)=>pageOperation('form',{ref,documentId:'fixture',value});
-  try{assert.deepEqual(form('ref_1',['Alpha','b']).value,['a','b']);assert.match(form('ref_1','missing').reason,/Alpha/);assert.equal(form('ref_2',true).value,true);assert.equal(form('ref_3','secret').sensitive,true);assert.deepEqual(events,['input','change','input','change']);}
+  try{assert.deepEqual(form('ref_1',['Alpha','b']).value,['a','b']);assert.match(form('ref_1','missing').reason,/Alpha/);assert.equal(form('ref_2',true).value,true);assert.deepEqual(form('ref_3','secret'),{ok:true,value:'[REDACTED]'});assert.equal(password.value,'secret');assert.deepEqual(events,['input','change','input','change','input','change']);}
   finally{globalThis.__fenoPc2State=previous;}
 });
 test('label refs resolve controls in form, upload, read and find',async()=>{
@@ -73,8 +73,9 @@ test('label refs resolve controls in form, upload, read and find',async()=>{
         const name=prefix+' '+kind;assert.deepEqual(act('form',name,{value}),{ok:true,value:expected,via:'label'});
       }
     }
-    assert.equal(act('form','Secret',{value:'x'}).sensitive,true);
-    assert.equal(act('uploadTarget','Secret',{marker:'x'}).sensitive,true);
+    assert.deepEqual(act('form','Secret',{value:'x'}),{ok:true,value:'[REDACTED]',via:'label'});
+    assert.equal(document.querySelector('input[type=password]').value,'x');
+    assert.deepEqual(act('uploadTarget','Secret',{marker:'x'}),{direct:false,via:'label'});
     for(const name of ['Disabled','Readonly'])assert.equal(act('form',name,{value:'x'}).reason,'Alan değiştirilemez.');
     assert.equal(act('form','Orphan',{value:'x'}).reason,'Bu etiket bir form alanına bağlı değil.');
     assert.deepEqual(act('uploadTarget','Orphan',{marker:'m'}),{direct:false});

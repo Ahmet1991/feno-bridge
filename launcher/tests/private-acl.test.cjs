@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const sid = process.platform==='win32'?spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows','System32/whoami.exe'), ['/user','/fo','csv','/nh'], {encoding:'utf8',windowsHide:true}).stdout.match(/S-1-5-21-[0-9-]+/)?.[0]:undefined;
-const runtime=process.platform==='win32'?{bunPath:spawnSync('bun',['--print','process.execPath'],{encoding:'utf8',windowsHide:true}).stdout.trim()}:{};
+const runtime=process.platform==='win32'?{bunPath:process.versions.bun?process.execPath:spawnSync('bun',['--print','process.execPath'],{encoding:'utf8',windowsHide:true}).stdout.trim()}:{};
 function storage() {
   const m=require('../electron/private-acl.cjs');
   return {
