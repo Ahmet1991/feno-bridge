@@ -582,7 +582,7 @@ async function waitForQuietRuntime({
       && (!Number.isFinite(activity.lastEndedAt) || at - activity.lastEndedAt >= quietMs)) {
       return { quiet: true, waitedMs };
     }
-    if (waitedMs >= timeoutMs) return { quiet: false, waitedMs, reason: "timeout" };
+    if (waitedMs >= timeoutMs && !(activity.protectedActive > 0)) return { quiet: false, waitedMs, reason: "timeout" };
     await sleep(pollMs);
   }
 }

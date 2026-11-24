@@ -42,7 +42,7 @@ test('full access excludes task permission; explicit extra remains valid',()=>{
     if(extra)expect(auth.assert('codex.tasks')).toBeDefined();else expect(()=>auth.assert('codex.tasks')).toThrow('pc_access_denied');
   }
 });
-function fixture(){
+function fixture(options:Partial<Parameters<typeof createCodexTaskManager>[0]>={}){
   const directory=mkdtempSync(join(tmpdir(),'codex-task-test-'));
   let locked=false,alive=false,health=true,installed=true,tabs:number|null=2,now=Date.now(),stopCount=0;
   let complete:(r:{exitCode:number})=>void=()=>{},spec:PcCommandSpec|undefined;
@@ -59,7 +59,7 @@ function fixture(){
   },health:async()=>health,activeTabs:async()=>tabs,executable:()=>installed?{command:'fixture.exe'}:undefined,
   catalog:()=>catalog,port:()=>17841,isGitRepo:()=>true,clock:()=>now,minuteMs:50,heartbeatMs:10,
   spawn:(s,_cwd,stdout)=>{spec=s;output=stdout;alive=true;const exited=new Promise<{exitCode:number}>(resolve=>{complete=r=>{alive=false;resolve(r);};});
-    return {pid:1234,exited,terminate(){stopCount++;complete({exitCode:1});}};}});
+    return {pid:1234,exited,terminate(){stopCount++;complete({exitCode:1});}};},...options});
   const manager=make(),input={projectRoot:directory,title:'fixture',prompt:'private prompt'};
   return {directory,files,make,manager,input,setHealth:(v:boolean)=>health=v,setInstalled:(v:boolean)=>installed=v,setTabs:(v:number|null)=>tabs=v,
     tick:()=>{now+=1000;},complete:(code=0)=>complete({exitCode:code}),write:(s:string)=>output(Buffer.from(s)),
@@ -99,6 +99,38 @@ test('result truncation, masked paginated logs, spawn count and heartbeat',async
     if(!('finalMessage' in result))throw Error('missing final message');
     expect(Buffer.byteLength(result.finalMessage)).toBe(32768);expect(f.make().logs(task.taskId,0).lines).toEqual(page.lines);
   }finally{await f.cleanup();}
+});
+test('launcher cancel.request stops the contained job and records cancelled',async()=>{
+  const f=fixture();try{
+    const task=await f.manager.start(f.input);
+    const directory=join(f.directory,'codex-tasks');
+    const {requestCancel}=require('../launcher/electron/pc-codex-task-files.cjs');
+    requestCancel(f.files,directory,task.taskId);
+    expect(await f.manager.wait(task.taskId,1)).toMatchObject({state:'cancelled'});
+    expect(f.stopCount).toBe(1);
+  }finally{await f.cleanup();}
+});
+test('local confirmation approves, denies and expires before spawning',async()=>{
+  for(const decision of [true,false,null]){
+    const f=fixture({confirmRequired:()=>true,approvalTimeoutMs:250,approvalPollMs:5});
+    try{
+      const input={...f.input,prompt:'x'.repeat(650)};
+      const start=f.manager.start(input);
+      // Observe rejection promptly even when no response is written.
+      const result=start.then(value=>({value}),error=>({error}));
+      const folder=join(f.directory,'codex-tasks');
+      const {pendingApprovals,respond}=require('../launcher/electron/pc-codex-task-files.cjs');
+      let requests:any[]=[];
+      for(let i=0;i<30&&!requests.length;i++){requests=pendingApprovals(f.files,folder);if(!requests.length)await Bun.sleep(5);}
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({title:input.title,projectRoot:input.projectRoot,maxSubagents:2,timeoutMinutes:60,promptPreview:'x'.repeat(600)});
+      expect(f.spec).toBeUndefined();
+      if(decision!==null)expect(respond(f.files,folder,requests[0],decision)).toBe(true);
+      const settled=await result;
+      if(decision===true){expect('value' in settled&&settled.value.state).toBe('running');expect(f.spec).toBeDefined();}
+      else{expect('error' in settled&&settled.error.code).toBe('pc_codex_task_denied');expect(f.spec).toBeUndefined();expect(f.manager.list()[0]?.state).toBe('failed');}
+    }finally{await f.cleanup();}
+  }
 });
 test('MCP task tools require both permissions and are absent in DEV',async()=>{
   for(const profileId of ['pc2-normal','pc2-dev'] as const){

@@ -95,17 +95,15 @@ type TaskOptions={
   executable:()=>CodexExecutable|undefined;catalog:(executable:CodexExecutable)=>unknown|Promise<unknown>;
   port:()=>number;isGitRepo?:(root:string)=>boolean;
   spawn?:typeof spawnContainedWindowsProcess;clock?:()=>number;minuteMs?:number;heartbeatMs?:number;
+  confirmRequired?:()=>boolean;approvalTimeoutMs?:number;approvalPollMs?:number;
+};
+const {codexTaskDirectory,readRecord}=require('../../launcher/electron/pc-codex-task-files.cjs') as {
+  codexTaskDirectory:(runtimeDirectory:string)=>string;
+  readRecord:(files:Pick<PrivateFiles,'readPrivateFile'>,folder:string,taskId:string)=>CodexTaskRecord;
 };
 export function readCodexTaskRecord(files:Pick<PrivateFiles,'readPrivateFile'>,folder:string,taskId:string):CodexTaskRecord{
   if(!UUID.test(taskId))throw new PcOperationError('pc_codex_task_not_found');
-  const r=JSON.parse(files.readPrivateFile(join(folder,taskId,'state.json'),16384).toString('utf8')) as CodexTaskRecord;
-  if(r.taskId!==taskId||typeof r.title!=='string'||r.title.length<1||r.title.length>80||!CODEX_TASK_STATES.includes(r.state)
-    ||!(r.pid===null||(Number.isSafeInteger(r.pid)&&r.pid>0))
-    ||!Number.isSafeInteger(r.startedAt)||!Number.isSafeInteger(r.updatedAt)
-    ||!(r.endedAt===null||Number.isSafeInteger(r.endedAt))
-    ||!Number.isSafeInteger(r.subagentsStarted)||r.subagentsStarted<0
-    ||(r.logFirstCursor!==undefined&&(!Number.isSafeInteger(r.logFirstCursor)||r.logFirstCursor<0)))throw new Error('Invalid Codex task record');
-  return r;
+  return readRecord(files,folder,taskId);
 }
 function publicRecord(r:CodexTaskRecord){
   const {taskId,title,state,pid,startedAt,updatedAt,endedAt,subagentsStarted}=r;
@@ -121,7 +119,7 @@ function validateInput(input:CodexTaskInput){
   return {effort,maxSubagents,timeoutMinutes};
 }
 export function createCodexTaskManager(options:TaskOptions){
-  const {files}=options,clock=options.clock??Date.now,folder=join(options.directory,'codex-tasks');
+  const {files}=options,clock=options.clock??Date.now,folder=codexTaskDirectory(options.directory);
   const lockPath=join(folder,'task.lock'),taskPath=(id:string,name:string)=>join(folder,id,name);
   type Active={record:CodexTaskRecord;log:ReturnType<typeof createPcJobLog>;child?:PcContainedProcess;
     stop?:'cancelled'|'timed_out'|'interrupted';done:Promise<void>;resolveDone:()=>void;
@@ -205,6 +203,29 @@ export function createCodexTaskManager(options:TaskOptions){
       write('models.json',JSON.stringify(catalog));write('log.txt','');write('son.md','');
       const record:CodexTaskRecord={taskId,title:input.title,state:'queued',pid:null,startedAt:now,updatedAt:now,endedAt:null,subagentsStarted:0};
       save(record);
+      try{
+        if(options.confirmRequired?.()){
+          const timeout=options.approvalTimeoutMs??120000,deadline=performance.now()+timeout;
+          write('approval.request',JSON.stringify({taskId,title:input.title,projectRoot:input.projectRoot,maxSubagents,
+            timeoutMinutes:config.timeoutMinutes,promptPreview:Array.from(input.prompt).slice(0,600).join(''),expiresAt:clock()+timeout}));
+          let approved=false;
+          while(!interruptStart&&performance.now()<deadline){
+            guard();
+            if(existsSync(taskPath(taskId,'cancel.request')))break;
+            if(existsSync(taskPath(taskId,'approval.response'))){
+              const response=JSON.parse(files.readPrivateFile(taskPath(taskId,'approval.response'),4096).toString('utf8'));
+              approved=response.taskId===taskId&&response.approved===true;break;
+            }
+            await new Promise(resolve=>setTimeout(resolve,Math.min(options.approvalPollMs??500,Math.max(1,deadline-performance.now()))));
+          }
+          if(!approved||interruptStart||performance.now()>=deadline)throw new PcOperationError('pc_codex_task_denied');
+        }
+        guard();if(interruptStart)throw new PcAccessDeniedError();
+        if(!await options.health())throw new PcOperationError('pc_codex_route_unavailable');
+        guard();if(interruptStart)throw new PcAccessDeniedError();
+      }catch(error){
+        const endedAt=clock();save({...record,state:interruptStart?'interrupted':'failed',updatedAt:endedAt,endedAt,error:error instanceof Error?error.message:'pc_codex_task_denied'});throw error;
+      }
       let resolveDone!:()=>void;
       const log=createPcJobLog(line=>{if(/\bcollab: SpawnAgent\b/.test(line))a.record.subagentsStarted++;});
       const a:Active={record,log,lock:held,done:new Promise<void>(r=>{resolveDone=r;}),resolveDone};

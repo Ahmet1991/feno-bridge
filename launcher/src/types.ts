@@ -132,6 +132,9 @@ export interface LauncherSnapshot {
 
 export interface LauncherApi {
   pcStatus():Promise<PcControlStatus>;
+  pcCodexTaskFlag(key:'pcCodexTasks'|'pcCodexTasksConfirm',value:boolean):Promise<PcControlStatus>;
+  pcCodexTasks():Promise<PcCodexTaskActivity[]>;
+  pcCodexTaskStop(id:string):Promise<boolean>;
   pcPickRoot():Promise<string|null>;
   pcApprove(selection:PcApprovalSelection):Promise<PcControlStatus>;
   pcRevoke():Promise<PcControlStatus>;
@@ -202,10 +205,12 @@ export interface LauncherApi {
   onUpdateState(listener: (state: UpdateState) => void): () => void;
 }
 
-export type PcCorePermission='files.read'|'files.write'|'jobs'|'terminal.exec'|'screen.read'|'desktop.input'|'desktop.advanced'|'apps.launch'|'screen.full'|'adb'|'runner'|'browser'|'chrome.user';
+export type PcCorePermission='files.read'|'files.write'|'jobs'|'terminal.exec'|'screen.read'|'desktop.input'|'desktop.advanced'|'apps.launch'|'screen.full'|'adb'|'runner'|'browser'|'chrome.user'|'codex.tasks';
+export interface PcCodexTaskActivity {taskId:string;title:string;startedAt:number;subagentsStarted:number}
 export interface PcApprovalSelection {durationMs:number|null;roots:string[];permissions:PcCorePermission[];allowedApps:string[]}
 export interface PcControlStatus {
   enabled:boolean;available:boolean;profileId?:'pc2-normal'|'pc2-dev';expiresAt?:number|null;fullAccess?:boolean;
+  pcCodexTasks?:boolean;pcCodexTasksConfirm?:boolean;
   coordinationReady?:boolean;lastAutoStop?:{at:number;reason:string;code:string};
   devMode?:'not-installed'|'retired'|'running'|'compatible'|'unverified';devRetired?:boolean;
   roots:string[];permissions:PcCorePermission[];allowedApps:string[];permanentApprovalSaved?:boolean;persistentRevocationPending?:boolean;

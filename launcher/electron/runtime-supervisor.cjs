@@ -190,6 +190,11 @@ function managedTunnelConnectArgs(config, invocation) {
 
 function validateConfig(config, descriptorPath, platform = process.platform, launcherProfile = "production") {
   if (!config || config.version !== 3) throw new Error("Runtime configuration is missing or unsupported");
+  for (const key of ['pcCodexTasks','pcCodexTasksConfirm']) {
+    if (config[key] !== undefined && typeof config[key] !== 'boolean') throw new Error(`Invalid ${key}`);
+  }
+  config.pcCodexTasks=launcherProfile==='production'&&config.pcCodexTasks===true;
+  config.pcCodexTasksConfirm=launcherProfile==='production'&&config.pcCodexTasksConfirm===true;
   if (launcherProfile === "development") {
     if (config.purpose !== "dev-harness") {
       throw new Error("DEV launcher refuses a configuration that is not marked dev-harness");
@@ -333,6 +338,7 @@ class RuntimeSupervisor {
     launcherProfile = "production",
     publishOperation,
     runtimeInvocationFactory = runtimeInvocation,
+    activeCodexTaskCount = () => 0,
   }) {
     this.app = app;
     this.logger = logger;
@@ -347,6 +353,7 @@ class RuntimeSupervisor {
     this.launcherProfile = launcherProfile;
     this.publishOperation = publishOperation;
     this.runtimeInvocationFactory = runtimeInvocationFactory;
+    this.activeCodexTaskCount = activeCodexTaskCount;
     this.configPath = path.join(coreHome, "config.json");
     this.statePath = path.join(coreHome, "runtime", "launcher-supervisor.json");
     this.daemon = null;
@@ -1859,16 +1866,24 @@ class RuntimeSupervisor {
   async acquireDrain(config, timeoutMs = DRAIN_IDLE_TIMEOUT_MS) {
     let attempted = false;
     try {
-      attempted = true;
       const deadline = Date.now() + timeoutMs;
       for (;;) {
+        // A running task needs the proxy for subsequent model calls. Do not drain it
+        // between those calls; ordinary update polling waits outside this method.
+        if (this.activeCodexTaskCount() > 0) {
+          if (attempted) { await this.control(config, "resume"); attempted = false; }
+          if (Date.now() >= deadline) throw new Error("daemon has active chat Codex tasks");
+          await sleep(Math.min(DRAIN_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
+          continue;
+        }
+        attempted = true;
         const health = await this.control(config, "drain");
         if (health.accepting_turns !== false
           || !Number.isInteger(health.active_http_turns)
           || !Number.isInteger(health.active_browser_turns)) {
           throw new Error("daemon did not acknowledge the drain contract");
         }
-        if (health.active_http_turns === 0 && health.active_browser_turns === 0) return true;
+        if (health.active_http_turns === 0 && health.active_browser_turns === 0 && this.activeCodexTaskCount() === 0) return true;
         if (Date.now() >= deadline) {
           throw new Error(
             `daemon has ${health.active_http_turns} active HTTP turn(s) and ${health.active_browser_turns} active browser turn(s)`,

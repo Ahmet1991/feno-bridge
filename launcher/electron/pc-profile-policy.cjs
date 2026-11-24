@@ -19,6 +19,7 @@ const PC_PERMISSION_DETAILS=Object.freeze(Object.fromEntries(Object.entries({
   'screen.full':{title:'Tam ekran ve çoklu monitör görüntüsü',risk:'high',description:'YÜKSEK RİSK: Tüm ekran veya bir monitördeki diğer uygulamalar, bildirimler ve özel içerikler görünür. Pencere okuma izninden bağımsızdır.'},
   browser:{title:'Arka planda web tarayıcısı',risk:'high',description:'Ayrı kalıcı tarayıcı profilinde sayfalar okunabilir, tıklama ve yazma yapılabilir. Açık hesaplarda işlem yapılabilir.'},
   'chrome.user':{title:'Kendi Chrome sekmeleriniz',risk:'high',description:'Tam yetkide, uzantı açıkken mevcut Chrome profilindeki web sayfalarında işlem yapılabilir.'},
+  'codex.tasks':{title:'Sohbetten Codex görevi',risk:'high',description:'ChatGPT sohbeti bilgisayarda Codex görevi başlatabilir; ChatGPT kotanızı ve en çok 5 Feno sekmesini kullanır.'},
 }).map(([key,value])=>[key,Object.freeze(value)])));
 const PC_ALLOWED_APPLICATIONS=Object.freeze([
   {id:'notepad.exe',title:'Not Defteri',launchable:true},
@@ -28,7 +29,7 @@ const PC_ALLOWED_APPLICATIONS=Object.freeze([
   {id:'Code.exe',title:'Visual Studio Code',launchable:false},
   {id:'CalculatorApp.exe',title:'Hesap Makinesi',launchable:false},
 ]);
-const PC_PERMISSIONS=Object.freeze(['status',...Object.keys(PC_PERMISSION_DETAILS),'codex.tasks']);
+const PC_PERMISSIONS=Object.freeze(['status',...Object.keys(PC_PERMISSION_DETAILS)]);
 const PC_FULL_PERMISSIONS=Object.freeze(PC_PERMISSIONS.filter(permission=>permission!=='status'&&permission!=='codex.tasks'));
 function validatePcSelection(s) {
   const full=s?.fullAccess===true;

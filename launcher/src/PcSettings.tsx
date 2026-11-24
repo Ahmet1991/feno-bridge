@@ -8,6 +8,7 @@ const labels:Record<PcCorePermission,string>={
   'desktop.advanced':'Çift tık ve sürükle-bırak','apps.launch':'İzinli uygulamayı aç',
   'screen.full':'Tüm ekranı veya monitörü gör',adb:'Android emülatörü',runner:'GitHub runner durumu',browser:'Arka planda web tarayıcısı',
   'chrome.user':'Kendi Chrome sekmeleriniz',
+  'codex.tasks':'Sohbetten Codex görevi',
 };
 
 export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|undefined;platform:string;initialStatus?:PcControlStatus|null}){
@@ -25,7 +26,10 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     finally{setBusy(false);if(api)void api.pcStatus().then(setStatus).catch(()=>{});}
   }
   const needsApps=selected.some(permission=>['screen.read','desktop.input','apps.launch'].includes(permission));
-  const invalid=(selected.includes('terminal.exec')&&!selected.includes('jobs'))
+  const taskEnabled=status?.profileId==='pc2-normal'&&status.pcCodexTasks===true;
+  const visiblePermissions:PcCorePermission[]=taskEnabled?[...permissions,'codex.tasks']:permissions;
+  const effectiveSelected=selected.filter(p=>p!=='codex.tasks'||taskEnabled);
+  const invalid=((effectiveSelected.includes('terminal.exec')||effectiveSelected.includes('codex.tasks'))&&!effectiveSelected.includes('jobs'))
     ||(selected.includes('desktop.advanced')&&!selected.includes('desktop.input'))
     ||(needsApps&&!selectedApps.length)
     ||(selected.includes('apps.launch')&&!selectedApps.some(app=>status?.applicationCatalog?.some(item=>item.id===app&&item.launchable)));
@@ -57,6 +61,13 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     {platform!=='win32'||!status?.available?<p>PC güvenlik altyapısı hazır değil. Erişim kapalı tutuluyor.</p>:null}
     {status?.persistentRevocationPending?<p role="alert">Kalıcı iptal diske yazılamadı. Erişim kapalı. Depolama erişimini onarın.</p>:null}
     {status?.lastAutoStop?<p role="alert">Son otomatik durdurma: {new Date(status.lastAutoStop.at).toLocaleString('tr-TR')} · {status.lastAutoStop.reason} ({status.lastAutoStop.code})</p>:null}
+    {platform==='win32'&&status?.profileId==='pc2-normal'?<div aria-label="Sohbetten Codex görevi ayarları">
+      <label className="pc-settings-option"><input className="pc-settings-checkbox" type="checkbox" role="switch" checked={taskEnabled} disabled={busy||!status.available}
+        onChange={event=>{const enabled=event.target.checked;void action(async()=>{setStatus(await api!.pcCodexTaskFlag('pcCodexTasks',enabled));if(!enabled)setSelected(previous=>previous.filter(p=>p!=='codex.tasks'));});}}/> Sohbetten Codex görevi</label>
+      <p>ChatGPT sohbeti bilgisayarda Codex görevi başlatabilir; ChatGPT kotanızı ve en çok 5 Feno sekmesini kullanır.</p>
+      <label className="pc-settings-option"><input className="pc-settings-checkbox" type="checkbox" role="switch" checked={status.pcCodexTasksConfirm===true} disabled={busy||!status.available||!taskEnabled}
+        onChange={event=>{const enabled=event.target.checked;void action(async()=>{setStatus(await api!.pcCodexTaskFlag('pcCodexTasksConfirm',enabled));});}}/> Her görevde sor</label>
+    </div>:null}
     {status?.fullAccess?<div aria-label="Tam yetki modu">
       <p role="status"><strong>Tam yetki AÇIK</strong> · tüm yerel sabit sürücüler ve uygulamalar · süresiz</p>
       <button type="button" disabled={busy||!status.available}
@@ -68,7 +79,7 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     <p>{root||'Henüz proje seçilmedi'}</p>
     <fieldset disabled={busy||!status?.available}>
       <legend>Ayrı yerel izinler (varsayılan kapalı)</legend>
-      {permissions.map(permission=><label className="pc-settings-option" key={permission}>
+      {visiblePermissions.map(permission=><label className="pc-settings-option" key={permission}>
         <input className="pc-settings-checkbox" type="checkbox" checked={selected.includes(permission)} onChange={event=>setSelected(previous=>event.target.checked?[...previous,permission]:previous.filter(p=>p!==permission))}/>
         <span><strong>{status?.permissionDetails?.[permission]?.title||labels[permission]}</strong>
           <small>{status?.permissionDetails?.[permission]?.description||'Bu yetkinin kapsamını yerel onay ekranında inceleyin.'}</small>
@@ -85,8 +96,8 @@ export function PcSettings({api,platform,initialStatus=null}:{api:LauncherApi|un
     </fieldset>
     <label className="pc-settings-option"><input className="pc-settings-checkbox" type="checkbox" checked={perpetual} onChange={event=>setPerpetual(event.target.checked)}/> Açıkça iptal edene kadar sakla (DPAPI ve ayrı yerel onay gerekir)</label>
     {invalid?<p role="alert">Terminal için işler iznini, gelişmiş giriş için masaüstü girişini, pencere izinleri için en az bir uygulamayı ve uygulama açmak için açılabilir uygulamayı seçin.</p>:null}
-    <button type="button" disabled={busy||!status?.available||!root||!selected.length||invalid||status?.persistentRevocationPending}
-      onClick={()=>void action(async()=>{setStatus(await api!.pcApprove({durationMs:perpetual?null:3600000,roots:[root],permissions:selected,allowedApps:selectedApps}));})}>Seçili izinleri yerel olarak onayla</button>
+    <button type="button" disabled={busy||!status?.available||!root||!effectiveSelected.length||invalid||status?.persistentRevocationPending}
+      onClick={()=>void action(async()=>{setStatus(await api!.pcApprove({durationMs:perpetual?null:3600000,roots:[root],permissions:effectiveSelected,allowedApps:selectedApps}));})}>Seçili izinleri yerel olarak onayla</button>
     <button type="button" disabled={busy||!status?.available} onClick={()=>void action(async()=>{setStatus(await api!.pcRevoke());})}>İzni iptal et ve unut</button>
     </>:null}
     {error?<p role="alert">{error}</p>:null}

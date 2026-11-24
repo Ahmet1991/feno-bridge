@@ -1166,7 +1166,7 @@ function registerIpc({ logger, stateStore }) {
     });
     if (confirmation.response !== 1) return false;
     const launch = await updateController.beginInstall({ beforeLaunch: waitForQuietCodexBeforeUpdate });
-    const result = await requestQuit();
+    const result = await requestQuit({ forUpdate: true });
     if (!result.ok) {
       updateController.cancelInstall(launch);
       throw new Error(result.message);
@@ -1196,9 +1196,13 @@ async function waitForQuietCodexBeforeUpdate({ signal }) {
     readActivity: async () => {
       const config = runtimeSupervisor?.readConfig();
       const health = config ? await runtimeSupervisor.proxyHealthPayload(config) : null;
-      if (!Number.isInteger(health?.active_http_turns) || !Number.isInteger(health?.active_browser_turns)) return null;
+      const protectedActive = pcService?.activeCodexTaskCount() ?? 0;
+      if (!Number.isInteger(health?.active_http_turns) || !Number.isInteger(health?.active_browser_turns)) {
+        return protectedActive > 0 ? { active: protectedActive, protectedActive, lastEndedAt: null } : null;
+      }
       return {
-        active: health.active_http_turns + health.active_browser_turns,
+        active: health.active_http_turns + health.active_browser_turns + protectedActive,
+        protectedActive,
         lastEndedAt: browserHost?.lastTurnEndedAt ?? null,
       };
     },
@@ -1206,7 +1210,7 @@ async function waitForQuietCodexBeforeUpdate({ signal }) {
   launcherLogger?.info("launcher.update_waited_for_codex", result);
 }
 
-async function requestQuit() {
+async function requestQuit({ forUpdate = false } = {}) {
   if (shutdownInProgress || exitCommitted) {
     return { ok: false, message: "Launcher shutdown is already in progress" };
   }
@@ -1217,6 +1221,9 @@ async function requestQuit() {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Feno Bridge`);
     }
     pcService?.assertCanExit();
+    if (forUpdate && (pcService?.activeCodexTaskCount() ?? 0) > 0) {
+      throw new Error('A chat Codex task started during update preparation; retry the update after it finishes');
+    }
     runtimeStartupAbort.abort();
     pcStartupRetry?.stop();
     pcService?.suspend();
@@ -1377,6 +1384,7 @@ async function start() {
     resolveProxy: url => session.fromPartition(LAUNCHER_PROFILE.browserPartition).resolveProxy(url),
   }).start();
   runtimeSupervisor = new RuntimeSupervisor({
+    activeCodexTaskCount: () => pcService?.activeCodexTaskCount() ?? 0,
     app,
     logger,
     sourceRoot: SOURCE_ROOT,
@@ -1458,6 +1466,15 @@ async function start() {
       if (!bunPath || !path.isAbsolute(bunPath)) throw new Error("pc_trusted_runtime_required");
       pcService = createPcLauncherService({
         profile: { ...LAUNCHER_PROFILE, userData: launcherUserData }, bunPath,
+        confirmCodexTaskLocally: async (request, signal) => {
+          const response = await dialog.showMessageBox({
+            type: 'warning', title: 'Feno Bridge — Sohbetten Codex görevi',
+            message: request.title,
+            detail: `Klasör: ${request.projectRoot}\nAlt ajan sınırı: ${request.maxSubagents}\nSüre sınırı: ${request.timeoutMinutes} dakika\n\nGörev metni:\n${request.promptPreview}`,
+            buttons: ['Başlat', 'Reddet'], defaultId: 1, cancelId: 1, noLink: true, signal,
+          });
+          return !signal.aborted && response.response === 0;
+        },
         ...(!IS_DEV_PROFILE&&app.isPackaged?{chromeOptions:{version:app.getVersion(),directory:chromeDirectory(),audit:record=>logger.info("pc_control.chrome",record)}}:{}),
         confirmLocally: async selection => {
           if (!mainWindow || mainWindow.isDestroyed()) return false;

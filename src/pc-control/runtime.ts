@@ -75,6 +75,7 @@ export function createDefaultPcRuntime(){
       catalog:executable=>augmentNativeModelCatalog(readBundledCodexTaskCatalog(executable),
         {...loadConfig(),subagentProtocol:'compatibility-v1'},readCodexModelContextOverride()),
       port:()=>loadConfig().port,
+      confirmRequired:()=>loadConfig().pcCodexTasksConfirm===true,
     }):undefined;
   const host=createLocalPcHost(authorizer,{
     codexTasks,

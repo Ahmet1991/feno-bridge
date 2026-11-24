@@ -1,4 +1,10 @@
-# Sohbetten Codex görevi — tasarım (taslak, 24.11.2026)
+# Sohbetten Codex görevi — tasarım (24.11.2026, uygulandı)
+
+> Uygulamadaki farklar: etkinlik listesi açık sekme sayısını değil, görevin istediği alt ajan
+> sınırını ve başlatılan alt ajan sayısını gösterir. Reddedilen ya da onayı zaman aşımına uğrayan
+> görev `failed` durumuna `pc_codex_task_denied` koduyla yazılır. Seçmeli modda özellik kapatılıp
+> açılırsa `codex.tasks` izni yeniden seçilmelidir. Durdur ve onay, görev klasörüne yazılan
+> `cancel.request`, `approval.request` ve `approval.response` dosyalarıyla iletilir.
 
 ## Amaç
 

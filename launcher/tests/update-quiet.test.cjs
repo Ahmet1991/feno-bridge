@@ -41,6 +41,15 @@ test("an update proceeds after the timeout as the confirmation warned", async ()
   const result = await waitForQuietRuntime({ ...fake, timeoutMs: 60_000, pollMs: 10_000 });
   assert.deepEqual(result, { quiet: false, waitedMs: 60_000, reason: "timeout" });
 });
+test("a running chat Codex task protects the update even after the ordinary quiet timeout", async () => {
+  const fake = clock([
+    () => ({active:1,protectedActive:1,lastEndedAt:null}),
+    () => ({active:1,protectedActive:1,lastEndedAt:null}),
+    () => ({active:1,protectedActive:1,lastEndedAt:null}),
+    () => ({active:0,protectedActive:0,lastEndedAt:null}),
+  ]);
+  assert.deepEqual(await waitForQuietRuntime({...fake,timeoutMs:10000,pollMs:10000}),{quiet:true,waitedMs:30000});
+});
 
 test("an update does not wait on a runtime whose activity cannot be read", async () => {
   const fake = clock([() => null]);
