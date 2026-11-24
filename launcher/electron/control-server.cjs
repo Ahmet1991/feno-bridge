@@ -148,7 +148,7 @@ class BrowserControlServer {
       if (!host) throw new Error("browser host is not ready");
       if (isTabCount) {
         if (!(host.turnTabs instanceof Map)) throw new Error("Browser tab registry is unavailable");
-        writeJson(response, 200, { activeTabs: host.turnTabs.size });
+        writeJson(response, 200, { activeTabs: host.occupiedTurnTabCount });
         return;
       }
       if (isSelectorInspect) {

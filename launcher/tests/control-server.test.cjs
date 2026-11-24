@@ -406,6 +406,45 @@ test("manual control rejects session inspection before any browser helper can ru
   }
 });
 
+test("tab count excludes reclaimable tabs when reserving capacity for a new task", async () => {
+  const host = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([1, 2, 3, 4].map(id => [id, { status: "ready" }])),
+  });
+  const server = await new BrowserControlServer({
+    logger: { info() {}, warn() {}, error() {} },
+    getBrowserHost: () => host,
+    getPreferences: () => ({}),
+  }).start();
+  const { endpoint, token } = server.descriptor();
+  const count = async () => {
+    const response = await fetch(`${endpoint}/v1/session/tab-count`, {
+      method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}",
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  try {
+    assert.deepEqual(await count(), { activeTabs: 0 });
+    assert.equal(host.turnTabs.size, 4);
+
+    host.turnTabs.delete(1);
+    host.turnTabs.delete(2);
+    assert.deepEqual(await count(), { activeTabs: 0 });
+    assert.equal(host.turnTabs.size, 2);
+
+    host.turnTabs.set(1, { status: "running", interactionMode: "automatic" });
+    host.turnTabs.set(2, { status: "running", interactionMode: "manual", manualState: "awaiting-user" });
+    host.turnTabs.set(3, { status: "error", interactionMode: "manual", manualState: "timed-out" });
+    host.turnTabs.set(4, { status: "error", interactionMode: "automatic" });
+    assert.deepEqual(await count(), { activeTabs: 3 });
+
+    const unauthorized = await fetch(`${endpoint}/v1/session/tab-count`, { method: "POST", body: "{}" });
+    assert.equal(unauthorized.status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
 test("manual-to-automatic transaction exposes capability inspection and preserves tabs on rollback", async () => {
   const retained = { id: "manual-ready", status: "ready", interactionMode: "manual" };
   const removed = [];
@@ -444,13 +483,6 @@ test("manual-to-automatic transaction exposes capability inspection and preserve
     body: JSON.stringify({ detectCapabilities: true }),
   });
   try {
-    const count = await fetch(`${descriptor.endpoint}/v1/session/tab-count`, {
-      method: "POST", headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" }, body: "{}",
-    });
-    assert.equal(count.status, 200);
-    assert.deepEqual(await count.json(), { activeTabs: 1 });
-    const unauthorized = await fetch(`${descriptor.endpoint}/v1/session/tab-count`, { method: "POST", body: "{}" });
-    assert.equal(unauthorized.status, 401);
     await assert.rejects(
       host.withInteractionModeChange("automatic", async () => {
         const response = await inspect();
