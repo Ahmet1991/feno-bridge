@@ -2024,6 +2024,58 @@ export function chatGptReboundTurnIdentity(
   return chatGptNewTurnIdentity(initial, current);
 }
 
+/** The exchange a turn identity belongs to: `<key>:<index>:<role>` unit keys and the agent/tool markers name it. */
+export function chatGptTurnExchangeKey(identity: string): string | undefined {
+  for (const prefix of [CHATGPT_AGENT_TURN_IDENTITY_PREFIX, CHATGPT_TOOL_TURN_IDENTITY_PREFIX]) {
+    if (identity.startsWith(prefix)) return identity.slice(prefix.length) || undefined;
+  }
+  return /^(.+):\d+:[a-z_]+$/.exec(identity)?.[1];
+}
+
+/**
+ * Since 21.11 a fresh exchange can return its submitted user turn under a new identity when the
+ * answer settles: 20 of 86 turns failed as "another user turn" (21-24.11, none in 179 before).
+ * In the two measured (24.11, 1d607f75b882 and 17d6110da44e) a short answer was bound while the
+ * user turn was unmounted, and the user turn returned with the settled answer.
+ * The returned turn is still ours when it is the only user turn new since the baseline, the
+ * identity that acknowledged Send is gone, and it shares its exchange with every new response.
+ * A foreign user turn opens an exchange of its own, so it never passes.
+ */
+export function chatGptSubmittedUserTurnRekeyed(
+  acceptedUserIdentity: string | undefined,
+  candidate: string,
+  userIdentities: readonly string[],
+  usersSinceBaseline: readonly string[],
+  responsesSinceBaseline: readonly string[],
+): boolean {
+  if (acceptedUserIdentity === undefined || userIdentities.includes(acceptedUserIdentity)) return false;
+  if (usersSinceBaseline.length !== 1 || usersSinceBaseline[0] !== candidate) return false;
+  const exchange = chatGptTurnExchangeKey(candidate);
+  return exchange !== undefined
+    && responsesSinceBaseline.length > 0
+    && responsesSinceBaseline.every(identity => chatGptTurnExchangeKey(identity) === exchange);
+}
+
+/** A loggable form of a turn identity: ChatGPT's placeholder keys stay, real keys become a short hash. */
+export function chatGptTurnIdentityShape(identity: string): string {
+  const hidden = (value: string): string => {
+    if (/^fallback-turn-\d+$/.test(value)) return value;
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return `#${(hash >>> 0).toString(16).padStart(8, "0").slice(0, 6)}`;
+  };
+  const exchange = chatGptTurnExchangeKey(identity);
+  if (exchange === undefined) return hidden(identity);
+  const prefix = identity.startsWith(CHATGPT_AGENT_TURN_IDENTITY_PREFIX) ? CHATGPT_AGENT_TURN_IDENTITY_PREFIX
+    : identity.startsWith(CHATGPT_TOOL_TURN_IDENTITY_PREFIX) ? CHATGPT_TOOL_TURN_IDENTITY_PREFIX : "";
+  return prefix
+    ? prefix + hidden(exchange)
+    : hidden(exchange) + identity.slice(exchange.length);
+}
+
 export class ChatGptCompletionTracker {
   private candidate?: { signature: string; since: number };
   private lastToolBatchRevision = 0;
@@ -4107,12 +4159,20 @@ export class ChatGptBrowserWorker {
     const sinceBaseline = state.userIdentities.filter(identity => !baseline.initialTurnIdentities.includes(identity));
     const submittedUser = baseline.acceptedUserIdentity
       ?? (sinceBaseline.length === 1 ? sinceBaseline[0] : undefined);
-    const ownUserReturned = newUsers.length === 1 && newUsers[0] === submittedUser;
+    const responsesSinceBaseline = state.responseIdentities.filter(identity => !baseline.initialTurnIdentities.includes(identity));
+    const ownUserReturned = newUsers.length === 1
+      && (newUsers[0] === submittedUser
+        || chatGptSubmittedUserTurnRekeyed(baseline.acceptedUserIdentity, newUsers[0], state.userIdentities, sinceBaseline, responsesSinceBaseline));
     if (hasNewUserTurn && !allowMcpContinuationUserTurn && !ownUserReturned) {
       // On direct connector runs the renderer can remount the user before the answer. Do not
       // consume an unproved identity while Stop is visible and the response is still absent.
-      if(state.visibleStopButtonCount>0&&!state.responseIdentities.some(id=>!baseline.initialTurnIdentities.includes(id)))return binding;
-      throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
+      if(state.visibleStopButtonCount>0&&responsesSinceBaseline.length===0)return binding;
+      throw new Error(
+        "ChatGPT opened another user turn while the bound assistant response was detached"
+        + ` (submitted ${baseline.acceptedUserIdentity === undefined ? "none" : chatGptTurnIdentityShape(baseline.acceptedUserIdentity)};`
+        + ` new users ${newUsers.map(chatGptTurnIdentityShape).join(",")};`
+        + ` responses ${responsesSinceBaseline.map(chatGptTurnIdentityShape).join(",") || "none"})`,
+      );
     }
     const acceptedTurnIdentities = hasNewUserTurn
       ? state.turnIdentities

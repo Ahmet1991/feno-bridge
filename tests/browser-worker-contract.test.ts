@@ -9,6 +9,7 @@ import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { isHeavyChatGptStage, xpathStringLiteral } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptTurnIdentitySelector } from "../src/adapters/chatgpt-web/browser-worker";
+import { chatGptSubmittedUserTurnRekeyed, chatGptTurnExchangeKey, chatGptTurnIdentityShape } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptPromptPrefixLadder } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptTurnProgressWatchdog } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
@@ -415,6 +416,91 @@ test("assistant tracking accepts a replacement turn during proven MCP continuati
       "conversation-turn-assistant-3",
     ],
   });
+});
+
+test("assistant tracking accepts the submitted user turn returning under a new exchange key", async () => {
+  // Live on 24.11 (traces 1d607f75b882, 17d6110da44e): a three-character answer settled while
+  // the user turn was unmounted, and the user turn came back under an identity other than the
+  // one that acknowledged Send. 20 of 86 turns failed so between 21.11 and 24.11.
+  const finalLocator = { id: "assistant-final" };
+  const page = { locator: () => finalLocator } as unknown as Page;
+  const workerFor = (users: string[], responses: string[]) => Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    submissionDomState: async () => ({
+      userTurnCount: users.length,
+      assistantTurnCount: responses.length,
+      visibleStopButtonCount: 1,
+      turnIdentities: [...users, ...responses],
+      userIdentities: users,
+      responseIdentities: responses,
+    }),
+  }) as unknown as {
+    reconcileAssistantTurnBinding(
+      page: Page,
+      baseline: { initialTurnIdentities: string[]; domCache: object; acceptedUserIdentity?: string },
+      binding: { identity: string; locator: { count(): Promise<number> }; acceptedTurnIdentities: string[] },
+    ): Promise<{ identity: string; locator: unknown; acceptedTurnIdentities: readonly string[] }>;
+  };
+  const binding = () => ({
+    identity: "fallback-turn-0:2:assistant",
+    locator: { count: async () => 0 },
+    acceptedTurnIdentities: ["old:0:user", "old:1:assistant", "fallback-turn-0:2:assistant"],
+  });
+  const baseline = () => ({
+    initialTurnIdentities: ["old:0:user", "old:1:assistant"],
+    domCache: {},
+    acceptedUserIdentity: "fallback-turn-0:0:user",
+  });
+  const settled = "6f1c2d9e-0b7a-4c55-9d1e-2a3b4c5d6e7f";
+
+  await expect(workerFor(
+    ["old:0:user", `${settled}:0:user`],
+    ["old:1:assistant", `${settled}:2:assistant`],
+  ).reconcileAssistantTurnBinding(page, baseline(), binding())).resolves.toEqual({
+    identity: `${settled}:2:assistant`,
+    locator: finalLocator,
+    acceptedTurnIdentities: ["old:0:user", `${settled}:0:user`, "old:1:assistant", `${settled}:2:assistant`],
+  });
+  // A user turn in an exchange other than the response's is foreign, and the error names the
+  // identities by shape only: placeholder keys stay, real keys are hashed.
+  const foreign = workerFor(["old:0:user", "other-exchange:0:user"], ["old:1:assistant", `${settled}:2:assistant`])
+    .reconcileAssistantTurnBinding(page, baseline(), binding());
+  await expect(foreign).rejects.toThrow("opened another user turn");
+  const message = await foreign.catch((error: Error) => error.message);
+  expect(message).toContain("submitted fallback-turn-0:0:user;");
+  expect(message).toMatch(/new users #[0-9a-f]{6}:0:user; responses #[0-9a-f]{6}:2:assistant\)$/);
+  expect(message).not.toContain("other-exchange");
+  expect(message).not.toContain(settled);
+  // So is a second user turn while the acknowledged one is still present.
+  await expect(workerFor(
+    ["old:0:user", "fallback-turn-0:0:user", `${settled}:0:user`],
+    ["old:1:assistant", `${settled}:2:assistant`],
+  ).reconcileAssistantTurnBinding(page, baseline(), {
+    ...binding(),
+    acceptedTurnIdentities: ["old:0:user", "old:1:assistant", "fallback-turn-0:0:user", "fallback-turn-0:2:assistant"],
+  })).rejects.toThrow("opened another user turn");
+});
+
+test("a re-keyed user turn must be the only new one and share the response's exchange", () => {
+  const accepted = "fallback-turn-0:0:user";
+  expect(chatGptSubmittedUserTurnRekeyed(accepted, "k1:0:user", ["k1:0:user"], ["k1:0:user"], ["k1:2:assistant"])).toBe(true);
+  expect(chatGptSubmittedUserTurnRekeyed(accepted, "k1:0:user", ["k1:0:user"], ["k1:0:user"], ["agent:k1"])).toBe(true);
+  // No acknowledged identity, or it is still on the page.
+  expect(chatGptSubmittedUserTurnRekeyed(undefined, "k1:0:user", ["k1:0:user"], ["k1:0:user"], ["k1:2:assistant"])).toBe(false);
+  expect(chatGptSubmittedUserTurnRekeyed(accepted, "k1:0:user", [accepted, "k1:0:user"], ["k1:0:user"], ["k1:2:assistant"])).toBe(false);
+  // Two new user turns, no response yet, a response in another exchange, or legacy identities.
+  expect(chatGptSubmittedUserTurnRekeyed(accepted, "k1:0:user", ["k1:0:user", "k2:0:user"], ["k1:0:user", "k2:0:user"], ["k1:2:assistant"])).toBe(false);
+  expect(chatGptSubmittedUserTurnRekeyed(accepted, "k1:0:user", ["k1:0:user"], ["k1:0:user"], [])).toBe(false);
+  expect(chatGptSubmittedUserTurnRekeyed(accepted, "k1:0:user", ["k1:0:user"], ["k1:0:user"], ["k1:2:assistant", "k2:1:assistant"])).toBe(false);
+  expect(chatGptSubmittedUserTurnRekeyed(accepted, "conversation-turn-2", ["conversation-turn-2"], ["conversation-turn-2"], ["conversation-turn-3"])).toBe(false);
+
+  expect(chatGptTurnExchangeKey("fallback-turn-0:2:assistant")).toBe("fallback-turn-0");
+  expect(chatGptTurnExchangeKey("tool:k1")).toBe("k1");
+  expect(chatGptTurnExchangeKey("conversation-turn-2")).toBeUndefined();
+  expect(chatGptTurnIdentityShape("fallback-turn-1:0:user")).toBe("fallback-turn-1:0:user");
+  expect(chatGptTurnIdentityShape("agent:fallback-turn-1")).toBe("agent:fallback-turn-1");
+  expect(chatGptTurnIdentityShape("agent:real-key")).toMatch(/^agent:#[0-9a-f]{6}$/);
+  expect(chatGptTurnIdentityShape("conversation-turn-2")).toMatch(/^#[0-9a-f]{6}$/);
+  expect(chatGptTurnIdentityShape("a:b:0:user")).toBe(`${chatGptTurnIdentityShape("a:b")}:0:user`);
 });
 
 test("assistant tracking accepts the submitted user turn remounting after activity", async () => {
