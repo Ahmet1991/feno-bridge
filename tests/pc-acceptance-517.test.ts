@@ -5,13 +5,13 @@ import {join,win32} from 'node:path';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController} from '../src/pc-control/windows';
 import {createPcApplicationLauncher} from '../src/pc-control/launch';
-import {PC_PERMISSIONS} from '../src/pc-control/types';
+import {PC_FULL_PERMISSIONS} from '../src/pc-control/types';
 
 function approved(fullAccess=true,root?:string){
   const auth=new PcAuthorizer({profileId:'pc2-normal'});
   auth.setGrantFromLocalApproval({profileId:'pc2-normal',id:'acceptance-517',expiresAt:null,fullAccess,
     roots:root?[fullAccess?win32.parse(root).root:root]:fullAccess?['C:\\','D:\\']:['D:\\fixture'],allowedApps:fullAccess?[]:['notepad.exe'],
-    permissions:fullAccess?[...PC_PERMISSIONS.slice(1)]:['desktop.input','desktop.advanced','apps.launch']});
+    permissions:fullAccess?[...PC_FULL_PERMISSIONS]:['desktop.input','desktop.advanced','apps.launch']});
   return auth;
 }
 

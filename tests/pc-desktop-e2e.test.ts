@@ -7,7 +7,7 @@ import {randomUUID} from 'node:crypto';
 import {PcAuthorizer} from '../src/pc-control/authorization';
 import {createPcWindowsController,type PcWindowsHelper} from '../src/pc-control/windows';
 import {PcOperationError} from '../src/pc-control/errors';
-import {PC_PERMISSIONS} from '../src/pc-control/types';
+import {PC_FULL_PERMISSIONS} from '../src/pc-control/types';
 
 const e2e=process.platform==='win32'&&process.env.FENO_PC_DESKTOP_E2E==='1'?test:test.skip;
 e2e('real desktop E2E touches only the test-owned window; image bytes never hit disk',async()=>{
@@ -44,7 +44,7 @@ e2e('real desktop E2E touches only the test-owned window; image bytes never hit 
   };
   const authorizer=new PcAuthorizer({profileId:'pc2-normal'});
   authorizer.setGrantFromLocalApproval({profileId:'pc2-normal',id:'desktop-e2e-'+randomUUID(),
-    expiresAt:null,fullAccess:true,roots:['C:\\','D:\\'],permissions:[...PC_PERMISSIONS.slice(1)],allowedApps:[]});
+    expiresAt:null,fullAccess:true,roots:['C:\\','D:\\'],permissions:[...PC_FULL_PERMISSIONS],allowedApps:[]});
   const w=createPcWindowsController({authorizer,runHelper:call});
   try{
     let owned:{id:string;title:string;processName:string}|undefined;

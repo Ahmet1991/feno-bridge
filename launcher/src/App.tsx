@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import { PcSettings } from "./PcSettings";
+import { PcCodexTaskActivity } from "./PcCodexTaskActivity";
 import type {
   BrowserInteractionMode,
   BrowserState,
@@ -1559,6 +1560,7 @@ function ActivitySurface({
 }) {
   return (
     <ContentSurface subtitle={copy.activitySubtitle} title={copy.activityTitle}>
+      <PcCodexTaskActivity api={api} onError={setError} />
       <div className="section-heading activity-heading">
         <span>{copy.recentActivity}</span>
         <SecondaryButton

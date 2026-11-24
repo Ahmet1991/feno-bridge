@@ -68,6 +68,32 @@ windowsTest('DEV profile ignores pcFullAccess even when the DEV config contains 
   try{service.start();assert.equal(service.status().enabled,false);assert.equal(service.status().fullAccess,false);assert.equal(f.confirms,0);}
   finally{service.suspend();}
 });
+windowsTest('task switch regenerates full grant, and selective grant needs explicit permission and removes it when switched off',async()=>{
+  const f=fixture(),service=f.make();
+  try{
+    service.start();await service.heartbeat();
+    assert.equal(service.status().pcCodexTasks,false);assert.equal(service.status().pcCodexTasksConfirm,false);
+    assert.ok(!service.status().permissions.includes('codex.tasks'));
+    await service.setCodexTaskFlag('pcCodexTasks',true);
+    assert.ok(service.status().permissions.includes('codex.tasks'));
+    await service.setCodexTaskFlag('pcCodexTasksConfirm',true);
+    assert.equal(service.status().pcCodexTasksConfirm,true);
+    await service.setCodexTaskFlag('pcCodexTasks',false);
+    assert.ok(!service.status().permissions.includes('codex.tasks'));
+    service.disableFullAccess();
+    const project=path.join(f.root,'project');fs.mkdirSync(project);
+    const selection={durationMs:60000,roots:[project],permissions:['jobs','codex.tasks'],allowedApps:[]};
+    await assert.rejects(service.approve(selection),/pc_access_denied/);
+    await service.setCodexTaskFlag('pcCodexTasks',true);
+    await service.approve({ ...selection,permissions:['jobs'] });
+    assert.ok(!service.status().permissions.includes('codex.tasks'));
+    await service.approve(selection);assert.ok(service.status().permissions.includes('codex.tasks'));
+    const expiry=service.status().expiresAt;
+    await service.setCodexTaskFlag('pcCodexTasks',false);
+    assert.deepEqual(service.status().permissions,['jobs']);assert.equal(service.status().expiresAt,expiry);
+    await service.setCodexTaskFlag('pcCodexTasks',true);assert.deepEqual(service.status().permissions,['jobs']);
+  }finally{service.suspend();}
+});
 windowsTest('a slow fixed-drive lookup keeps the Electron main event loop responsive',async()=>{
   const f=fixture();let release;
   const service=f.make({listFixedDriveRoots:()=>new Promise(resolve=>{release=resolve;})});

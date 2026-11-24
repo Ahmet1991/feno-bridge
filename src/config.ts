@@ -112,6 +112,8 @@ export interface AppConfig {
   autoApproveToolCalls: boolean;
   /** Local PC2 normal launcher opt-in; off by default and never enabled by setup. */
   pcFullAccess?: boolean;
+  pcCodexTasks?: boolean;
+  pcCodexTasksConfirm?: boolean;
   pcWidgetProbes?: boolean;
   /**
    * Open Codex tasks in ChatGPT Temporary Chats instead of regular saved chats. Off by default
@@ -246,6 +248,8 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     zeroRiskProEnabled: false,
     autoApproveToolCalls: false,
     pcFullAccess: false,
+    pcCodexTasks: false,
+    pcCodexTasksConfirm: false,
     controlToken: randomBytes(32).toString("base64url"),
     runtimeCommand: currentRuntimeCommand(),
   };
@@ -436,6 +440,9 @@ function parseConfig(value: unknown, path: string): AppConfig {
   if (parsed.pcFullAccess !== undefined && typeof parsed.pcFullAccess !== 'boolean') {
     throw new Error(`Invalid pcFullAccess in ${path}`);
   }
+  for (const key of ['pcCodexTasks', 'pcCodexTasksConfirm'] as const) {
+    if (parsed[key] !== undefined && typeof parsed[key] !== 'boolean') throw new Error(`Invalid ${key} in ${path}`);
+  }
   if (parsed.pcWidgetProbes !== undefined && typeof parsed.pcWidgetProbes !== 'boolean') {
     throw new Error(`Invalid pcWidgetProbes in ${path}`);
   }
@@ -572,6 +579,8 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   return {
     ...parsed,
+    pcCodexTasks: parsed.purpose !== 'dev-harness' && parsed.pcCodexTasks === true,
+    pcCodexTasksConfirm: parsed.purpose !== 'dev-harness' && parsed.pcCodexTasksConfirm === true,
     appName: expectedAppName,
     automaticAppName,
     manualAppName,

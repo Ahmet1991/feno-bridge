@@ -45,6 +45,15 @@ function createPcConsentController({profileId,clock=Date.now,confirmLocally,audi
       if(pending||persistentRevocationPending||!Number.isFinite(clock())||selection.durationMs!==null||!protection()||!store.isTrustedSelection(selection))throw deny();
       active=makeGrant(selection);permanentApprovalSaved=true;safeAudit('restored');return copy(active);
     },
+    removeCodexTasks(){
+      if(!this.status().enabled||active.fullAccess||!active.permissions.includes('codex.tasks'))throw deny();
+      const previous=active,selection={durationMs:previous.expiresAt===null?null:previous.expiresAt-clock(),
+        roots:previous.roots,permissions:previous.permissions.filter(p=>p!=='codex.tasks'),allowedApps:previous.allowedApps};
+      generation++;active=undefined;
+      validatePcSelection(selection);
+      if(selection.durationMs===null){if(!protection())throw deny();store.save(selection);}
+      active={...previous,id:randomUUID(),permissions:selection.permissions};return copy(active);
+    },
     status(){
       const now=clock();
       if(active&&!Number.isFinite(now)){active=undefined;safeAudit('invalid_clock');}

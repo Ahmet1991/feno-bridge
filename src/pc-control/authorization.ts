@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { PC_PERMISSIONS, PC_PROFILE_IDS, type PcGrant, type PcPermission, type PcProfileId, type PcStatus } from './types';
+import { PC_PERMISSIONS, PC_FULL_PERMISSIONS, PC_PROFILE_IDS, type PcGrant, type PcPermission, type PcProfileId, type PcStatus } from './types';
 export const MAX_PC_GRANT_MS=2*60*60*1000;
 export class PcAccessDeniedError extends Error {
   readonly code='pc_access_denied';
@@ -18,8 +18,8 @@ export function validatePcGrant(grant:PcGrant,now:number,profileId:PcProfileId):
   if(grant?.fullAccess!==undefined&&typeof grant.fullAccess!=='boolean')throw new PcAccessDeniedError();
   if(full&&(profileId!=='pc2-normal'||grant.profileId!=='pc2-normal'||grant.expiresAt!==null
     ||!Array.isArray(grant.allowedApps)||grant.allowedApps.length!==0
-    ||!Array.isArray(grant.permissions)||grant.permissions.length!==PC_PERMISSIONS.length-1
-    ||!PC_PERMISSIONS.slice(1).every(p=>grant.permissions.includes(p))
+    ||!Array.isArray(grant.permissions)||grant.permissions.length!==PC_FULL_PERMISSIONS.length+Number(grant.permissions.includes('codex.tasks'))
+    ||!PC_FULL_PERMISSIONS.every(p=>grant.permissions.includes(p))
     ||!Array.isArray(grant.roots)||!grant.roots.length||!grant.roots.every(root=>/^[a-z]:\\$/i.test(root))))throw new PcAccessDeniedError();
   if(!grant||typeof grant!=='object'||grant.profileId!==profileId||!PC_PROFILE_IDS.includes(profileId)
     ||typeof grant.id!=='string'||!/^[a-zA-Z0-9_-]{8,128}$/.test(grant.id)||!Number.isFinite(now)

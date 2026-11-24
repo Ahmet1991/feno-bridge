@@ -22,6 +22,7 @@ import type {PcReadOptions} from './files';
 import {createPcBrowser,type BrowserOptions} from './browser';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
+import type {CodexTaskManager,CodexTaskInput} from './codex-tasks';
 export interface PcHost {
   status():Promise<object>;listFiles(path:string,offset?:number,limit?:number):Promise<unknown>;readFile(path:string,options?:PcReadOptions):Promise<unknown>;
   applyPatch(path:string,sha:string,patch:string):Promise<unknown>;createFile(path:string,content:string):Promise<unknown>;createDirectory(path:string):Promise<unknown>;
@@ -39,6 +40,7 @@ export interface PcHost {
   launchApp?(app:string,url?:string,filePath?:string,userDataDir?:string):Promise<unknown>;
   browser?(action:string,args:Record<string,unknown>):Promise<any>;
   chrome?(action:string,args:Record<string,unknown>):Promise<any>;
+  codexTasks?:Pick<CodexTaskManager,'start'|'wait'|'list'|'cancel'|'logs'>;
 }
 export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobManagerOptions,'auditCommand'|'history'>&{
   acquireLease:(operation:'job'|'terminal'|'desktop-input'|'adb',operationId:string)=>Promise<PcHostLease>;
@@ -50,12 +52,21 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
   devMode?:()=>string;
   browserOptions?:BrowserOptions;
   chromeAction?:(action:string,args:Record<string,unknown>,signal:AbortSignal)=>Promise<any>;
+  codexTasks?:CodexTaskManager;
 }):PcHost{
   const resources=createPcJobResources();type Manager=ReturnType<typeof createPcJobManager>;
   const managers=new Map<string,{manager:Manager;tasks:string[]}>(),owners=new Map<string,Manager>();let activeGrant:string|undefined;
   const retired=new Set<Promise<void>>();let cleanupFailed=false;
   const actions=new Set<AbortController>();
   const browser=options.browserOptions?createPcBrowser(options.browserOptions):undefined;
+  function codexGrant(){
+    if(authorizer.profileId!=='pc2-normal'||process.platform!=='win32'||!options.codexTasks)throw new PcAccessDeniedError();
+    authorizer.assert('jobs');return authorizer.assert('codex.tasks');
+  }
+  async function codexGuarded<T>(action:(manager:CodexTaskManager,guard:()=>void,grant:ReturnType<typeof codexGrant>)=>T|Promise<T>){
+    const grant=codexGrant(),guard=()=>{if(codexGrant().id!==grant.id)throw new PcAccessDeniedError();};
+    const result=await action(options.codexTasks!,guard,grant);guard();return result;
+  }
   async function runGuarded<T>(permission:'screen.read'|'screen.full'|'desktop.input'|'adb'|'apps.launch'|'browser'|'chrome.user',
     action:(signal:AbortSignal)=>Promise<T>,leased?:'desktop-input'|'adb'):Promise<T>{
     const id=authorizer.assert(permission).id;
@@ -115,6 +126,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
   }
   return {
     status:async()=>({platform:process.platform,version:pcVersion,profileId:authorizer.profileId,devMode:options.devMode?.()??'unknown',
+      codexTasksSupported:process.platform==='win32'&&authorizer.profileId==='pc2-normal',
       ...(()=>{const g=authorizer.assert('status');return {fullAccess:g?.fullAccess===true,roots:g?.roots??[],permissions:g?.permissions??[],allowedApps:g?.allowedApps??[]};})(),
       coordinationReady:options.coordinationReady?.()===true,cleanupRequired:cleanupFailed,
       desktop:await (async()=>{const status=options.windowsHelper?{available:true,source:'injected'}:pcWindowsHelperStatus();
@@ -130,7 +142,14 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
     listJobs:async()=>{const grant=authorizer.assert('jobs');const history=new Map<string,import('./job-history').PcJobSummary>();try{for(const j of options.history?.list(grant.id,grant.lineageId)??[])history.set(j.jobId,j);}catch{/* Private storage unavailable. */}if(jobOwner(grant)===activeGrant)for(const j of [...managers.values()].flatMap(e=>e.manager.listPcJobs(authorizer)))history.set(j.jobId,j);return [...history.values()].sort((a,b)=>b.startedAt-a.startedAt).slice(0,20);},
     jobStatus:async id=>job(id).pcJobStatus(id,authorizer),jobLogs:async(id,cursor)=>job(id).pcJobLogs(id,cursor,authorizer),
     cancelJob:async id=>{await job(id).cancelPcJob(id,authorizer);return {cancelled:true};},
-    revokeActiveJobs:async()=>{await retire();await Promise.all([...retired]);},
+    revokeActiveJobs:async()=>{await Promise.all([retire(),options.codexTasks?.interrupt()]);await Promise.all([...retired]);},
+    codexTasks:{
+      start:(input:CodexTaskInput)=>codexGuarded((manager,guard,grant)=>manager.start({...input,projectRoot:resolveAllowedPath(input.projectRoot,grant.roots,{fullAccess:grant.fullAccess})},guard)),
+      wait:(id,seconds)=>codexGuarded(manager=>manager.wait(id,seconds)),
+      list:()=>{codexGrant();return options.codexTasks!.list();},
+      cancel:id=>codexGuarded(manager=>manager.cancel(id)),
+      logs:(id,cursor)=>{codexGrant();return options.codexTasks!.logs(id,cursor);},
+    },
     suspendTransport,
     listWindows:()=>runGuarded('screen.read',signal=>windowController(signal).listPcWindows()),
     captureScreen:id=>runGuarded('screen.read',signal=>windowController(signal).capturePcWindow(id)),
@@ -245,6 +264,24 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerTool('pc_start_project_task',{title:'Start one configured development task',inputSchema:z.object({projectRoot:p,taskId:z.string().min(4).max(120).regex(/^(?:script:[a-zA-Z0-9:._-]+|android:[a-zA-Z]+|git:[a-z-]+)$/)}).strict(),annotations:write},({projectRoot,taskId})=>run(()=>{a.assert('jobs');return h.startProjectTask(projectRoot,taskId);},false,'pc_start_project_task'));
   server.registerTool('pc_start_terminal',{title:'Run explicitly approved Windows terminal',description:'Requires jobs AND terminal.exec. Runs with your Windows account permissions, outside project boundaries. Use inline PowerShell commands instead of .ps1 script files. pc_terminal_busy means wait for completion.',inputSchema:z.object({projectRoot:p,command:z.string().min(1).max(2048).refine(v=>!v.includes('\0')),purpose:z.string().min(3).max(4096),timeoutSeconds:z.number().int().min(1).max(600).optional()}).strict(),annotations:{...write,openWorldHint:true}},({projectRoot,command,purpose,timeoutSeconds})=>run(()=>{a.assert('jobs');a.assert('terminal.exec');return h.startTerminal(projectRoot,command,purpose,timeoutSeconds);},false,'pc_start_terminal'));
   server.registerTool('pc_list_jobs',{title:'List recent owned jobs',description:'Newest 20 jobs for the current profile and grant; no raw commands.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('jobs');if(!h.listJobs)throw new PcAccessDeniedError();return h.listJobs();},false,'pc_list_jobs'));
+  if(process.platform==='win32'&&a.profileId==='pc2-normal'){
+    const tasks=()=>{a.assert('codex.tasks');a.assert('jobs');if(!h.codexTasks)throw new PcAccessDeniedError();return h.codexTasks;};
+    const taskId=z.string().uuid();
+    server.registerTool('pc_codex_task_start',{title:'Start a Codex task',description:'Requires codex.tasks and jobs. Runs one local task using ChatGPT Web models and the approved project root.',inputSchema:z.object({
+      projectRoot:p,title:z.string().min(1).max(80).refine(v=>!!v.trim()&&!v.includes('\0')),
+      prompt:z.string().min(1).max(65536).refine(v=>!!v.trim()&&!v.includes('\0')&&Buffer.byteLength(v)<=65536),
+      effort:z.enum(['high','medium','light']).default('high'),maxSubagents:z.number().int().min(0).max(4).default(3),
+      timeoutMinutes:z.number().int().min(1).max(240).default(60),
+    }).strict(),annotations:{...write,openWorldHint:true}},args=>run(()=>tasks().start(args),false,'pc_codex_task_start'));
+    server.registerTool('pc_codex_task_wait',{title:'Wait for a Codex task',description:'Waits at most 50 seconds. A running task is not a failed task; call again for its result.',inputSchema:z.object({taskId,waitSeconds:z.number().int().min(1).max(50).default(45)}).strict(),annotations:readOnly},
+      args=>run(()=>tasks().wait(args.taskId,args.waitSeconds),false,'pc_codex_task_wait'));
+    server.registerTool('pc_codex_task_list',{title:'List recent Codex tasks',description:'Returns the newest 20 task summaries, without their prompts.',inputSchema:z.object({}).strict(),annotations:readOnly},
+      ()=>run(async()=>tasks().list(),false,'pc_codex_task_list'));
+    server.registerTool('pc_codex_task_cancel',{title:'Cancel a Codex task',description:'Stops the contained process tree and reports the resulting task state.',inputSchema:z.object({taskId}).strict(),annotations:write},
+      args=>run(()=>tasks().cancel(args.taskId),false,'pc_codex_task_cancel'));
+    server.registerTool('pc_codex_task_logs',{title:'Read Codex task logs',description:'Returns paginated task logs with known secrets masked.',inputSchema:z.object({taskId,cursor:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0)}).strict(),annotations:readOnly},
+      args=>run(async()=>tasks().logs(args.taskId,args.cursor),false,'pc_codex_task_logs'));
+  }
   server.registerTool('pc_job_status',{title:'Read owned project job state',inputSchema:z.object({jobId}).strict(),annotations:readOnly},({jobId})=>run(()=>{a.assert('jobs');return h.jobStatus(jobId);},false,'pc_job_status'));
   server.registerTool('pc_job_logs',{title:'Read bounded redacted job output',description:'Up to250 lines/64KiB per page; nextCursor and firstCursor identify retained output. Secrets matching known patterns are masked.',inputSchema:z.object({jobId,cursor:z.number().int().min(0).default(0)}).strict(),annotations:readOnly},({jobId,cursor})=>run(()=>{a.assert('jobs');return h.jobLogs(jobId,cursor);},false,'pc_job_logs'));
   server.registerTool('pc_cancel_job',{title:'Cancel owned job and descendants',inputSchema:z.object({jobId}).strict(),annotations:write},({jobId})=>run(()=>{a.assert('jobs');return h.cancelJob(jobId);},false,'pc_cancel_job'));

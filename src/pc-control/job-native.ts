@@ -80,8 +80,8 @@ export function spawnContainedWindowsProcess(spec:PcCommandSpec,cwd:string,
       checked(k.SetHandleInformation(r,1,0),'noninheritable reader');return [r,w];
     }
     [outputRead,outputWrite]=pipe();[errorRead,errorWrite]=pipe();
-    input=k.CreateFileW(wide('NUL'),0x80000000,3,security,3,0x80,0);
-    checked(BigInt(input)!==invalid&&BigInt(input)!==0n,'CreateFileW NUL');handles.push(input);
+    input=k.CreateFileW(wide(spec.stdinFile??'NUL'),0x80000000,3,security,3,0x80,0);
+    checked(BigInt(input)!==invalid&&BigInt(input)!==0n,'CreateFileW stdin');handles.push(input);
     const size=Buffer.alloc(8);k.InitializeProcThreadAttributeList(null,2,0,size);
     const length=Number(size.readBigUInt64LE());checked(length>0&&length<=65536,'attribute size');
     attributes=Buffer.alloc(length);checked(k.InitializeProcThreadAttributeList(attributes,2,0,size),'InitializeProcThreadAttributeList');attributesReady=true;

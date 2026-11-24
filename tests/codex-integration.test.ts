@@ -61,6 +61,20 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+test('chat Codex task flags default off, reject non-booleans and are ignored in DEV',()=>{
+  fixture();const config=defaultConfig('browser-only');
+  expect(config.pcCodexTasks).toBe(false);expect(config.pcCodexTasksConfirm).toBe(false);
+  saveConfig({...config,pcCodexTasks:undefined,pcCodexTasksConfirm:undefined});
+  expect(loadConfig()).toMatchObject({pcCodexTasks:false,pcCodexTasksConfirm:false});
+  saveConfig({...config,pcCodexTasks:true,pcCodexTasksConfirm:true});
+  expect(loadConfig()).toMatchObject({pcCodexTasks:true,pcCodexTasksConfirm:true});
+  saveConfig({...config,purpose:'dev-harness',pcCodexTasks:true,pcCodexTasksConfirm:true});
+  expect(loadConfig()).toMatchObject({pcCodexTasks:false,pcCodexTasksConfirm:false});
+  for(const key of ['pcCodexTasks','pcCodexTasksConfirm']){
+    saveConfig({...config,[key]:'true'} as typeof config);expect(()=>loadConfig()).toThrow('Invalid '+key);
+  }
+});
+
 describe("reversible native Codex route integration", () => {
   test.skipIf(process.platform === "win32")("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
     const { root, codexHome } = fixture();

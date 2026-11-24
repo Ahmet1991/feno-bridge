@@ -18,7 +18,7 @@ test('normal and DEV start disabled and derive separate local stores from truste
 
 test('each real permission has an immutable risk explanation suitable for local approval UI',()=>{
   const {PC_PERMISSION_DETAILS}=require('../electron/pc-profile-policy.cjs');
-  assert.deepEqual(Object.keys(PC_PERMISSION_DETAILS).sort(),['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','desktop.advanced','apps.launch','screen.full','adb','runner','browser','chrome.user'].sort());
+  assert.deepEqual(Object.keys(PC_PERMISSION_DETAILS).sort(),['files.read','files.write','jobs','terminal.exec','screen.read','desktop.input','desktop.advanced','apps.launch','screen.full','adb','runner','browser','chrome.user','codex.tasks'].sort());
   assert.equal(PC_PERMISSION_DETAILS['terminal.exec'].risk,'high');
   assert.equal(PC_PERMISSION_DETAILS.jobs.risk,'high');
   assert.equal(PC_PERMISSION_DETAILS['screen.full'].risk,'high');
@@ -33,6 +33,14 @@ test('launcher application choices have fixed IDs and cannot include shell execu
   assert.equal(PC_ALLOWED_APPLICATIONS.some(app=>app.id==='cmd.exe'),false);
   assert.equal(PC_ALLOWED_APPLICATIONS.filter(app=>app.launchable).length,3);
   assert.throws(()=>validatePcSelection({durationMs:3600000,roots:['D:\\GitHub\\fixture'],permissions:['screen.full','screen.full'],allowedApps:[]}),/pc_access_denied/);
+});
+test('full access does not implicitly include Codex tasks; explicit extra is valid',()=>{
+  const {PC_PERMISSIONS,PC_FULL_PERMISSIONS,validatePcSelection}=require('../electron/pc-profile-policy.cjs');
+  assert.ok(PC_PERMISSIONS.includes('codex.tasks'));
+  assert.ok(!PC_FULL_PERMISSIONS.includes('codex.tasks'));
+  const selection={durationMs:null,fullAccess:true,roots:['D:\\'],permissions:[...PC_FULL_PERMISSIONS],allowedApps:[]};
+  assert.doesNotThrow(()=>validatePcSelection(selection));
+  assert.doesNotThrow(()=>validatePcSelection({...selection,permissions:[...selection.permissions,'codex.tasks']}));
 });
 test('even a misconfigured shared home cannot make normal and DEV overwrite the same PC authority files',()=>{
   const {pcPolicyForProfile}=require('../electron/pc-profile-policy.cjs');const root=path.join(os.tmpdir(),'same-pc-home');

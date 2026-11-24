@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Feno Bridge PC2",
   "description": "Kendi Chrome sekmelerinizde görünür imleçle, pencere odağını değiştirmeden çalışır.",
-  "version": "5.1.33",
+  "version": "5.1.34",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr5jKD1+N1AU8V7/oe7oKdOXl38z85BbYHaXYd9IZ+o8xebByh2XNGUa+8qf+xypMrWj7NpeJw76dE7e3jMQOYM9XOFgNLuE/7cGwLKJ3wgf5ZgKQd507447DuXvMYqiIpIopxOh7UlI+bJxsHrTU6dOEb/QIJigVSnl3U2ev1vj1YXs2yToGPqdZ7tGTKHm+QKXO3DCFQJYysZMVQginIsP7AWPR4CptHxUZJSbx2tNIfUrCcT1J9H6/sIcFLMfOXrI7C1syozZXPPi0r9pjiHd04uT0WyQ1j/jjXuxgmhKJBchvDK9dt7q1lYzYeeT9RcxkleMzxuWvRyWB+F9hUwIDAQAB",
   "permissions": ["debugger", "tabs", "scripting", "nativeMessaging", "activeTab", "alarms", "storage"],
   "host_permissions": ["http://*/*", "https://*/*"],

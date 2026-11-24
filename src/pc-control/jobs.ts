@@ -12,7 +12,7 @@ import type {PcProfileId} from './types';
 
 export type PcJobKind='typecheck'|'unit-tests'|'android-build'|'playback-smoke';
 export type PcJobState='queued'|'running'|'succeeded'|'failed'|'cancelled'|'timed_out';
-export type PcCommandSpec={command:string;args:readonly string[];usesEmulator:boolean;allowGuiBreakaway?:boolean};
+export type PcCommandSpec={command:string;args:readonly string[];usesEmulator:boolean;allowGuiBreakaway?:boolean;stdinFile?:string};
 export type PcTerminalAudit={at:number;projectRoot:string;purpose:string;commandHash:string};
 const KINDS=new Set<PcJobKind>(['typecheck','unit-tests','android-build','playback-smoke']);
 const MAX_TIMEOUT=10*60*1000,HISTORY_TTL=60*60*1000;

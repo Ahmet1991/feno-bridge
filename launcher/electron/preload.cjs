@@ -8,6 +8,9 @@ function subscription(channel, listener) {
 
 contextBridge.exposeInMainWorld("codexWebLauncher", {
   pcStatus: () => ipcRenderer.invoke("launcher:pc-status"),
+  pcCodexTaskFlag: (key,value) => ipcRenderer.invoke("launcher:pc-codex-task-flag",key,value),
+  pcCodexTasks: () => ipcRenderer.invoke("launcher:pc-codex-tasks"),
+  pcCodexTaskStop: id => ipcRenderer.invoke("launcher:pc-codex-task-stop",id),
   pcPickRoot: () => ipcRenderer.invoke("launcher:pc-pick-root"),
   pcApprove: selection => ipcRenderer.invoke("launcher:pc-approve", selection),
   pcRevoke: () => ipcRenderer.invoke("launcher:pc-revoke"),
