@@ -444,6 +444,13 @@ test("manual-to-automatic transaction exposes capability inspection and preserve
     body: JSON.stringify({ detectCapabilities: true }),
   });
   try {
+    const count = await fetch(`${descriptor.endpoint}/v1/session/tab-count`, {
+      method: "POST", headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" }, body: "{}",
+    });
+    assert.equal(count.status, 200);
+    assert.deepEqual(await count.json(), { activeTabs: 1 });
+    const unauthorized = await fetch(`${descriptor.endpoint}/v1/session/tab-count`, { method: "POST", body: "{}" });
+    assert.equal(unauthorized.status, 401);
     await assert.rejects(
       host.withInteractionModeChange("automatic", async () => {
         const response = await inspect();

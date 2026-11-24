@@ -28,8 +28,8 @@ const PC_ALLOWED_APPLICATIONS=Object.freeze([
   {id:'Code.exe',title:'Visual Studio Code',launchable:false},
   {id:'CalculatorApp.exe',title:'Hesap Makinesi',launchable:false},
 ]);
-const PC_PERMISSIONS=Object.freeze(['status',...Object.keys(PC_PERMISSION_DETAILS)]);
-const PC_FULL_PERMISSIONS=Object.freeze(PC_PERMISSIONS.filter(permission=>permission!=='status'));
+const PC_PERMISSIONS=Object.freeze(['status',...Object.keys(PC_PERMISSION_DETAILS),'codex.tasks']);
+const PC_FULL_PERMISSIONS=Object.freeze(PC_PERMISSIONS.filter(permission=>permission!=='status'&&permission!=='codex.tasks'));
 function validatePcSelection(s) {
   const full=s?.fullAccess===true;
   if(!full&&Array.isArray(s?.permissions)&&s.permissions.includes('chrome.user'))throw deny();
@@ -42,7 +42,7 @@ function validatePcSelection(s) {
     ||!Array.isArray(s.allowedApps)||s.allowedApps.length>32||!s.allowedApps.every(p=>typeof p==='string'&&/^[a-zA-Z0-9_. -]{1,100}$/.test(p))
     ||(s.fullAccess!==undefined&&typeof s.fullAccess!=='boolean')
     ||(full&&(s.durationMs!==null||s.roots.length<1||!s.roots.every(r=>/^[a-z]:\\$/i.test(r))
-      ||s.allowedApps.length!==0||s.permissions.length!==PC_FULL_PERMISSIONS.length
+      ||s.allowedApps.length!==0||s.permissions.length!==PC_FULL_PERMISSIONS.length+Number(s.permissions.includes('codex.tasks'))
       ||!PC_FULL_PERMISSIONS.every(permission=>s.permissions.includes(permission)))))throw deny();
 }
 const copyPcSelection=s=>({durationMs:s.durationMs,...(s.fullAccess===true?{fullAccess:true}:{}),roots:[...s.roots],permissions:[...s.permissions],allowedApps:[...s.allowedApps]});

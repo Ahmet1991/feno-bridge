@@ -7,12 +7,19 @@ export function redactPcText(text:string):string {
     .replace(/\b([a-z0-9_.-]*(?:token|password|secret|api[_-]?key|authorization)[a-z0-9_.-]*)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s"']+)/gi,'$1=[REDACTED]')
     .replace(/\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+/g,'[REDACTED]');
 }
-export function createPcJobLog(){
+export function pagePcJobLog(lines:readonly string[],base:number,cursor:number){
+  const start=Math.min(lines.length,Math.max(0,cursor-base)),page:string[]=[];let size=0;
+  for(let i=start;i<lines.length&&page.length<250;i++){
+    const line=lines[i]!;const n=Buffer.byteLength(line);if(size+n>64*1024)break;page.push(line);size+=n;
+  }
+  return {lines:page,nextCursor:base+start+page.length,firstCursor:base,endCursor:base+lines.length,truncated:base>0};
+}
+export function createPcJobLog(onLine?:(line:string)=>void){
   const lines:string[]=[];let bytes=0,base=0,scriptBlocked=false;
   function append(raw:string,overflow:boolean){
     const safe=redactPcText(raw);if(/\bPSSecurityException\b/.test(safe))scriptBlocked=true;const line=overflow?safe.slice(0,LINE-11)+'[truncated]':safe.slice(0,LINE);
-    lines.push(line);bytes+=Buffer.byteLength(line);
-    while(lines.length>LINES||bytes>BYTES){bytes-=Buffer.byteLength(lines.shift()!);base++;}
+    onLine?.(line);lines.push(line);bytes+=Buffer.byteLength(line)+1;
+    while(lines.length>LINES||bytes>BYTES){bytes-=Buffer.byteLength(lines.shift()!)+1;base++;}
   }
   function stream(){
     const decoder=new StringDecoder('utf8');let pending='',overflow=false,wasCR=false,recent='';
@@ -49,11 +56,6 @@ export function createPcJobLog(){
     return {write:(chunk:Buffer)=>text(decoder.write(chunk)),end(){text(decoder.end());if(pending||overflow)append(pending,overflow);pending='';overflow=false;}};
   }
   const stdout=stream(),stderr=stream();
-  return {stdout,stderr,scriptBlocked:()=>scriptBlocked,end(){stdout.end();stderr.end();},page(cursor:number){
-    const start=Math.min(lines.length,Math.max(0,cursor-base)),page:string[]=[];let size=0;
-    for(let i=start;i<lines.length&&page.length<250;i++){
-      const line=lines[i]!;const n=Buffer.byteLength(line);if(size+n>64*1024)break;page.push(line);size+=n;
-    }
-    return {lines:page,nextCursor:base+start+page.length,firstCursor:base,endCursor:base+lines.length,truncated:base>0};
-  }};
+  return {stdout,stderr,scriptBlocked:()=>scriptBlocked,end(){stdout.end();stderr.end();},
+    snapshot:()=>({lines:[...lines],firstCursor:base}),page:(cursor:number)=>pagePcJobLog(lines,base,cursor)};
 }

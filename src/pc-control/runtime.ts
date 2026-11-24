@@ -11,6 +11,10 @@ import type {PcProfileId} from './types';
 import {createPcRequestLog} from './request-log';
 import {createPcJobHistory} from './job-history';
 import {createUserChromeClient} from './chrome';
+import {createCodexTaskManager,readBundledCodexTaskCatalog,resolveCodexTaskExecutable} from './codex-tasks';
+import {augmentNativeModelCatalog} from '../model-catalog';
+import {readCodexModelContextOverride} from '../codex-integration';
+import {readLauncherBrowserHostDescriptor} from '../launcher-browser-host';
 type ToolAudit={tool:string;at:number;outcome:'ok'|'error';code?:string;reason?:string;fields?:string[]};
 export function createDefaultPcRuntime(){
   const coreHome=getConfigDir();let profileId:PcProfileId='pc2-normal',configured=false,probes=false;
@@ -42,7 +46,38 @@ export function createDefaultPcRuntime(){
   if(files&&userSid&&configured){
     try{recoverAbandonedPcResources(layout.sharedDirectory,userSid,onRecovered);}catch{/* fail closed on subsequent acquisition */}
   }
+  const codexTasks=files&&userSid&&configured&&process.platform==='win32'&&profileId==='pc2-normal'?
+    createCodexTaskManager({
+      directory:layout.directory,files,
+      acquireLock:target=>require('../../launcher/electron/private-acl-native.cjs').acquireExclusivePrivateFile(target,userSid),
+      health:async()=>{
+        try{const config=loadConfig();
+          const response=await fetch('http://127.0.0.1:'+config.port+'/healthz',{signal:AbortSignal.timeout(2000)});
+          const body=await response.json() as {accepting_turns?:boolean};
+          return response.ok&&body.accepting_turns===true;
+        }catch{return false;}
+      },
+      activeTabs:async()=>{
+        try{
+          const config=loadConfig();if(!config.browserHostDescriptorPath)return null;
+          const descriptor=readLauncherBrowserHostDescriptor(config.browserHostDescriptorPath);
+          if(descriptor.profile!=='production')return null;
+          const response=await fetch(descriptor.control.endpoint+'/v1/session/tab-count',{
+            method:'POST',headers:{authorization:'Bearer '+descriptor.control.token,'content-type':'application/json'},
+            body:'{}',signal:AbortSignal.timeout(1000)});
+          const body=await response.json() as {activeTabs?:number};
+          return response.ok&&Number.isSafeInteger(body.activeTabs)&&body.activeTabs!>=0?body.activeTabs!:null;
+        }catch{return null;}
+      },
+      executable:resolveCodexTaskExecutable,
+      // Use the same augmentation as /v1/models and the offline source used by
+      // smoke-codex-catalog. Pin V1 to make the depth limit effective.
+      catalog:executable=>augmentNativeModelCatalog(readBundledCodexTaskCatalog(executable),
+        {...loadConfig(),subagentProtocol:'compatibility-v1'},readCodexModelContextOverride()),
+      port:()=>loadConfig().port,
+    }):undefined;
   const host=createLocalPcHost(authorizer,{
+    codexTasks,
     ...(files&&configured&&profileId==='pc2-normal'?{chromeAction:createUserChromeClient(files)}:{}),
     ...(files&&configured?{browserOptions:{directory:join(layout.directory,'pc-browser-profile'),
       ensureDirectory:(directory:string)=>files.ensurePrivateDirectory(directory)}}:{}),

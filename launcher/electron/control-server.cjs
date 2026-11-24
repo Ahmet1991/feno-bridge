@@ -104,6 +104,7 @@ class BrowserControlServer {
       || request.url === "/v1/turn/end";
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
+    const isTabCount = request.url === "/v1/session/tab-count";
     const isSelectorInspect = request.url === "/v1/session/selectors";
     const isProxyResolution = request.url === "/v1/network/resolve-proxy";
     const manualAction = new Map([
@@ -115,7 +116,7 @@ class BrowserControlServer {
       ["/v1/manual/cancel", "cancel"],
     ]).get(request.url);
     if (request.method !== "POST"
-      || (!isTurn && !isTurnRelease && !isSessionInspect && !isSelectorInspect && !isProxyResolution && !manualAction)) {
+      || (!isTurn && !isTurnRelease && !isSessionInspect && !isTabCount && !isSelectorInspect && !isProxyResolution && !manualAction)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -145,6 +146,11 @@ class BrowserControlServer {
       const preferences = this.getPreferences();
       const host = this.getBrowserHost();
       if (!host) throw new Error("browser host is not ready");
+      if (isTabCount) {
+        if (!(host.turnTabs instanceof Map)) throw new Error("Browser tab registry is unavailable");
+        writeJson(response, 200, { activeTabs: host.turnTabs.size });
+        return;
+      }
       if (isSelectorInspect) {
         if (!Array.isArray(body?.selectors) || body.selectors.length < 1 || body.selectors.length > 64
           || body.selectors.some(spec => !spec || typeof spec !== "object"

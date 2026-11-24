@@ -34,6 +34,14 @@ test('launcher application choices have fixed IDs and cannot include shell execu
   assert.equal(PC_ALLOWED_APPLICATIONS.filter(app=>app.launchable).length,3);
   assert.throws(()=>validatePcSelection({durationMs:3600000,roots:['D:\\GitHub\\fixture'],permissions:['screen.full','screen.full'],allowedApps:[]}),/pc_access_denied/);
 });
+test('full access does not implicitly include Codex tasks; explicit extra is valid',()=>{
+  const {PC_PERMISSIONS,PC_FULL_PERMISSIONS,validatePcSelection}=require('../electron/pc-profile-policy.cjs');
+  assert.ok(PC_PERMISSIONS.includes('codex.tasks'));
+  assert.ok(!PC_FULL_PERMISSIONS.includes('codex.tasks'));
+  const selection={durationMs:null,fullAccess:true,roots:['D:\\'],permissions:[...PC_FULL_PERMISSIONS],allowedApps:[]};
+  assert.doesNotThrow(()=>validatePcSelection(selection));
+  assert.doesNotThrow(()=>validatePcSelection({...selection,permissions:[...selection.permissions,'codex.tasks']}));
+});
 test('even a misconfigured shared home cannot make normal and DEV overwrite the same PC authority files',()=>{
   const {pcPolicyForProfile}=require('../electron/pc-profile-policy.cjs');const root=path.join(os.tmpdir(),'same-pc-home');
   const normal=pcPolicyForProfile({kind:'production',coreHome:root,userData:root});
