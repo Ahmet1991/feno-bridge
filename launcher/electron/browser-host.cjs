@@ -378,6 +378,12 @@ function browserOperationBlockMessage(browserHost, settingName) {
   return operation ? `Wait for ${operation} to finish before changing ${settingName}` : null;
 }
 
+function isReclaimableManualTurnTab(tab) {
+  return tab.interactionMode === "manual"
+    && tab.status === "error"
+    && ["timed-out", "failed", "cancelled"].includes(tab.manualState);
+}
+
 /**
  * Renderer memory per browser tab plus the share of free physical memory. A tab whose renderer
  * process is shared with another tab reports shared=true: closing it would not free that process.
@@ -822,6 +828,13 @@ class BrowserHost {
     }
   }
 
+  get occupiedTurnTabCount() {
+    // The allocator can reclaim these tabs when another turn needs a slot.
+    return [...this.turnTabs.values()].filter(tab => (
+      tab.status !== "ready" && !isReclaimableManualTurnTab(tab)
+    )).length;
+  }
+
   evictOldestRetainedTurnTab() {
     const retained = [...this.turnTabs.values()]
       .filter(tab => tab.status === "ready")
@@ -833,9 +846,7 @@ class BrowserHost {
 
   evictOldestReclaimableTurnTab() {
     const terminalManual = [...this.turnTabs.values()]
-      .filter(tab => tab.interactionMode === "manual"
-        && tab.status === "error"
-        && ["timed-out", "failed", "cancelled"].includes(tab.manualState))
+      .filter(isReclaimableManualTurnTab)
       .sort((left, right) => (left.lastHeartbeatAt ?? 0) - (right.lastHeartbeatAt ?? 0))[0];
     if (terminalManual) {
       this.removeTurnTab(terminalManual, false);
