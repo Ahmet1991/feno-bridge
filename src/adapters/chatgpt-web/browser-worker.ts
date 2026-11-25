@@ -1565,7 +1565,10 @@ export function remainingStageBudgetMs(
   return Math.max(250, timeoutMs - awakeMs);
 }
 
-export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 5_000;
+// Concurrent Native2 turns can keep the renderer busy beyond five seconds.
+// Allow the observed ~12s busy-page reads headroom; explicit shorter stage
+// budgets and the separate 30s liveness ceiling still apply.
+export const CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS = 15_000;
 export const MAX_CHATGPT_BROWSER_PAGE_REBINDS = 2;
 /**
  * 30.09: a 186k-token conversation kept ChatGPT's React renderer busy in back-to-back renders of

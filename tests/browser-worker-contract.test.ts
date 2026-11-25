@@ -1268,14 +1268,21 @@ test("Luna turns without a retained conversation never send connector identity a
 });
 
 test("a stalled DOM observation fails within its probe budget", async () => {
-  expect(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS).toBe(5_000);
+  expect(CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS).toBe(15_000);
   expect(MAX_CHATGPT_BROWSER_PAGE_REBINDS).toBe(2);
+  await expect(withChatGptBrowserObservationTimeout(Promise.resolve("readable")))
+    .resolves.toBe("readable");
   await expect(withChatGptBrowserObservationTimeout(
     new Promise<never>(() => {}),
     5,
   )).rejects.toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
 
 });
+
+test("a slow but successful DOM probe survives the previous five-second ceiling", async () => {
+  const read = new Promise<string>(resolve => setTimeout(() => resolve("readable"), 5_150));
+  await expect(withChatGptBrowserObservationTimeout(read)).resolves.toBe("readable");
+}, 20_000);
 
 test("an accepted Full-mode send survives one stalled DOM probe and a later MCP batch without resending", async () => {
   const provider: CodexProviderConfig = {

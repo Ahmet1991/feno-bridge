@@ -100,6 +100,53 @@ test('result truncation, masked paginated logs, spawn count and heartbeat',async
     expect(Buffer.byteLength(result.finalMessage)).toBe(32768);expect(f.make().logs(task.taskId,0).lines).toEqual(page.lines);
   }finally{await f.cleanup();}
 });
+test('wait reports a fresh tab count when the task exits during the wait',async()=>{
+  const f=fixture();try{
+    f.setTabs(0);const task=await f.manager.start(f.input);
+    f.setTabs(4);const wait=f.manager.wait(task.taskId,1);
+    await Bun.sleep(20);f.setTabs(0);f.complete();
+    expect(await wait).toMatchObject({state:'completed',activeTabs:0});
+  }finally{await f.cleanup();}
+});
+test('wait retries an unavailable tab observation and never invents zero',async()=>{
+  let probes=0;
+  const f=fixture({activeTabs:async()=>{probes++;return probes===1?0:probes===2?null:3;}});
+  try{
+    const task=await f.manager.start(f.input);f.complete();
+    expect(await f.manager.wait(task.taskId,1)).toMatchObject({state:'completed',activeTabs:3});
+    expect(probes).toBe(3);
+  }finally{await f.cleanup();}
+  let attempts=0;
+  const missing=fixture({activeTabs:async()=>++attempts===1?0:null});
+  try{
+    const task=await missing.manager.start(missing.input);missing.complete();
+    expect(await missing.manager.wait(task.taskId,1)).toMatchObject({state:'completed',activeTabs:null});
+    expect(attempts).toBe(3);
+  }finally{await missing.cleanup();}
+});
+test('wait discards a running tab snapshot if the process exits during that observation',async()=>{
+  let probes=0;let onFirstWaitProbe:()=>void=()=>{};
+  const f=fixture({activeTabs:async()=>{
+    probes++;if(probes===1)return 0;
+    if(probes===2){onFirstWaitProbe();await Bun.sleep(10);return 4;}
+    return 0;
+  }});
+  try{
+    const task=await f.manager.start(f.input);onFirstWaitProbe=()=>f.complete();
+    expect(await f.manager.wait(task.taskId,1)).toMatchObject({state:'completed',activeTabs:0});
+    expect(probes).toBe(3);
+  }finally{await f.cleanup();}
+});
+test('a hung tab observation cannot indefinitely delay the task result',async()=>{
+  let probes=0;
+  const f=fixture({activeTabs:async()=>++probes===1?0:new Promise<null>(()=>{})});
+  try{
+    const task=await f.manager.start(f.input);f.complete();
+    const started=performance.now();
+    expect(await f.manager.wait(task.taskId,1)).toMatchObject({state:'completed',activeTabs:null});
+    expect(performance.now()-started).toBeLessThan(1000);
+  }finally{await f.cleanup();}
+});
 test('launcher cancel.request stops the contained job and records cancelled',async()=>{
   const f=fixture();try{
     const task=await f.manager.start(f.input);

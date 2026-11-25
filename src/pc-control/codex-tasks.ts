@@ -280,17 +280,35 @@ export function createCodexTaskManager(options:TaskOptions){
   async function wait(id:string,seconds=45){
     if(!Number.isInteger(seconds)||seconds<1||seconds>50)throw invalidPcArgument('waitSeconds','range');
     const deadline=performance.now()+seconds*1000;
-    const tabs=options.activeTabs().catch(()=>null);
+    // Sample after waiting, not before: a completed task may have released its tabs
+    // during this call. Reserve a bounded part of the caller's wait for observation.
+    const tabBudget=Math.min(5000,seconds*250);
+    const pollDeadline=deadline-tabBudget;
     let record=get(id);
-    while(running(record)&&performance.now()<deadline){
-      const remaining=Math.max(0,deadline-performance.now());
+    while(running(record)&&performance.now()<pollDeadline){
+      const remaining=Math.max(0,pollDeadline-performance.now());
       let timer:ReturnType<typeof setTimeout>|undefined;
       try{await Promise.race([new Promise<void>(resolve=>{timer=setTimeout(resolve,Math.min(remaining,1000));}),...(active?.record.taskId===id?[active.done]:[])]);}
       finally{clearTimeout(timer);}
       record=get(id);
     }
+    const tabDeadline=Math.min(deadline,performance.now()+tabBudget);
+    let tabs:number|null=null;
+    for(let attempt=0;attempt<2&&performance.now()<tabDeadline;attempt++){
+      let tabTimer:ReturnType<typeof setTimeout>|undefined;
+      let observed:number|null=null;
+      try{observed=await Promise.race([Promise.resolve().then(()=>options.activeTabs()).catch(()=>null),new Promise<null>(resolve=>{
+        tabTimer=setTimeout(()=>resolve(null),Math.max(0,tabDeadline-performance.now()));
+      })]);}finally{clearTimeout(tabTimer);}
+      const latest=get(id);
+      // If the process exited during observation, its prior count is not a terminal snapshot.
+      tabs=running(record)&&!running(latest)?null:observed;
+      record=latest;
+      if(tabs!==null&&Number.isSafeInteger(tabs)&&tabs>=0)break;
+      tabs=null;
+    }
     return {state:record.state,elapsedSeconds:Math.max(0,Math.floor(((record.endedAt??clock())-record.startedAt)/1000)),subagentsStarted:record.subagentsStarted,
-      activeTabs:await tabs,
+      activeTabs:tabs,
       ...(record.state==='completed'?finalMessage(id):!running(record)?{error:record.error??record.state}:{})};
   }
   async function cancel(id:string){
