@@ -4160,3 +4160,34 @@ test("idle bootstrap retries transient errors within the same contents and propa
   await assert.rejects(initializeBrowserWithRetry(contents,logger,{load:async()=>{calls++;throw Error("renderer crashed");},pause:async()=>{}}),/renderer crashed/);
   assert.equal(calls,1);
 });
+
+test("owned conversation sweep after the last task tab closes uses one temporary cleanup page", async () => {
+  const pending = ["closed-owned", "still-open"];
+  const deleted = []; let created = 0, closed = 0;
+  const page = { getURL: () => "https://chatgpt.com/" };
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([["open", { status: "running", ownedConversationIds: new Set(["still-open"]) }]]),
+    conversationCleanup: { pendingIds: () => pending, async sweep(contents, isOpen) {
+      assert.equal(contents, page); deleted.push(...pending.filter(id => !isOpen(id)));
+      await Promise.resolve(); return { deleted: deleted.length };
+    } },
+    async createOwnedConversationCleanupPage() { created++; return { contents: page, close() { closed++; } }; },
+    logger: { warn() {} },
+  });
+  const first = fixture.sweepOwnedConversations(1000, true);
+  const second = fixture.sweepOwnedConversations(1000, true);
+  assert.equal(first, second);
+  await first;
+  assert.deepEqual(deleted, ["closed-owned"]);
+  assert.equal(created, 1); assert.equal(closed, 1);
+  assert.equal(fixture.ownedConversationSweepInFlight, null);
+});
+
+test("owned cleanup never opens a temporary page for conversations still owned by open tabs", () => {
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map([["open", { ownedConversationIds: new Set(["open-chat"]) }]]),
+    conversationCleanup: { pendingIds: () => ["open-chat"], sweep() { throw Error("must not sweep"); } },
+    createOwnedConversationCleanupPage() { throw Error("must not open a cleanup page"); },
+  });
+  assert.equal(fixture.sweepOwnedConversations(1000, true), null);
+});

@@ -46,6 +46,7 @@ import {
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
 import { emitNative2AgentWait, pendingNative2AgentWait } from "./responses/native2-agent-wait";
+import { native2TaskLifecycle } from "./responses/native2-task-lifecycle";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
 import type { CodexProviderConfig } from "./types";
@@ -549,6 +550,7 @@ export async function responseRequest(
 
   const compaction = parsed._compactionRequest === true;
   const native2Identity = extractChatGptTurnIdentity(parsed);
+  const native2CleanupKey = native2TaskLifecycle.observe(parsed, native2Identity);
   const native2Checkpoint = compactionContinuationNative2Wait(parsed, native2Identity, () => chatGptTurnUserRevisionHistory(parsed).at(-1));
   const pendingNative2Wait = pendingNative2AgentWait(parsed, native2Checkpoint);
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
@@ -652,17 +654,31 @@ export async function responseRequest(
       const adapter = adapterFactory(provider);
       let forwardedTool = false;
       let prematureFinal: Extract<AdapterEvent, { type: "done" }> | undefined;
+      let acceptedFinal: Extract<AdapterEvent, { type: "done" }> | undefined;
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
+        if (event.type === "tool_call_start") forwardedTool = true;
         if (native2Wait) {
-          if (event.type === "tool_call_start") forwardedTool = true;
           if (event.type === "text_delta" && event.phase === "final_answer") return;
           if (event.type === "done" && event.endTurn === true && event.stopReason === "stop" && !forwardedTool) {
             prematureFinal = event;
             return;
           }
         }
+        if (native2CleanupKey && !compaction && !native2Wait && !forwardedTool
+          && event.type === "done" && event.endTurn === true && event.stopReason === "stop") {
+          acceptedFinal = event; return;
+        }
         forward(event);
       });
+      if (acceptedFinal && native2CleanupKey && !abort.signal.aborted) {
+        try {
+          const result = await native2TaskLifecycle.finish(native2CleanupKey, threads => chatGptTurnSessions.releaseSettledNativeThreads(threads));
+          console.info("[native2] final conversation release", result);
+        } catch (error) {
+          console.warn("[native2] final conversation release not confirmed", error instanceof Error ? error.name : "Error");
+        }
+        forward(acceptedFinal);
+      }
       if (native2Wait && prematureFinal && !abort.signal.aborted) {
         // The browser ended its own reply. Retire that exact reply before Codex re-enters
         // with the waited results, so it cannot replay the discarded early answer.

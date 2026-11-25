@@ -147,7 +147,7 @@ interface ChatGptTurnRuntimeBase {
   text: ChatGptTextFeed;
   usageInput?: CodexParsedRequest;
   conversationKey?: string;
-  releaseRetainedConversation?: () => Promise<void>;
+  releaseRetainedConversation?: () => Promise<void | number>;
   /** Idempotently retire the turn-bound MCP capability after browser and observer settlement. */
   retireCapability?: () => void | Promise<void>;
   submission?: { phase: "prepared" | "send_activated" | "accepted" };
@@ -645,6 +645,39 @@ export class ChatGptTurnSessions {
 
   async retireConversationAndWait(conversationKey: string): Promise<number> {
     return this.closeConversationAndWait(conversationKey);
+  }
+
+  /** Release only retained automatic conversations belonging to a completed Native2 process. */
+  async releaseSettledNativeThreads(threads: ReadonlySet<string>): Promise<{ released: number; pending: number; closedTabs: number }> {
+    const owned = (session: ChatGptTurnSession) => Boolean(session.nativeThreadId && threads.has(session.nativeThreadId));
+    const keys = new Set([...this.entries.values()].filter(owned).flatMap(session => {
+      const key = session.conversationKey();
+      return key ? [key] : [];
+    }));
+    let released = 0, pending = 0, closedTabs = 0;
+    for (const key of keys) {
+      const matches = [...this.entries.values()].filter(session => session.conversationKey() === key);
+      if (matches.some(session => !owned(session) || session.isActive() || !session.isPhysicallySettled())) {
+        pending++; continue;
+      }
+      const head = this.conversationHeads.get(key);
+      const release = matches.findLast(session => session.runtime.releaseRetainedConversation)?.runtime.releaseRetainedConversation;
+      if (!release) { pending++; continue; }
+      try {
+        const closed = await release();
+        if (typeof closed === "number") closedTabs += closed;
+        // Never detach a newer or foreign response that took ownership during release.
+        const current = [...this.entries.values()].filter(session => session.conversationKey() === key);
+        if (this.conversationHeads.get(key) !== head || current.some(session =>
+          !matches.includes(session) || !owned(session) || session.isActive() || !session.isPhysicallySettled())) {
+          pending++; continue;
+        }
+        this.conversationHeads.delete(key);
+        for (const session of current) session.detachConversation(key);
+        released++;
+      } catch { pending++; }
+    }
+    return { released, pending, closedTabs };
   }
 
   async retireSettledTurnForAgentWait(traceId: string, signal?: AbortSignal): Promise<void> {

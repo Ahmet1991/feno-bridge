@@ -1872,17 +1872,53 @@ class BrowserHost {
       && navigationOriginForLog(contents.getURL()) === CHATGPT_ORIGIN) ?? null;
   }
 
+  // Closing the last managed tab must not remove the only page able to run the existing
+  // owned-conversation cleanup. Use a short-lived, isolated view in the same signed-in partition.
+  async createOwnedConversationCleanupPage() {
+    if (this.browserInteractionMode() === "manual") return null;
+    const view = new WebContentsView({ webPreferences: {
+      partition: this.partition, contextIsolation: true, nodeIntegration: false,
+      sandbox: true, backgroundThrottling: false,
+    } });
+    const contents = view.webContents;
+    const close = () => { if (!contents.isDestroyed()) contents.close(); };
+    try {
+      await loadCommittedBrowserSurface(contents, TEMPORARY_CHAT_URL, 15_000);
+      if (navigationOriginForLog(contents.getURL()) !== CHATGPT_ORIGIN) { close(); return null; }
+      return { contents, close };
+    } catch (error) { close(); throw error; }
+  }
+
   sweepOwnedConversations(now = Date.now(), force = false) {
     const cleanup = this.conversationCleanup;
-    if (!cleanup || cleanup.pendingIds().length === 0) return null;
+    if (!cleanup) return null;
+    const ownedByOpenTab = id => [...this.turnTabs.values()].some(tab => tab.ownedConversationIds?.has(id));
+    const pendingIds = cleanup.pendingIds();
+    if (!pendingIds.length) return null;
+    const existingPage = BrowserHost.prototype.ownedConversationCleanupPage.call(this);
+    if (!existingPage && !pendingIds.some(id => !ownedByOpenTab(id))) return null;
+    if (this.ownedConversationSweepInFlight) return this.ownedConversationSweepInFlight;
     if (!force && now - (this.lastOwnedConversationSweepAt ?? 0) < OWNED_CONVERSATION_SWEEP_MS) return null;
     this.lastOwnedConversationSweepAt = now;
-    const page = BrowserHost.prototype.ownedConversationCleanupPage.call(this);
-    const ownedByOpenTab = id => [...this.turnTabs.values()].some(tab => tab.ownedConversationIds?.has(id));
-    return cleanup.sweep(page, ownedByOpenTab).catch(error => {
+    let temporary;
+    const work = async () => {
+      let page = existingPage;
+      if (!page) {
+        temporary = await this.createOwnedConversationCleanupPage();
+        page = temporary?.contents;
+      }
+      if (!page) return null;
+      // The existing cleanup ledger remains the sole authority for deletion.
+      return await cleanup.sweep(page, ownedByOpenTab);
+    };
+    this.ownedConversationSweepInFlight = work().catch(error => {
       this.logger?.warn?.("browser.owned_conversations_sweep_failed", { errorType: error?.name || "Error" });
       return null;
+    }).finally(() => {
+      try { temporary?.close(); } catch { /* A closed renderer needs no further cleanup. */ }
+      finally { this.ownedConversationSweepInFlight = null; }
     });
+    return this.ownedConversationSweepInFlight;
   }
 
   scheduleOwnedConversationSweep() {
