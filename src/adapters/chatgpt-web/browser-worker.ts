@@ -151,6 +151,9 @@ export const CHATGPT_TURN_NO_PROGRESS_MS = 15 * 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
+// Mention typing is a multi-key operation on the shared Electron renderer, not one click.
+export const CHATGPT_CONNECTOR_MENTION_TIMEOUT_MS = 25_000;
+export const CHATGPT_COMPOSER_RECOVERY_TIMEOUT_MS = 20_000;
 
 export function xpathStringLiteral(value: string): string {
   if (!value.includes("'")) return `'${value}'`;
@@ -389,11 +392,53 @@ class ChatGptPersonalizationDeadlineError extends Error {
   }
 }
 
-class ChatGptPersistentBrowserStateError extends AggregateError {
+export class ChatGptPersistentBrowserStateError extends AggregateError {
   constructor(errors: Iterable<unknown>, message: string) {
     super(errors, message);
     this.name = "ChatGptPersistentBrowserStateError";
   }
+}
+
+/** Only pre-send transport/renderer failures qualify; wrong connector identities stay fail-closed. */
+export function isRecoverableChatGptPromptPreparationError(error: unknown): boolean {
+  if (error instanceof ChatGptPersistentBrowserStateError) {
+    return error.errors.length > 0 && isRecoverableChatGptPromptPreparationError(error.errors[0]);
+  }
+  return error instanceof ChatGptBrowserObservationTimeoutError
+    || (error instanceof Error && error.name === "TimeoutError");
+}
+
+/** Reload only the same saved, unsent conversation. Never reset the submission baseline blindly. */
+export async function recoverUnsentChatGptPrompt(options: {
+  url: () => string;
+  evidence: () => Promise<unknown>;
+  reload: () => Promise<void>;
+  verifyRetained: () => Promise<void>;
+  signal?: AbortSignal;
+}): Promise<void> {
+  throwIfPromptAttachmentAborted(options.signal);
+  const original = new URL(options.url());
+  if (original.origin !== "https://chatgpt.com" || !/^\/c\/[a-zA-Z0-9-]+$/.test(original.pathname)) {
+    throw new Error("ChatGPT prompt recovery requires the original saved conversation");
+  }
+  const requireOriginalConversation = () => {
+    throwIfPromptAttachmentAborted(options.signal);
+    const current = new URL(options.url());
+    if (current.origin !== original.origin || current.pathname !== original.pathname) {
+      throw new Error("ChatGPT prompt recovery lost its original conversation");
+    }
+  };
+  const requireUnsent = async () => {
+    requireOriginalConversation();
+    if (await options.evidence()) throw new Error("ChatGPT prompt recovery refused: submission evidence exists");
+    throwIfPromptAttachmentAborted(options.signal);
+  };
+  await requireUnsent();
+  await options.reload();
+  throwIfPromptAttachmentAborted(options.signal);
+  requireOriginalConversation();
+  await options.verifyRetained();
+  await requireUnsent();
 }
 
 function remainingChatGptPersonalizationMs(deadline: number, signal?: AbortSignal): number {
@@ -1691,6 +1736,7 @@ const CHATGPT_HEAVY_STAGES = new Set([
   "final_part_effort_selection",
   "connector_catalog_refresh",
   "prompt_attachment",
+  "prompt_preparation_recovery",
   "file_attachment",
   "send",
 ]);
@@ -4370,7 +4416,7 @@ export class ChatGptBrowserWorker {
 
   private async clearChatGptComposerState(
     page: Page,
-    timeoutMs = CHATGPT_PERSONALIZATION_CLEANUP_TIMEOUT_MS,
+    timeoutMs = CHATGPT_COMPOSER_RECOVERY_TIMEOUT_MS,
   ): Promise<void> {
     await runChatGptPersonalizationCleanup(async (deadline, signal) => {
       await pressChatGptPersonalizationEscape(page, deadline, signal);
@@ -4472,7 +4518,7 @@ export class ChatGptBrowserWorker {
           await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, {
             delay: 25,
             signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+            timeout: CHATGPT_CONNECTOR_MENTION_TIMEOUT_MS,
           });
           await capture("personalization-proof-mention-triggered");
           try {
@@ -4577,7 +4623,7 @@ export class ChatGptBrowserWorker {
         await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, {
           delay: 25,
           signal: abortSignal,
-          timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+          timeout: CHATGPT_CONNECTOR_MENTION_TIMEOUT_MS,
         });
         if (!firstMenuCaptured) {
           firstMenuCaptured = true;
@@ -6645,6 +6691,8 @@ export class ChatGptBrowserWorker {
       let submissionBaseline = await this.captureSubmissionBaseline(page);
       let catalogRefreshAvailable = mode.localTools && !reuseConversation && !prepared.multipart;
       const connectorAttemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 };
+      let promptRecoveryAvailable = Boolean(launcherSurfaceId && !maintenancePage && !prepared.multipart
+        && !turn.compaction && mode.localTools && new URL(page.url()).pathname.startsWith("/c/"));
       for (;;) {
         try {
           await this.runStage(
@@ -6674,6 +6722,45 @@ export class ChatGptBrowserWorker {
           );
           break;
         } catch (error) {
+          if (promptRecoveryAvailable && isRecoverableChatGptPromptPreparationError(error)) {
+            promptRecoveryAvailable = false;
+            catalogRefreshAvailable = false;
+            const expectedPath = new URL(page.url()).pathname;
+            await diagnostics.capture(page, "prompt-preparation-recovery-started");
+            await this.runStage(
+              turn.traceId, "prompt_preparation_recovery", browserStageTimeouts.temporaryChatPreparation,
+              async (stageSignal) => {
+                const signal = turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal;
+                await recoverUnsentChatGptPrompt({
+                  url: () => page.url(),
+                  evidence: () => this.currentSubmissionEvidence(page, submissionBaseline, signal),
+                  reload: async () => {
+                    await withBrowserTurnAbort(page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }), signal);
+                    submissionBaseline.domCache = {};
+                  },
+                  verifyRetained: async () => {
+                    await this.activeComposer(page, 30_000, signal);
+                    await this.assertRetainedConversation(page, turn, "before_submission", expectedPath);
+                  },
+                  signal,
+                });
+                // The old connector/draft and model controls are not trusted after a reload.
+                await this.clearChatGptComposerState(page);
+                throwIfPromptAttachmentAborted(signal);
+                mode = await this.selectModelAndEffort(page, turn.modelId, requestedMode.effort,
+                  browserCapabilities, checkpoint => diagnostics.capture(page, `prompt-recovery-${checkpoint}`));
+                if (await this.currentSubmissionEvidence(page, submissionBaseline, signal)) {
+                  throw new Error("ChatGPT prompt recovery refused: submission evidence exists after reset");
+                }
+                await this.assertRetainedConversation(page, turn, "before_submission", expectedPath);
+                submissionBaseline = await this.captureSubmissionBaseline(page);
+                connectorAttemptBudget.triggerAttempts = 0;
+              },
+              chatGptSuspensionClock, true,
+            );
+            await diagnostics.capture(page, "prompt-preparation-recovered");
+            continue;
+          }
           if (!(error instanceof ChatGptConnectorCatalogStaleError) || !catalogRefreshAvailable) throw error;
           catalogRefreshAvailable = false;
           await diagnostics.capture(page, "connector-catalog-stale");

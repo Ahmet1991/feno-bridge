@@ -7,7 +7,7 @@ import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
 import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
-import { isHeavyChatGptStage, xpathStringLiteral } from "../src/adapters/chatgpt-web/browser-worker";
+import { isHeavyChatGptStage, xpathStringLiteral, recoverUnsentChatGptPrompt, isRecoverableChatGptPromptPreparationError, ChatGptPersistentBrowserStateError, CHATGPT_CONNECTOR_MENTION_TIMEOUT_MS, CHATGPT_COMPOSER_RECOVERY_TIMEOUT_MS } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptTurnIdentitySelector } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptSubmittedUserTurnRekeyed, chatGptTurnExchangeKey, chatGptTurnIdentityShape } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptPromptPrefixLadder } from "../src/adapters/chatgpt-web/browser-worker";
@@ -2034,6 +2034,58 @@ test("prompt insertion stops before touching the composer when its stage is alre
   expect(resolvedComposer).toBeFalse();
 });
 
+test("saved-chat pre-send recovery only retries transient preparation failures", () => {
+  const timeout = Object.assign(new Error("locator.pressSequentially: Timeout 10000ms exceeded"), { name: "TimeoutError" });
+  const wrongConnector = new Error("wrong connector identity");
+  const dirtyComposer = new Error("composer cleanup failed");
+  expect(CHATGPT_CONNECTOR_MENTION_TIMEOUT_MS).toBe(25_000);
+  expect(CHATGPT_COMPOSER_RECOVERY_TIMEOUT_MS).toBe(20_000);
+  expect(isRecoverableChatGptPromptPreparationError(timeout)).toBe(true);
+  expect(isRecoverableChatGptPromptPreparationError(new ChatGptPersistentBrowserStateError([timeout, dirtyComposer], "failed"))).toBe(true);
+  expect(isRecoverableChatGptPromptPreparationError(new ChatGptPersistentBrowserStateError([wrongConnector, timeout], "failed"))).toBe(false);
+  expect(isRecoverableChatGptPromptPreparationError(new DOMException("cancelled", "AbortError"))).toBe(false);
+  expect(isHeavyChatGptStage("prompt_preparation_recovery")).toBe(true);
+});
+
+test("pre-send recovery keeps the saved conversation and checks submission before and after reload", async () => {
+  const events: string[] = [];
+  await recoverUnsentChatGptPrompt({
+    url: () => "https://chatgpt.com/c/1234-abcd",
+    evidence: async () => { events.push("evidence"); return undefined; },
+    reload: async () => { events.push("reload"); },
+    verifyRetained: async () => { events.push("retained"); },
+  });
+  expect(events).toEqual(["evidence", "reload", "retained", "evidence"]);
+});
+
+test("pre-send recovery refuses accepted submissions and a changed conversation", async () => {
+  let reloaded = false;
+  let verified = false;
+  let url = "https://chatgpt.com/c/1234-abcd";
+  const base = {
+    url: () => url,
+    reload: async () => { reloaded = true; },
+    verifyRetained: async () => { verified = true; },
+  };
+  await expect(recoverUnsentChatGptPrompt({ ...base, evidence: async () => "user_turn" })).rejects.toThrow("submission evidence exists");
+  expect(reloaded).toBe(false);
+  await expect(recoverUnsentChatGptPrompt({ ...base, evidence: async () => reloaded ? "assistant_turn" : undefined })).rejects.toThrow("submission evidence exists");
+  expect(verified).toBe(true);
+  verified = false;
+  await expect(recoverUnsentChatGptPrompt({ ...base, evidence: async () => undefined, reload: async () => { url = "https://chatgpt.com/c/foreign"; } })).rejects.toThrow("lost its original conversation");
+  expect(verified).toBe(false);
+});
+
+test("pre-send recovery respects cancellation and refuses an unowned navigation", async () => {
+  let reloads = 0;
+  const controller = new AbortController();
+  const options = { url: () => "https://chatgpt.com/c/1234-abcd", evidence: async () => undefined, reload: async () => { reloads++; }, verifyRetained: async () => {} };
+  controller.abort();
+  await expect(recoverUnsentChatGptPrompt({ ...options, signal: controller.signal })).rejects.toThrow("aborted");
+  await expect(recoverUnsentChatGptPrompt({ ...options, url: () => "https://chatgpt.com/" })).rejects.toThrow("original saved conversation");
+  expect(reloads).toBe(0);
+});
+
 test("connector selection re-resolves the active composer after ChatGPT replaces it", async () => {
   const calls: Array<[string, string?]> = [];
   let connectorSelected = false;
@@ -2064,7 +2116,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
     fill: async (value: string) => { calls.push(["fill", value]); },
     focus: async () => { calls.push(["focus"]); },
     pressSequentially: async (value: string, options: { delay: number; signal?: AbortSignal; timeout: number }) => {
-      expect(options).toEqual({ delay: 25, signal: undefined, timeout: 10_000 });
+      expect(options).toEqual({ delay: 25, signal: undefined, timeout: CHATGPT_CONNECTOR_MENTION_TIMEOUT_MS });
       calls.push(["pressSequentially", value]);
     },
     press: async (key: string) => {
