@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { decodeCompactionSummary, isReadableCompactionSummaryText, SUMMARY_PREFIX } from "../../responses/compaction";
 import type { CodexParsedRequest } from "../../types";
+import type { Native2Wait } from "../../responses/native2-agent-wait";
 import type { ChatGptTurnIdentity, ChatGptTurnUserRevision } from "./environment";
 import type { CompactionPendingToolRequest } from "./turn-broker";
 
@@ -8,6 +9,7 @@ interface CompletedCheckpoint {
   summaryHash: string;
   sourceHashes: ReadonlySet<string>;
   pendingWork: readonly CompactionPendingToolRequest[];
+  native2Wait?: Native2Wait;
 }
 
 // Evidence of a checkpoint actually returned by this daemon, not authority inferred from text
@@ -34,6 +36,7 @@ export function rememberCompactionContinuation(
   identity: ChatGptTurnIdentity,
   sources: readonly ChatGptTurnUserRevision[],
   summary: string,
+  native2Wait?: Native2Wait,
 ): void {
   const key = scope(parsed, identity);
   if (!key || !parsed._compactionRequest || !summary) return;
@@ -44,8 +47,21 @@ export function rememberCompactionContinuation(
     summaryHash: digest(summary),
     sourceHashes: new Set(sources.map(sourceDigest)),
     pendingWork: structuredClone(pendingWork),
+    native2Wait,
   });
   while (checkpoints.size > MAX_CHECKPOINTS) checkpoints.delete(checkpoints.keys().next().value!);
+}
+
+export function compactionContinuationNative2Wait(
+  parsed: CodexParsedRequest,
+  identity: ChatGptTurnIdentity,
+  readSource: () => ChatGptTurnUserRevision | undefined,
+): Native2Wait | undefined {
+  const key = scope(parsed, identity);
+  const pending = key ? checkpoints.get(key)?.native2Wait : undefined;
+  if (!pending) return undefined;
+  const source = readSource();
+  return source && isAcceptedCompactionContinuation(parsed, identity, source) ? pending : undefined;
 }
 
 export function stageCompactionContinuationPendingWork(

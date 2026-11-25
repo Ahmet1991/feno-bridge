@@ -11,11 +11,12 @@ import {
 import { ChatGptWebAdapterError, chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
 import {
   CHATGPT_TURN_REVISION_CONFLICT_MESSAGE,
+  chatGptTurnUserRevisionHistory,
   extractChatGptTurnIdentity,
   extractCodexTurnIdentityFromBody,
   extractChatGptCompactionSourceRevision,
 } from "./adapters/chatgpt-web/environment";
-import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
+import { compactionContinuationNative2Wait, rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
 import type { AppConfig } from "./config";
 import { providerConfig } from "./config";
@@ -44,6 +45,7 @@ import {
   extractCompactUserMessages,
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
+import { emitNative2AgentWait, pendingNative2AgentWait } from "./responses/native2-agent-wait";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
 import type { CodexProviderConfig } from "./types";
@@ -475,6 +477,9 @@ function toolBridgeMaps(parsed: CodexParsedRequest): {
   return { toolNsMap, freeformToolNames, toolSearchToolNames };
 }
 
+const recentNative2AgentWaits = new Map<string, Promise<void>>();
+const MAX_RECENT_NATIVE2_AGENT_WAITS = 256;
+
 export async function responseRequest(
   req: Request,
   config: AppConfig,
@@ -543,6 +548,9 @@ export async function responseRequest(
   }
 
   const compaction = parsed._compactionRequest === true;
+  const native2Identity = extractChatGptTurnIdentity(parsed);
+  const native2Checkpoint = compactionContinuationNative2Wait(parsed, native2Identity, () => chatGptTurnUserRevisionHistory(parsed).at(-1));
+  const pendingNative2Wait = pendingNative2AgentWait(parsed, native2Checkpoint);
   const rememberCompletedResponse = (response: Record<string, unknown>): void => {
     if (!compaction) {
       if (options.rememberState !== false) rememberResponseState(parsed._rawBody, response, { force: true });
@@ -563,7 +571,7 @@ export async function responseRequest(
       ...parsed,
       _rawBody: { ...body, input: buildCompactV1Output(extractCompactUserMessages(body.input), summary) },
     });
-    rememberCompactionContinuation(parsed, identity, [source, v1Source], summary);
+    rememberCompactionContinuation(parsed, identity, [source, v1Source], summary, pendingNative2Wait);
   };
   if (compaction && route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     return formatErrorResponse(
@@ -618,17 +626,61 @@ export async function responseRequest(
       headers: { "content-type": "application/json" },
     });
   }
-  const adapter = adapterFactory(provider);
+  const native2Wait = compaction ? undefined : pendingNative2Wait;
+  if (native2Wait?.invalidWaitResult) {
+    return formatErrorResponse(400, "invalid_request_error", "Native2 could not validate the pending subagent results. The task did not complete.");
+  }
+  const waitKey = native2Wait && traceId ? JSON.stringify([traceId, native2Wait.round]) : undefined;
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
   if (req.signal.aborted) abort.abort();
   else req.signal.addEventListener("abort", () => abort.abort(), { once: true });
   const run = async () => {
+    const forward = (event: AdapterEvent): void => {
+      options.onAdapterEvent?.(event);
+      queue.push(event);
+    };
     try {
+      // Once an early answer starts a wait, collect the remaining native outcomes without
+      // opening extra browser turns. A timeout alone is not a terminal agent outcome.
+      const retiredRound = waitKey ? recentNative2AgentWaits.get(waitKey) : undefined;
+      if (native2Wait && (native2Wait.followup || retiredRound)) {
+        await retiredRound;
+        if (!abort.signal.aborted) emitNative2AgentWait(native2Wait, forward, waitKey);
+        return;
+      }
+      const adapter = adapterFactory(provider);
+      let forwardedTool = false;
+      let prematureFinal: Extract<AdapterEvent, { type: "done" }> | undefined;
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
-        options.onAdapterEvent?.(event);
-        queue.push(event);
+        if (native2Wait) {
+          if (event.type === "tool_call_start") forwardedTool = true;
+          if (event.type === "text_delta" && event.phase === "final_answer") return;
+          if (event.type === "done" && event.endTurn === true && event.stopReason === "stop" && !forwardedTool) {
+            prematureFinal = event;
+            return;
+          }
+        }
+        forward(event);
       });
+      if (native2Wait && prematureFinal && !abort.signal.aborted) {
+        // The browser ended its own reply. Retire that exact reply before Codex re-enters
+        // with the waited results, so it cannot replay the discarded early answer.
+        if (traceId && waitKey) {
+          let retired = recentNative2AgentWaits.get(waitKey);
+          if (!retired) {
+            // Keep a failed release too. Retrying this round must never reopen a detached reply.
+            retired = chatGptTurnSessions.retireSettledTurnForAgentWait(traceId);
+            recentNative2AgentWaits.set(waitKey, retired);
+            if (recentNative2AgentWaits.size > MAX_RECENT_NATIVE2_AGENT_WAITS) {
+              const oldest = recentNative2AgentWaits.keys().next().value;
+              if (oldest !== undefined) recentNative2AgentWaits.delete(oldest);
+            }
+          }
+          await retired;
+        }
+        if (!abort.signal.aborted) emitNative2AgentWait(native2Wait, forward, waitKey, prematureFinal.usage);
+      }
     } catch (error) {
       // Every error an adapter throws funnels through here and is reduced to its own message. The
       // `cause` each wrap site attaches dies at this line, so a turn that fails deep in the browser

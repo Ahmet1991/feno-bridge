@@ -647,6 +647,21 @@ export class ChatGptTurnSessions {
     return this.closeConversationAndWait(conversationKey);
   }
 
+  async retireSettledTurnForAgentWait(traceId: string, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    const entry = [...this.entries].find(([, session]) => (
+      session.traceId === traceId && session.settledOutcome()?.type === "final"
+    ));
+    if (!entry) return;
+    const [key, session] = entry;
+    const conversationKey = session.conversationKey();
+    if (conversationKey && this.conversationHeads.get(conversationKey) === session) {
+      await awaitWithAbort(this.retireConversationAndWait(conversationKey), signal);
+    } else {
+      await this.retireAndWait(key, signal);
+    }
+  }
+
   /**
    * Close the physical retained-chat epoch without discarding a terminal response that won the
    * compaction race before any compaction instruction reached that response. The detached logical
