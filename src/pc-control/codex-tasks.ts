@@ -8,6 +8,7 @@ import {PcAccessDeniedError} from './authorization';
 import {createPcJobLog,pagePcJobLog,redactPcText} from './job-logs';
 import {spawnContainedWindowsProcess,type PcContainedProcess} from './job-native';
 import type {PcCommandSpec} from './jobs';
+import { NATIVE2_TASK_HEADING } from '../responses/native2-agent-wait';
 
 export const CODEX_TASK_STATES=['queued','running','completed','failed','cancelled','timed_out','interrupted'] as const;
 export type CodexTaskState=typeof CODEX_TASK_STATES[number];
@@ -199,7 +200,7 @@ export function createCodexTaskManager(options:TaskOptions){
       const taskId=randomUUID(),directory=join(folder,taskId),now=clock();
       files.ensurePrivateDirectory(directory);
       const write=(name:string,data:string)=>files.writePrivateAtomic(join(directory,name),Buffer.from(data));
-      write('gorev.md','# Feno: ChatGPT sohbetinden başlatılan görev\nEn çok '+maxSubagents+' alt ajan kullan. Alt ajanlarda model belirtme.\n\n'+input.prompt);
+      write('gorev.md',NATIVE2_TASK_HEADING+'\nEn çok '+maxSubagents+' alt ajan kullan. Alt ajanlarda model belirtme.\n\n'+input.prompt);
       write('models.json',JSON.stringify(catalog));write('log.txt','');write('son.md','');
       const record:CodexTaskRecord={taskId,title:input.title,state:'queued',pid:null,startedAt:now,updatedAt:now,endedAt:null,subagentsStarted:0};
       save(record);

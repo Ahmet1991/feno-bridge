@@ -239,18 +239,20 @@ export function unattributedChatGptEnvironmentMessages(
 
 function isCodexAppsContextMessage(value: Record<string, unknown>): boolean {
   return value.type === "message" && value.role === "user"
-    && /^<external_codex_apps_([a-z_]+)>[\s\S]*<\/external_codex_apps_\1>$/.test(rawMessageText(value).trim());
+    && CODEX_APPS_CONTEXT.test(rawMessageText(value).trim());
 }
 
-function contextualUserMessage(value: Record<string, unknown>): boolean {
-  const text = rawMessageText(value).trim();
+const CODEX_APPS_CONTEXT = /^<external_codex_apps_([a-z_]+)>[\s\S]*<\/external_codex_apps_\1>$/;
+
+export function isContextualCodexUserMessage(content: string): boolean {
+  const text = content.trim();
   return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text)
     || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(text)
     // The Codex desktop app records which of its pages is open as a user-role item and adds a new
     // one when that page changes mid-turn. 01.10 14:32 UTC: read as a new instruction, it gave the
     // tool result's request a new trace; the running browser turn was aborted and the resend met
     // ChatGPT's still-open answer ("2 new conversation turns"), failing the task.
-    || isCodexAppsContextMessage(value)
+    || CODEX_APPS_CONTEXT.test(text)
     || isReadableCompactionSummaryText(text)
     || text === OPAQUE_COMPACTION_NOTE;
 }
@@ -260,7 +262,7 @@ function isUserOrParentInstruction(
   item: Record<string, unknown> | undefined,
   metadata?: Record<string, unknown>,
 ): item is Record<string, unknown> {
-  if (item?.type === "message" && item.role === "user") return !contextualUserMessage(item);
+  if (item?.type === "message" && item.role === "user") return !isContextualCodexUserMessage(rawMessageText(item));
   if (item?.type !== "agent_message" || typeof item.id !== "string" || !item.id
     || metadata?.subagent_kind !== "thread_spawn"
     || (metadata.request_kind !== "turn" && metadata.request_kind !== "compaction")
