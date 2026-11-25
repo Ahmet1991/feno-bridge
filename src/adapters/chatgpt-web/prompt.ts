@@ -237,9 +237,12 @@ export function withoutRetiredTurnHandles(contextJson: string): string {
  * than being spelled a second time where an edit to one copy would silently not reach it.
  */
 export function chatGptTurnTokenInstruction(turnToken: string | undefined): string {
-  return `The task context is complete. Pass turn_token ${turnToken} unchanged to every Codex Native`
-    + " call in this response, including continuations after tool results; do not expose it in the"
-    + " answer. Execute the latest active user request now.";
+  return `The task context is complete. Pass turn_token ${turnToken} unchanged only to Codex Native`
+    + " codex_* tools whose declared input schema requires turn_token, including continuations after tool results;"
+    + " do not expose it in the answer. Standalone pc_* tools use their own declared schemas and never accept"
+    + " turn_token. Call pc_status with {}. If a pc_* call is rejected during input validation for an unexpected"
+    + " turn_token, retry that rejected call once with only its declared arguments. Do not repeat a call whose"
+    + " execution status is uncertain. Execute the latest active user request now.";
 }
 
 /** ChatGPT accepts at most this many attachments on one message. */

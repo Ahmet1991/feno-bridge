@@ -31,6 +31,14 @@ test('native MCP advertises all desktop tools and denies unauthenticated use wit
     expect(Object.keys(schema('pc_start_terminal').properties??{})).toContain('timeoutSeconds');
     expect(Object.keys(schema('pc_start_job').properties??{})).toContain('timeoutSeconds');
     expect(tools.filter(t=>t.name.startsWith('codex_'))).toHaveLength(6);
+    for(const tool of tools.filter(t=>t.name.startsWith('pc_'))){
+      expect(Object.keys(tool.inputSchema.properties??{})).not.toContain('turn_token');
+      expect(Object.keys(tool.inputSchema.properties??{})).not.toContain('request_id');
+    }
+    expect(Object.keys(schema('pc_status').properties??{})).toEqual([]);
+    expect(tools.find(t=>t.name==='pc_status')?.description).toContain('Call with {} only');
+    const wrongStatus=await client.callTool({name:'pc_status',arguments:{turn_token:'schema-test-only'}});
+    expect(wrongStatus.isError).toBe(true);
     const status=await client.callTool({name:'pc_status',arguments:{}});
     expect(status.structuredContent).toMatchObject({ok:true,enabled:false});
     for(const [name,args] of [['pc_list_files',{path:home}],['pc_read_file',{path:join(home,'x')}],['pc_create_file',{path:join(home,'x'),content:'fixture'}],['pc_start_terminal',{projectRoot:home,command:'echo fixture',purpose:'test command'}],

@@ -81,7 +81,10 @@ test("Full-mode Pro prompts pass one stable turn token directly to native action
   expect(transportOnly).toContain("do not repeat the same call unless its inputs or observable state changed.");
   expect(transportOnly).toContain("Continue using the available tools until the requested work is complete and verified.");
   expect(transportOnly).toContain("Write the user-facing final answer only after the last required tool result has settled.");
-  expect(transportOnly).toContain(`The task context is complete. Pass turn_token ${token} unchanged to every Codex Native call in this response, including continuations after tool results; do not expose it in the answer. Execute the latest active user request now.`);
+  expect(transportOnly).toContain(`Pass turn_token ${token} unchanged only to Codex Native codex_* tools whose declared input schema requires turn_token`);
+  expect(transportOnly).toContain("Standalone pc_* tools use their own declared schemas and never accept turn_token. Call pc_status with {}.");
+  expect(transportOnly).toContain("retry that rejected call once with only its declared arguments. Do not repeat a call whose execution status is uncertain.");
+  expect(transportOnly).not.toContain("unchanged to every Codex Native call");
   expect(transportOnly).not.toMatch(/codex_bind_turn|binding_id|outer_tool_gateway|command_tool/);
   expect(transportOnly).not.toMatch(/codex_exec|codex_write_stdin|codex_apply_patch|codex_view_image|codex_tool_inventory|codex\.control\.turn_complete/);
   expect(transportOnly).not.toMatch(/expired|invalid|revoked|blocked|safety|security layer|permission gate/i);
@@ -114,7 +117,8 @@ test("Pro preserves the same native Codex delegation contract as Extra High", ()
 
   for (const compiled of [pro, extraHigh]) {
     expect(compiled.text).toContain("For local work required by the task, use the attached Codex Native tools directly according to their declared descriptions and schemas.");
-    expect(compiled.text).toContain(`Pass turn_token ${token} unchanged to every Codex Native call in this response`);
+    expect(compiled.text).toContain(`Pass turn_token ${token} unchanged only to Codex Native codex_* tools whose declared input schema requires turn_token`);
+    expect(compiled.text).toContain("Call pc_status with {}.");
     expect(compiled.text).not.toContain("Complete this task directly in the current parent response.");
     expect(compiled.text).not.toContain("Do not create, spawn, delegate to, or wait on sub-agents");
     expect(compiled.text).not.toContain("Use non-agent tools directly instead.");
