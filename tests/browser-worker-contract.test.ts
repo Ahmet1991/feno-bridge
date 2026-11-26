@@ -11,7 +11,7 @@ import { isHeavyChatGptStage, xpathStringLiteral, recoverUnsentChatGptPrompt, is
 import { chatGptTurnIdentitySelector } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptSubmittedUserTurnRekeyed, chatGptTurnExchangeKey, chatGptTurnIdentityShape } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptPromptPrefixLadder } from "../src/adapters/chatgpt-web/browser-worker";
-import { ChatGptTurnProgressWatchdog } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptTurnProgressWatchdog, ChatGptBrowserStageTimeoutError } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
@@ -853,6 +853,8 @@ test("a mutating stage timeout waits for abort cleanup before returning", async 
   releaseCleanup();
   const { error } = await outcome;
   expect(error).toMatchObject({ message: "ChatGPT browser stage timed out: prompt_attachment" });
+  expect(error).toBeInstanceOf(ChatGptBrowserStageTimeoutError);
+  expect(isRecoverableChatGptPromptPreparationError(error)).toBe(true);
   expect(stageSettled).toBeTrue();
   expect(cleanupComplete).toBeTrue();
 });
@@ -2041,6 +2043,9 @@ test("saved-chat pre-send recovery only retries transient preparation failures",
   expect(CHATGPT_CONNECTOR_MENTION_TIMEOUT_MS).toBe(25_000);
   expect(CHATGPT_COMPOSER_RECOVERY_TIMEOUT_MS).toBe(20_000);
   expect(isRecoverableChatGptPromptPreparationError(timeout)).toBe(true);
+  expect(isRecoverableChatGptPromptPreparationError(new ChatGptBrowserStageTimeoutError("prompt_attachment"))).toBe(true);
+  expect(isRecoverableChatGptPromptPreparationError(new ChatGptBrowserStageTimeoutError("send"))).toBe(false);
+  expect(isRecoverableChatGptPromptPreparationError(new ChatGptBrowserStageTimeoutError("file_attachment"))).toBe(false);
   expect(isRecoverableChatGptPromptPreparationError(new ChatGptPersistentBrowserStateError([timeout, dirtyComposer], "failed"))).toBe(true);
   expect(isRecoverableChatGptPromptPreparationError(new ChatGptPersistentBrowserStateError([wrongConnector, timeout], "failed"))).toBe(false);
   expect(isRecoverableChatGptPromptPreparationError(new DOMException("cancelled", "AbortError"))).toBe(false);
@@ -2399,7 +2404,7 @@ test("connector selection clicks the unique visible row when ChatGPT never sets 
   }, page)).resolves.toBe(selectedComposer);
   expect(mentionTriggers).toBe(1);
   expect(clicks).toBe(1);
-  expect(keys).toEqual(["ArrowDown"]);
+  expect(keys).toEqual([]);
 });
 
 test.each([
@@ -5854,6 +5859,12 @@ test("a staged Bigger Context part gets an acknowledgement window sized to its p
   expect(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS).toBe(browserStageTimeouts.multipartStageSend);
   expect(browserStageTimeouts.multipartStageAcknowledgement).toBe(CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS);
 
+});
+
+test("connector preparation has a separate budget", () => {
+  expect(browserStageTimeouts.connectorPromptAttachment).toBe(180_000);
+  expect(browserStageTimeouts.promptAttachment).toBe(60_000);
+  expect(browserStageTimeouts.send).toBe(90_000);
 });
 
 test("ordinary send allows delayed semantic acceptance without extending multipart budget", () => {

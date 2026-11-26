@@ -399,12 +399,21 @@ export class ChatGptPersistentBrowserStateError extends AggregateError {
   }
 }
 
+/** A stage deadline carries its exact stage, unlike a Playwright timeout. */
+export class ChatGptBrowserStageTimeoutError extends Error {
+  constructor(readonly stage: string) {
+    super(`ChatGPT browser stage timed out: ${stage}`);
+    this.name = "ChatGptBrowserStageTimeoutError";
+  }
+}
+
 /** Only pre-send transport/renderer failures qualify; wrong connector identities stay fail-closed. */
 export function isRecoverableChatGptPromptPreparationError(error: unknown): boolean {
   if (error instanceof ChatGptPersistentBrowserStateError) {
     return error.errors.length > 0 && isRecoverableChatGptPromptPreparationError(error.errors[0]);
   }
   return error instanceof ChatGptBrowserObservationTimeoutError
+    || (error instanceof ChatGptBrowserStageTimeoutError && error.stage === "prompt_attachment")
     || (error instanceof Error && error.name === "TimeoutError");
 }
 
@@ -1548,6 +1557,9 @@ export const browserStageTimeouts = {
   temporaryChatPreparation: 150_000,
   effortSelection: 120_000,
   promptAttachment: 60_000,
+  // The connector path includes bounded mention retries, identity and draft proof.
+  // Keep plain-text, multipart and send budgets independent.
+  connectorPromptAttachment: 180_000,
   fileAttachment: 120_000,
   // The send stage includes UI confirmation and semantic acceptance, not only pressing Enter.
   // Slow broker/DOM confirmation must not retire an already activated submission prematurely.
@@ -3238,7 +3250,7 @@ export class ChatGptBrowserWorker {
           }
           stageTimedOut = true;
           controller.abort();
-          rejectTimeout(new Error(`ChatGPT browser stage timed out: ${stage}`));
+          rejectTimeout(new ChatGptBrowserStageTimeoutError(stage));
         };
         timer = setTimeout(fireOrRearm, timeoutMs);
       });
@@ -4726,31 +4738,18 @@ export class ChatGptBrowserWorker {
         return await appResult.getAttribute("data-highlighted", options) !== null
           || await appResult.getAttribute("aria-current", options) === "true";
       };
-      let visibleRowCount: number | undefined;
-      if (!await rowHighlighted()) {
-        visibleRowCount = await withBrowserTurnAbort(
+      let highlighted = await rowHighlighted();
+      let activatedByPointer = false;
+      if (!highlighted) {
+        const visibleRowCount = await withBrowserTurnAbort(
           withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).count()),
           abortSignal,
         );
-        for (let step = 0; step < visibleRowCount && !await rowHighlighted(); step += 1) {
-          await composer.press("ArrowDown", {
-            signal: abortSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          // The menu commits its keyboard highlight asynchronously. Reading the old highlight
-          // immediately can queue several arrows and activate the wrong connector on Enter.
-          await withBrowserTurnAbort(settleChatGptUi(), abortSignal);
-        }
-      }
-      let activatedByPointer = false;
-      if (!await rowHighlighted()) {
-        // Some ChatGPT mention menus render the exact result but never mark any row as
-        // keyboard-highlighted (28 Oct, one visible row after three ArrowDown attempts).
-        // A real, on-screen row can be selected directly. Skip this for the hidden 1x1
-        // maintenance viewport, where pointer interaction cannot reach the menu.
+        // A single proven, on-screen row does not need keyboard navigation. Hidden or
+        // ambiguous menus still require exact keyboard-highlight proof.
         const viewport = page.viewportSize?.();
         const bounds = visibleRowCount === 1 && viewport && viewport.width > 1 && viewport.height > 1
-          ? await appResult.boundingBox()
+          ? await withBrowserTurnAbort(withChatGptBrowserObservationTimeout(appResult.boundingBox()), abortSignal)
           : null;
         if (viewport && bounds && bounds.width > 0 && bounds.height > 0
           && bounds.x >= 0 && bounds.y >= 0
@@ -4762,10 +4761,20 @@ export class ChatGptBrowserWorker {
             await capture("connector-choice-clicked");
           } catch (error) {
             if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+            // Do not press Enter after an uncertain click. Reopen the menu safely below.
+          }
+        } else {
+          for (let step = 0; step < visibleRowCount && !highlighted; step += 1) {
+            await composer.press("ArrowDown", {
+              signal: abortSignal,
+              timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+            });
+            await withBrowserTurnAbort(settleChatGptUi(), abortSignal);
+            highlighted = await rowHighlighted();
           }
         }
       }
-      if (!activatedByPointer && !await rowHighlighted()) {
+      if (!activatedByPointer && !highlighted) {
         if (attemptBudget.triggerAttempts < MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS) {
           // The exact row exists but the menu has not assigned it keyboard ownership.
           // Discard this mention and reopen within the same trigger budget; never Enter
@@ -6700,7 +6709,7 @@ export class ChatGptBrowserWorker {
           await this.runStage(
             turn.traceId,
             "prompt_attachment",
-            browserStageTimeouts.promptAttachment,
+            mode.localTools ? browserStageTimeouts.connectorPromptAttachment : browserStageTimeouts.promptAttachment,
             (stageSignal) => {
               const promptAbortSignal = turn.abortSignal
                 ? AbortSignal.any([stageSignal, turn.abortSignal])
