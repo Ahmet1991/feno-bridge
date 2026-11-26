@@ -4183,6 +4183,32 @@ test("owned conversation sweep after the last task tab closes uses one temporary
   assert.equal(fixture.ownedConversationSweepInFlight, null);
 });
 
+test("memory reclamation frees a renderer without deleting its owned conversation during another turn", async () => {
+  const now = 10 * 60 * 60 * 1000;
+  const tabs = [
+    { id: "agent", traceId: "agent-trace", status: "ready", lastHeartbeatAt: now - 11 * 60_000, ownedConversationIds: new Set(["agent-chat"]) },
+    { id: "root", traceId: "root-trace", status: "running", lastHeartbeatAt: now, ownedConversationIds: new Set(["root-chat"]) },
+  ];
+  const { fixture } = retainedTabFixture(tabs, () => ({ tabMemory: new Map(), freeRatio: 0.01 }));
+  const deleted = [];
+  const page = { getURL: () => "https://chatgpt.com/" };
+  Object.assign(fixture, { view: { webContents: page }, conversationCleanup: {
+    pendingIds: () => ["agent-chat", "root-chat"],
+    async sweep(contents, isOpen) {
+      assert.equal(contents, page);
+      deleted.push(...["agent-chat", "root-chat"].filter(id => !isOpen(id)));
+    },
+  } });
+  assert.deepEqual(BrowserHost.prototype.reclaimRetainedTabMemory.call(fixture, now).map(tab => tab.id), ["agent"]);
+  assert.equal(fixture.turnTabs.has("agent"), false);
+  assert.equal(BrowserHost.prototype.sweepOwnedConversations.call(fixture, now, true), null);
+  assert.deepEqual(deleted, []);
+  fixture.turnTabs.delete("root");
+  await BrowserHost.prototype.sweepOwnedConversations.call(fixture, now + 1000, true);
+  assert.deepEqual(deleted, ["agent-chat", "root-chat"]);
+  assert.equal(fixture.memoryReclaimedConversationHolds.size, 0);
+});
+
 test("owned cleanup never opens a temporary page for conversations still owned by open tabs", () => {
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map([["open", { ownedConversationIds: new Set(["open-chat"]) }]]),

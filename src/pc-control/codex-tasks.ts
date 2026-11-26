@@ -47,8 +47,13 @@ export function buildCodexTaskCommand(executable:CodexExecutable,options:{
   // max_depth and max_threads (concurrent spawned threads, excluding the root).
   const args=[...(executable.prefixArgs??[]),'exec','-m','chatgpt-web/'+effort,
     '-c','model_reasoning_effort='+(effort==='light'?'low':effort),
-    '-c','model_provider="openai"',
-    '-c','openai_base_url='+JSON.stringify('http://127.0.0.1:'+port+'/v1'),
+    // The local Responses bridge is HTTP-only. A distinct provider avoids overriding Codex's reserved openai ID.
+    '-c','model_provider="feno_native2"',
+    '-c','model_providers.feno_native2.name="Feno Native2 HTTP"',
+    '-c','model_providers.feno_native2.base_url='+JSON.stringify('http://127.0.0.1:'+port+'/v1'),
+    '-c','model_providers.feno_native2.wire_api="responses"',
+    '-c','model_providers.feno_native2.supports_websockets=false',
+    '-c','model_providers.feno_native2.requires_openai_auth=true',
     '-c','model_catalog_json='+JSON.stringify(join(directory,'models.json')),
     '-c','features.multi_agent_v2=false',
     '-c','features.multi_agent='+(maxSubagents>0?'true':'false'),
@@ -200,7 +205,8 @@ export function createCodexTaskManager(options:TaskOptions){
       const taskId=randomUUID(),directory=join(folder,taskId),now=clock();
       files.ensurePrivateDirectory(directory);
       const write=(name:string,data:string)=>files.writePrivateAtomic(join(directory,name),Buffer.from(data));
-      write('gorev.md',NATIVE2_TASK_HEADING+'\nEn çok '+maxSubagents+' alt ajan kullan. Alt ajanlarda model belirtme.\n\n'+input.prompt);
+      const deliveryGate=maxSubagents>0?'\nAlt ajan kullanılıyorsa gerçek terminal sonuçlarını bekle. Terminal durumunun completed olması tek başına teslimin eksiksiz olduğunu kanıtlamaz. İstenen çıktıları ve bağımsız denetimleri doğrula. Eksik teslimi yalnız izin, kapsam ve süre elveriyorsa aynı ajanla tamamlat; belirsiz yan etkili işlemleri tekrarlama, ajan sınırını aşma. Doğrulanamayan teslimi eksik olarak bildir. Kullanıcı dosya yazımını istemediyse dosya oluşturma.':'';
+      write('gorev.md',NATIVE2_TASK_HEADING+'\nEn çok '+maxSubagents+' alt ajan kullan. Alt ajanlarda model belirtme.'+deliveryGate+'\n\n'+input.prompt);
       write('models.json',JSON.stringify(catalog));write('log.txt','');write('son.md','');
       const record:CodexTaskRecord={taskId,title:input.title,state:'queued',pid:null,startedAt:now,updatedAt:now,endedAt:null,subagentsStarted:0};
       save(record);

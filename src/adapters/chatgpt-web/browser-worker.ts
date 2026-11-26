@@ -1549,7 +1549,9 @@ export const browserStageTimeouts = {
   effortSelection: 120_000,
   promptAttachment: 60_000,
   fileAttachment: 120_000,
-  send: 20_000,
+  // The send stage includes UI confirmation and semantic acceptance, not only pressing Enter.
+  // Slow broker/DOM confirmation must not retire an already activated submission prematurely.
+  send: 90_000,
   // A Bigger Context stage posts a much larger payload onto a conversation that already holds the
   // earlier parts. This budget covers ChatGPT accepting the submission, not just the click.
   multipartStageSend: 180_000,

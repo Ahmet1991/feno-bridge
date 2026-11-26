@@ -5856,6 +5856,11 @@ test("a staged Bigger Context part gets an acknowledgement window sized to its p
 
 });
 
+test("ordinary send allows delayed semantic acceptance without extending multipart budget", () => {
+  expect(browserStageTimeouts.send).toBe(90_000);
+  expect(browserStageTimeouts.multipartStageSend).toBe(180_000);
+});
+
 test("the suspension clock charges only tick gaps that mean the process was frozen", () => {
   const clock = new ChatGptSuspensionClock(1_000, 5_000);
   clock.tick(1_000);

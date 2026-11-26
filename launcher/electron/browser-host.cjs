@@ -1632,6 +1632,15 @@ class BrowserHost {
         rendererMb: memory ? Math.round(memory.bytes / (1024 * 1024)) : null,
         freePercent: freeRatio === null ? null : Math.round(freeRatio * 100),
       });
+      // Release the renderer under memory pressure, but defer deletion of its owned chat
+      // while another automatic turn may still need the result. The cleanup ledger stays authoritative.
+      if (candidate.tab.ownedConversationIds?.size && [...this.turnTabs.values()].some(tab =>
+        tab !== candidate.tab && tab.interactionMode !== "manual" && (tab.status === "running" || tab.status === "ready"))) {
+        this.memoryReclaimedConversationHolds ??= new Map();
+        for (const id of candidate.tab.ownedConversationIds) {
+          this.memoryReclaimedConversationHolds.set(id, now + AUTOMATIC_RETAINED_TAB_IDLE_TTL_MS);
+        }
+      }
       this.removeTurnTab(candidate.tab, false);
       closed.push(candidate.tab);
     };
@@ -1892,11 +1901,17 @@ class BrowserHost {
   sweepOwnedConversations(now = Date.now(), force = false) {
     const cleanup = this.conversationCleanup;
     if (!cleanup) return null;
-    const ownedByOpenTab = id => [...this.turnTabs.values()].some(tab => tab.ownedConversationIds?.has(id));
     const pendingIds = cleanup.pendingIds();
-    if (!pendingIds.length) return null;
+    const automaticTurnsRemain = () => [...this.turnTabs.values()].some(tab =>
+      tab.interactionMode !== "manual" && (tab.status === "running" || tab.status === "ready"));
+    const holds = this.memoryReclaimedConversationHolds;
+    if (holds) for (const [id, expires] of holds) {
+      if (!automaticTurnsRemain() || expires <= now || !pendingIds.includes(id)) holds.delete(id);
+    }
+    const ownedByOpenTab = id => [...this.turnTabs.values()].some(tab => tab.ownedConversationIds?.has(id))
+      || (holds?.has(id) === true && automaticTurnsRemain());
+    if (!pendingIds.some(id => !ownedByOpenTab(id))) return null;
     const existingPage = BrowserHost.prototype.ownedConversationCleanupPage.call(this);
-    if (!existingPage && !pendingIds.some(id => !ownedByOpenTab(id))) return null;
     if (this.ownedConversationSweepInFlight) return this.ownedConversationSweepInFlight;
     if (!force && now - (this.lastOwnedConversationSweepAt ?? 0) < OWNED_CONVERSATION_SWEEP_MS) return null;
     this.lastOwnedConversationSweepAt = now;

@@ -18,8 +18,10 @@ test('task command pins web catalog, provider, depth and agent limit; no approva
   const root=join('D:/','project'),directory=join(root,'task');
   const base={projectRoot:root,directory,port:17841,effort:'light' as const,maxSubagents:3,isGitRepo:false};
   const spec=buildCodexTaskCommand({command:'codex.exe'},base);
-  expect(spec.args).toEqual(['exec','-m','chatgpt-web/light','-c','model_reasoning_effort=low','-c','model_provider="openai"',
-    '-c','openai_base_url="http://127.0.0.1:17841/v1"','-c','model_catalog_json='+JSON.stringify(join(directory,'models.json')),
+  expect(spec.args).toEqual(['exec','-m','chatgpt-web/light','-c','model_reasoning_effort=low','-c','model_provider="feno_native2"',
+    '-c','model_providers.feno_native2.name="Feno Native2 HTTP"','-c','model_providers.feno_native2.base_url="http://127.0.0.1:17841/v1"',
+    '-c','model_providers.feno_native2.wire_api="responses"','-c','model_providers.feno_native2.supports_websockets=false',
+    '-c','model_providers.feno_native2.requires_openai_auth=true','-c','model_catalog_json='+JSON.stringify(join(directory,'models.json')),
     '-c','features.multi_agent_v2=false','-c','features.multi_agent=true','-c','agents.max_threads=3','-c','agents.max_depth=1',
     '--skip-git-repo-check','-C',root,'-o',join(directory,'son.md'),'-']);
   expect(spec.stdinFile).toBe(join(directory,'gorev.md'));
@@ -87,7 +89,10 @@ test('result truncation, masked paginated logs, spawn count and heartbeat',async
   const f=fixture();try{
     const task=await f.manager.start(f.input);
     const dir=dirname(f.spec.stdinFile!);
-    expect(readFileSync(f.spec.stdinFile!,'utf8')).toContain(f.input.prompt);
+    const prompt=readFileSync(f.spec.stdinFile!,'utf8');
+    expect(prompt).toContain(f.input.prompt);
+    expect(prompt).toContain('Terminal durumunun completed olması tek başına teslimin eksiksiz olduğunu kanıtlamaz.');
+    expect(prompt).toContain('belirsiz yan etkili işlemleri tekrarlama, ajan sınırını aşma');
     expect(JSON.parse(readFileSync(join(dir,'models.json'),'utf8')).models).toHaveLength(3);
     f.write('collab: SpawnAgent\npassword=private-value\n'+'line\n'.repeat(260));
     f.tick();await Bun.sleep(35);
