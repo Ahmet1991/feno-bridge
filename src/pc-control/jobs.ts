@@ -17,32 +17,95 @@ export type PcTerminalAudit={at:number;projectRoot:string;purpose:string;command
 const KINDS=new Set<PcJobKind>(['typecheck','unit-tests','android-build','playback-smoke']);
 const MAX_TIMEOUT=10*60*1000,HISTORY_TTL=60*60*1000;
 
+export type PcJobResourceOptions={fullAccessTerminalSlots?:number;maxActiveJobs?:number;terminalWaitMs?:number};
+// Parallel Feno tasks share one full-access grant, so two terminal slots made the third task fail at
+// once. ChatGPT tool calls should still answer within about a minute (pc_codex_task_result caps its
+// own wait at 50 s), so a busy terminal waits briefly in a queue, then returns a retry hint.
+export const PC_TERMINAL_DEFAULTS=Object.freeze({fullAccessTerminalSlots:4,maxActiveJobs:6,terminalWaitMs:45_000});
+const bounded=(value:unknown,min:number,max:number,fallback:number)=>typeof value==='number'&&Number.isFinite(value)?Math.min(max,Math.max(min,Math.floor(value))):fallback;
+/** Local overrides: FENO_PC_TERMINAL_SLOTS (1-8) and FENO_PC_TERMINAL_WAIT_SECONDS (0-120). */
+export function pcJobResourceOptionsFromEnv(env:Record<string,string|undefined>=process.env):PcJobResourceOptions{
+  const number=(name:string)=>{const raw=env[name]?.trim();return raw&&/^[0-9]{1,4}$/.test(raw)?Number(raw):undefined;};
+  const slots=number('FENO_PC_TERMINAL_SLOTS'),wait=number('FENO_PC_TERMINAL_WAIT_SECONDS');
+  return {...(slots!==undefined?{fullAccessTerminalSlots:slots}:{}),...(wait!==undefined?{terminalWaitMs:wait*1000}:{})};
+}
 /** Shared by all projects and retiring managers of one host; a reservation is held through cleanup. */
-export function createPcJobResources(){
+export function createPcJobResources(config:PcJobResourceOptions={}){
+  const fullSlots=bounded(config.fullAccessTerminalSlots,1,8,PC_TERMINAL_DEFAULTS.fullAccessTerminalSlots);
+  const maxJobs=Math.max(fullSlots,bounded(config.maxActiveJobs,1,16,Math.max(PC_TERMINAL_DEFAULTS.maxActiveJobs,fullSlots+2)));
+  const waitMs=bounded(config.terminalWaitMs,0,120_000,PC_TERMINAL_DEFAULTS.terminalWaitMs);
+  const cap=(full:boolean)=>full?fullSlots:1;
   let active=0,emulator=false,terminal=0;
   let group:{grantId:string;members:number;closing:boolean;lease:Promise<PcHostLease>}|undefined;
+  // A waiter claims synchronously inside pump(), so a freed slot cannot be taken between wake-up and
+  // claim. Waiters are tried in arrival order; one blocked on a closing lease does not block the rest.
+  type Waiter={claim:()=>boolean;timer?:ReturnType<typeof setTimeout>};
+  const waiters:Waiter[]=[];
+  function pump(){
+    for(let i=0;i<waiters.length;){
+      const waiter=waiters[i]!;
+      if(waiter.claim()){waiters.splice(i,1);if(waiter.timer)clearTimeout(waiter.timer);}else i++;
+    }
+  }
+  const busy=()=>new PcOperationError('pc_terminal_busy',{
+    reason:`Terminal yuvaları dolu (${terminal} terminal çalışıyor). ${Math.round(waitMs/1000)} sn sırada beklendi; komut başlatılmadı. Görev engellenmedi: 30-60 sn bekleyip aynı çağrıyı tekrarlayın. Çalışan terminaller pc_list_jobs ile görülür.`,
+    retryAfterSeconds:30,
+  });
+  function waitFor<T>(attempt:()=>T|undefined,deadline:number):Promise<T>{
+    return new Promise<T>((resolve,reject)=>{
+      const waiter:Waiter={claim:()=>{
+        let value:T|undefined;
+        try{value=attempt();}catch(error){reject(error);return true;}
+        if(value===undefined)return false;
+        resolve(value);return true;
+      }};
+      waiters.push(waiter);pump();
+      if(!waiters.includes(waiter))return;
+      const expire=()=>{const index=waiters.indexOf(waiter);if(index<0)return;waiters.splice(index,1);reject(busy());};
+      const remaining=deadline-performance.now();
+      if(remaining<=0){expire();return;}
+      waiter.timer=setTimeout(expire,remaining);
+    });
+  }
+  function claim(usesEmulator:boolean,isTerminal:boolean,full:boolean):(()=>void)|undefined{
+    if(isTerminal&&terminal>=cap(full))return undefined;
+    if(active>=maxJobs){if(isTerminal)return undefined;throw new PcOperationError('pc_job_busy');}
+    if(usesEmulator&&emulator)throw new PcAccessDeniedError();
+    active++;if(usesEmulator)emulator=true;if(isTerminal)terminal++;let released=false;
+    return ()=>{if(released)return;released=true;active--;if(usesEmulator)emulator=false;if(isTerminal)terminal--;pump();};
+  }
   return {activeJobCount:()=>active,isEmulatorBusy:()=>emulator,hasActiveTerminal:()=>terminal>0,
-    terminalSlots:(full:boolean)=>({used:terminal,free:Math.max(0,(full?2:1)-terminal)}),
-    async sharedTerminalLease(grantId:string,acquire:()=>Promise<PcHostLease>):Promise<PcHostLease>{
-      if(group&&(group.grantId!==grantId||group.closing))throw new PcOperationError('pc_terminal_busy');
-      const g=group??(group={grantId,members:0,closing:false,lease:Promise.resolve().then(acquire)});
-      g.members++;
+    terminalSlots:(full:boolean)=>({used:terminal,free:Math.max(0,cap(full)-terminal),total:cap(full),queued:waiters.length}),
+    terminalWaitMs:waitMs,
+    /** One durable host lease covers every full-access terminal of a grant. Without a deadline a
+     * different or closing grant is refused at once; start() passes now + terminalWaitMs. */
+    async sharedTerminalLease(grantId:string,acquire:()=>Promise<PcHostLease>,deadline=performance.now()):Promise<PcHostLease>{
+      const join=()=>{
+        if(group&&(group.grantId!==grantId||group.closing))return undefined;
+        const current=group??(group={grantId,members:0,closing:false,lease:Promise.resolve().then(acquire)});
+        current.members++;return current;
+      };
+      // An uncontended join stays synchronous, exactly as before the queue existed.
+      const g=join()??await waitFor(join,deadline);
       let native:PcHostLease;
-      try{native=await g.lease;}catch(error){if(--g.members===0&&group===g)group=undefined;throw error;}
+      try{native=await g.lease;}catch(error){if(--g.members===0&&group===g){group=undefined;pump();}throw error;}
       let released:Promise<void>|undefined;
       return {generation:native.generation,releaseAfterExit(exit){return released??=Promise.resolve(exit).then(async()=>{
         if(--g.members!==0)return;
         g.closing=true;
         await native.releaseAfterExit(Promise.resolve());
-        if(group===g)group=undefined;
+        if(group===g){group=undefined;pump();}
       });}};
     },
-    reserve(usesEmulator:boolean,isTerminal:boolean,full=false){
-      if(isTerminal&&terminal>=(full?2:1))throw new PcOperationError('pc_terminal_busy');
-      if(active>=4)throw new PcOperationError('pc_job_busy');
+    /** Immediate reservation: a full job plane or terminal slot is refused at once. */
+    reserve(usesEmulator:boolean,isTerminal:boolean,full=false):()=>void{
+      const release=claim(usesEmulator,isTerminal,full);if(!release)throw busy();return release;
+    },
+    /** A free slot is reserved synchronously; otherwise the terminal waits in the queue until the deadline. */
+    reserveTerminal(usesEmulator:boolean,full:boolean,deadline:number):(()=>void)|Promise<()=>void>{
+      const release=claim(usesEmulator,true,full);if(release)return release;
       if(usesEmulator&&emulator)throw new PcAccessDeniedError();
-      active++;if(usesEmulator)emulator=true;if(isTerminal)terminal++;let released=false;
-      return ()=>{if(released)return;released=true;active--;if(usesEmulator)emulator=false;if(isTerminal)terminal--;};
+      return waitFor(()=>claim(usesEmulator,true,full),deadline);
     }};
 }
 
@@ -115,9 +178,14 @@ export function createPcJobManager(options:PcJobManagerOptions){
     for(const [id,job] of jobs)if(job.closed&&clock()-job.createdAt>HISTORY_TTL)jobs.delete(id);
     if(jobs.size>=100)throw new PcOperationError('pc_job_history_full');
     const full=terminal&&authorizer.assert('jobs').fullAccess===true;
-    const release=resources.reserve(spec.usesEmulator,terminal,full),id=randomUUID();let lease:PcHostLease|undefined,started=false;
+    // Terminals wait briefly for a slot (and for another grant's lease) instead of failing at once.
+    const deadline=performance.now()+(terminal?resources.terminalWaitMs:0);
+    const reserved=terminal?resources.reserveTerminal(spec.usesEmulator,full,deadline):resources.reserve(spec.usesEmulator,false,full);
+    const waited=typeof reserved!=='function',release=typeof reserved==='function'?reserved:await reserved,id=randomUUID();let lease:PcHostLease|undefined,started=false;
     try{
-      lease=full?await resources.sharedTerminalLease(grantId,()=>options.acquireLease('terminal',id)):await options.acquireLease(terminal?'terminal':'job',id);
+      // The grant may have changed or the manager retired while this call waited.
+      if(waited){validateRoot(requested,authorizer,grantId,terminal,initialId);if(retiring)throw new PcAccessDeniedError();}
+      lease=full?await resources.sharedTerminalLease(grantId,()=>options.acquireLease('terminal',id),deadline):await options.acquireLease(terminal?'terminal':'job',id);
       validateRoot(requested,authorizer,grantId,terminal,initialId);if(retiring)throw new PcAccessDeniedError();
       if(audit){try{await options.auditCommand(audit);}catch{throw new PcAccessDeniedError();}}
       validateRoot(requested,authorizer,grantId,terminal,initialId);if(retiring)throw new PcAccessDeniedError();
