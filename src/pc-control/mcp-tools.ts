@@ -4,7 +4,7 @@ import * as z from 'zod/v4';
 import {PcAccessDeniedError,PcAuthorizer,jobOwner} from './authorization';
 import {PcOperationError} from './errors';
 import {applyPcPatch,createPcDirectory,createPcFile,listPcFiles,readPcFile,withPcUploadFiles} from './files';
-import {createPcJobManager,createPcJobResources,inferPcCommandSpecs,type PcJobKind,type PcJobManagerOptions} from './jobs';
+import {createPcJobManager,createPcJobResources,inferPcCommandSpecs,pcJobResourceOptionsFromEnv,type PcJobKind,type PcJobManagerOptions} from './jobs';
 import {inferPcDeveloperTasks} from './developer-tasks';
 import {resolveAllowedPath} from './paths';
 import {randomUUID} from 'node:crypto';
@@ -54,7 +54,7 @@ export function createLocalPcHost(authorizer:PcAuthorizer,options:Pick<PcJobMana
   chromeAction?:(action:string,args:Record<string,unknown>,signal:AbortSignal)=>Promise<any>;
   codexTasks?:CodexTaskManager;
 }):PcHost{
-  const resources=createPcJobResources();type Manager=ReturnType<typeof createPcJobManager>;
+  const resources=createPcJobResources(pcJobResourceOptionsFromEnv());type Manager=ReturnType<typeof createPcJobManager>;
   const managers=new Map<string,{manager:Manager;tasks:string[]}>(),owners=new Map<string,Manager>();let activeGrant:string|undefined;
   const retired=new Set<Promise<void>>();let cleanupFailed=false;
   const actions=new Set<AbortController>();
@@ -262,7 +262,7 @@ export function registerPcTools(server:McpServer,deps:{authorizer:PcAuthorizer;h
   server.registerTool('pc_start_job',{title:'Start configured project job',description:'Project scripts run with the Windows account permissions; the project is not a sandbox.',inputSchema:z.object({kind:z.enum(['typecheck','unit-tests','android-build','playback-smoke']),projectRoot:p,timeoutSeconds:z.number().int().min(1).max(600).optional()}).strict(),annotations:write},({kind,projectRoot,timeoutSeconds})=>run(()=>{a.assert('jobs');return h.startJob(kind,projectRoot,timeoutSeconds);},false,'pc_start_job'));
   server.registerTool('pc_list_project_tasks',{title:'List locally selected development tasks',inputSchema:z.object({projectRoot:p}).strict(),annotations:readOnly},({projectRoot})=>run(()=>{a.assert('jobs');return h.listProjectTasks(projectRoot);},false,'pc_list_project_tasks'));
   server.registerTool('pc_start_project_task',{title:'Start one configured development task',inputSchema:z.object({projectRoot:p,taskId:z.string().min(4).max(120).regex(/^(?:script:[a-zA-Z0-9:._-]+|android:[a-zA-Z]+|git:[a-z-]+)$/)}).strict(),annotations:write},({projectRoot,taskId})=>run(()=>{a.assert('jobs');return h.startProjectTask(projectRoot,taskId);},false,'pc_start_project_task'));
-  server.registerTool('pc_start_terminal',{title:'Run explicitly approved Windows terminal',description:'Requires jobs AND terminal.exec. Runs with your Windows account permissions, outside project boundaries. Use inline PowerShell commands instead of .ps1 script files. pc_terminal_busy means wait for completion.',inputSchema:z.object({projectRoot:p,command:z.string().min(1).max(2048).refine(v=>!v.includes('\0')),purpose:z.string().min(3).max(4096),timeoutSeconds:z.number().int().min(1).max(600).optional()}).strict(),annotations:{...write,openWorldHint:true}},({projectRoot,command,purpose,timeoutSeconds})=>run(()=>{a.assert('jobs');a.assert('terminal.exec');return h.startTerminal(projectRoot,command,purpose,timeoutSeconds);},false,'pc_start_terminal'));
+  server.registerTool('pc_start_terminal',{title:'Run explicitly approved Windows terminal',description:'Requires jobs AND terminal.exec. Runs with your Windows account permissions, outside project boundaries. Use inline PowerShell commands instead of .ps1 script files. Under full access several terminals run in parallel (4 by default); when every slot is busy this call waits in a short queue (45 s by default) for one to free. pc_terminal_busy means no slot freed in time and the command did not start: the task is not blocked, so wait 30-60 s and repeat the same call, combining short commands into one call.',inputSchema:z.object({projectRoot:p,command:z.string().min(1).max(2048).refine(v=>!v.includes('\0')),purpose:z.string().min(3).max(4096),timeoutSeconds:z.number().int().min(1).max(600).optional()}).strict(),annotations:{...write,openWorldHint:true}},({projectRoot,command,purpose,timeoutSeconds})=>run(()=>{a.assert('jobs');a.assert('terminal.exec');return h.startTerminal(projectRoot,command,purpose,timeoutSeconds);},false,'pc_start_terminal'));
   server.registerTool('pc_list_jobs',{title:'List recent owned jobs',description:'Newest 20 jobs for the current profile and grant; no raw commands.',inputSchema:z.object({}).strict(),annotations:readOnly},()=>run(()=>{a.assert('jobs');if(!h.listJobs)throw new PcAccessDeniedError();return h.listJobs();},false,'pc_list_jobs'));
   if(process.platform==='win32'&&a.profileId==='pc2-normal'){
     const tasks=()=>{a.assert('codex.tasks');a.assert('jobs');if(!h.codexTasks)throw new PcAccessDeniedError();return h.codexTasks;};

@@ -99,7 +99,7 @@ windowsTest('a failed durable lease release retains shared capacity after native
   managers.splice(managers.indexOf(c.manager),1);
 });
 windowsTest('shared resources retain a retiring terminal and require jobs plus terminal permission',async()=>{
-  const {createPcJobResources}=await api();const resources=createPcJobResources();
+  const {createPcJobResources}=await api();const resources=createPcJobResources({terminalWaitMs:0});
   const c=await setup('hold',[],{resources});const d=await setup('hold',[],{resources});
   await expect(c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 30',purpose:'fixture terminal'},approve(c.root,'pc-jobs-only-001','pc2-normal',false))).rejects.toThrow('pc_access_denied');
   await c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 30',purpose:'fixture terminal'},c.authorizer);
@@ -107,8 +107,9 @@ windowsTest('shared resources retain a retiring terminal and require jobs plus t
   await expect(d.manager.startTerminalCommand({projectRoot:d.root,command:'Write-Output ok',purpose:'fixture terminal'},d.authorizer)).rejects.toThrow('pc_terminal_busy');
   await retiring;expect(resources.activeJobCount()).toBe(0);expect(resources.hasActiveTerminal()).toBe(false);
 });
-windowsTest('full access permits two terminals under one durable lease until both exit',async()=>{
-  const c=await setup();
+windowsTest('two full-access slots without a queue share one durable lease until both exit',async()=>{
+  const {createPcJobResources}=await api();
+  const c=await setup('hold',[],{resources:createPcJobResources({fullAccessTerminalSlots:2,terminalWaitMs:0})});
   c.authorizer.setGrantFromLocalApproval({profileId:'pc2-normal',id:'full-access-123',expiresAt:null,fullAccess:true,roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner','browser','chrome.user'],allowedApps:[]});
   const start=()=>c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 30',purpose:'parallel fixture'},c.authorizer);
   const a=await start(),b=await start();
@@ -204,4 +205,93 @@ test('null or non-object script catalogs deny script discovery without throwing'
     writeFileSync(join(root,'package.json'),JSON.stringify({scripts}));
     expect(inferPcCommandSpecs(root)).toEqual({});expect(inferPcDeveloperTasks(root)).toEqual({});
   }
+});
+const FULL_GRANT={profileId:'pc2-normal' as const,id:'full-access-123',expiresAt:null,fullAccess:true as const,roots:['C:\\','D:\\'],permissions:['files.read','files.write','jobs','terminal.exec','screen.read','screen.full','desktop.input','desktop.advanced','apps.launch','adb','runner','browser','chrome.user'] as const,allowedApps:[]};
+const soon=(ms=5000)=>performance.now()+ms;
+type Resources=ReturnType<Awaited<ReturnType<typeof api>>['createPcJobResources']>;
+const waitSlot=(resources:Resources,ms=5000)=>Promise.resolve(resources.reserveTerminal(false,true,soon(ms)));
+test('terminal slot defaults, bounds and local environment overrides',async()=>{
+  const {createPcJobResources,pcJobResourceOptionsFromEnv}=await api();
+  const defaults=createPcJobResources();
+  expect(defaults.terminalSlots(true)).toEqual({used:0,free:4,total:4,queued:0});
+  expect(defaults.terminalSlots(false)).toEqual({used:0,free:1,total:1,queued:0});
+  expect(defaults.terminalWaitMs).toBe(45000);
+  const bounded=createPcJobResources({fullAccessTerminalSlots:99,terminalWaitMs:999999});
+  expect(bounded.terminalSlots(true).total).toBe(8);expect(bounded.terminalWaitMs).toBe(120000);
+  expect(pcJobResourceOptionsFromEnv({FENO_PC_TERMINAL_SLOTS:' 3 ',FENO_PC_TERMINAL_WAIT_SECONDS:'20'})).toEqual({fullAccessTerminalSlots:3,terminalWaitMs:20000});
+  expect(pcJobResourceOptionsFromEnv({FENO_PC_TERMINAL_SLOTS:'many',FENO_PC_TERMINAL_WAIT_SECONDS:'-5'})).toEqual({});
+});
+test('full-access terminals queue for a free slot and start in arrival order',async()=>{
+  const {createPcJobResources}=await api();const resources=createPcJobResources({fullAccessTerminalSlots:2});
+  const first=resources.reserve(false,true,true),second=resources.reserve(false,true,true);
+  expect(resources.terminalSlots(true)).toEqual({used:2,free:0,total:2,queued:0});
+  const order:string[]=[];
+  expect(()=>resources.reserve(false,true,true)).toThrow('pc_terminal_busy');
+  const third=waitSlot(resources).then(release=>{order.push('third');return release;});
+  const fourth=waitSlot(resources).then(release=>{order.push('fourth');return release;});
+  await Bun.sleep(20);expect(order).toEqual([]);expect(resources.terminalSlots(true).queued).toBe(2);
+  first();const releaseThird=await third;expect(order).toEqual(['third']);
+  second();const releaseFourth=await fourth;expect(order).toEqual(['third','fourth']);
+  expect(resources.terminalSlots(true)).toEqual({used:2,free:0,total:2,queued:0});
+  releaseThird();releaseFourth();expect(resources.hasActiveTerminal()).toBe(false);expect(resources.activeJobCount()).toBe(0);
+});
+test('a terminal that waits past its deadline gets pc_terminal_busy with a retry hint and holds no slot',async()=>{
+  const {createPcJobResources}=await api();const {PcOperationError}=await import('../src/pc-control/errors');
+  const resources=createPcJobResources({fullAccessTerminalSlots:1});
+  const held=resources.reserve(false,true,true);
+  const error=await waitSlot(resources,50).then(()=>undefined,(e:unknown)=>e);
+  expect(error).toBeInstanceOf(PcOperationError);
+  const busy=error as InstanceType<typeof PcOperationError>;
+  expect(busy.code).toBe('pc_terminal_busy');
+  expect(busy.details).toMatchObject({retryAfterSeconds:30});
+  expect(busy.details?.reason).toContain('tekrarlayın');
+  expect(resources.terminalSlots(true)).toEqual({used:1,free:0,total:1,queued:0});
+  held();const immediate=resources.reserveTerminal(false,true,soon(0));expect(typeof immediate).toBe('function');
+  (immediate as ()=>void)();expect(resources.hasActiveTerminal()).toBe(false);
+});
+test('ordinary jobs keep the immediate pc_job_busy refusal while terminals wait for capacity',async()=>{
+  const {createPcJobResources}=await api();const resources=createPcJobResources({fullAccessTerminalSlots:1,maxActiveJobs:1});
+  const job=resources.reserve(false,false);
+  expect(()=>resources.reserve(false,false)).toThrow('pc_job_busy');
+  await expect(waitSlot(resources,30)).rejects.toThrow('pc_terminal_busy');
+  const terminal=waitSlot(resources);job();(await terminal)();
+  expect(resources.activeJobCount()).toBe(0);
+});
+test('another grant waits for the shared terminal lease to close instead of failing at once',async()=>{
+  const {createPcJobResources}=await api();const resources=createPcJobResources();
+  let acquired=0,released=0;
+  const acquire=async()=>{acquired++;const generation=`fixture-${acquired}`;return {generation,async releaseAfterExit(exit:Promise<void>){await exit;released++;}};};
+  const first=await resources.sharedTerminalLease('grant-aaaa-0001',acquire,soon());
+  const second=resources.sharedTerminalLease('grant-bbbb-0002',acquire,soon());
+  await Bun.sleep(20);expect(acquired).toBe(1);
+  await first.releaseAfterExit(Promise.resolve());
+  const lease=await second;expect(lease.generation).toBe('fixture-2');expect(released).toBe(1);
+  await lease.releaseAfterExit(Promise.resolve());expect(released).toBe(2);
+  // Without a deadline the call keeps the immediate refusal.
+  const held=await resources.sharedTerminalLease('grant-aaaa-0001',acquire);
+  await expect(resources.sharedTerminalLease('grant-bbbb-0002',acquire)).rejects.toThrow('pc_terminal_busy');
+  await held.releaseAfterExit(Promise.resolve());expect(released).toBe(3);
+});
+windowsTest('full access runs four terminals under one durable lease and queues the fifth until one exits',async()=>{
+  const {createPcJobResources}=await api();const resources=createPcJobResources({terminalWaitMs:20000});
+  const c=await setup('hold',[],{resources});
+  c.authorizer.setGrantFromLocalApproval({...FULL_GRANT,permissions:[...FULL_GRANT.permissions]});
+  const start=()=>c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 30',purpose:'parallel fixture'},c.authorizer);
+  const running=await Promise.all([start(),start(),start(),start()]);
+  expect(c.manager.activeJobCount()).toBe(4);
+  let fifthStarted=false;const fifth=start().then(job=>{fifthStarted=true;return job;});
+  await Bun.sleep(200);expect(fifthStarted).toBe(false);expect(resources.terminalSlots(true)).toMatchObject({used:4,free:0,queued:1});
+  await c.manager.cancelPcJob(running[0]!.jobId,c.authorizer);
+  const queued=await fifth;expect(c.counts()).toEqual({leases:1,releases:0});
+  for(const job of [...running.slice(1),queued])await c.manager.cancelPcJob(job.jobId,c.authorizer);
+  expect(c.counts()).toEqual({leases:1,releases:1});
+});
+windowsTest('a queued terminal starts once a retiring terminal frees the only slot',async()=>{
+  const {createPcJobResources}=await api();const resources=createPcJobResources({terminalWaitMs:20000});
+  const c=await setup('hold',[],{resources});const d=await setup('hold',[],{resources});
+  await c.manager.startTerminalCommand({projectRoot:c.root,command:'Start-Sleep -Seconds 30',purpose:'fixture terminal'},c.authorizer);
+  const retiring=c.manager.revokeAll();
+  const {jobId}=await d.manager.startTerminalCommand({projectRoot:d.root,command:'Write-Output ok',purpose:'fixture terminal'},d.authorizer);
+  await retiring;await until(()=>d.manager.activeJobCount()===0);
+  expect(d.manager.pcJobStatus(jobId,d.authorizer)).toEqual({state:'succeeded',exitCode:0});
 });
